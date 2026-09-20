@@ -236,8 +236,13 @@
                        안 뻗어있고 얇은 팁만 삐죽 나가 있어서, 렌더링에서
                        "드라이버와 볼트가 안 닿아있는" 것처럼 보였다
                        (실측/렌더 확인 후 수정). -->
-                    <geom type="cylinder" pos="0.013 0 0" size="0.006 0.013" quat="1 0 1 0" mass="0.03" rgba="0.3 0.3 0.32 1" contype="0" conaffinity="0"/>
-                    <geom type="box" pos="0.030 0 0" size="0.005 0.002 0.012" mass="0.005" rgba="0.75 0.75 0.78 1" contype="0" conaffinity="0"/>
+                    <!-- 색을 그리퍼 본체(검은색)와 뚜렷이 구분되는 파란색
+                       계열로 바꿨다 -- 실측(클로즈업 렌더)해보니 축/블레이드가
+                       실제로는 볼트 머리에 잘 닿아있었는데, 원래 진회색이
+                       그리퍼의 검은 메쉬와 비슷해서 넓은 화각에서 구분이
+                       안 됐다. -->
+                    <geom type="cylinder" pos="0.013 0 0" size="0.006 0.013" quat="1 0 1 0" mass="0.03" rgba="0.2 0.45 0.75 1" contype="0" conaffinity="0"/>
+                    <geom type="box" pos="0.030 0 0" size="0.005 0.002 0.012" mass="0.005" rgba="0.85 0.88 0.92 1" contype="0" conaffinity="0"/>
                     <site name="driver_tip_site" pos="0.03 0 0" size="0.003" rgba="0 1 0 1"/>
                   </body>
                 </body>
