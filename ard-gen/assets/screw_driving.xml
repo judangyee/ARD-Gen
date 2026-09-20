@@ -170,7 +170,7 @@
          화면에서 묻히는 문제(실측 확인)를 해결하기 위해 추가. 블록만 딱
          확대해서, 팔이 얼마나 내려가든 볼트 머리가 블록에 앉는 과정 자체에
          집중해서 보여준다. -->
-    <camera name="closeup_cam" mode="targetbody" target="block" pos="0.14 0.05 0.10"/>
+    <camera name="closeup_cam" mode="targetbody" target="block" pos="0.122 0.025 0.073"/>
 
     <!-- 블록: 고정된 받침대. 얇은 벽 4개로 사각 구멍을 만들어(peg-in-hole의
          hole_wall과 동일한 트릭) 볼트 샤프트가 그 사이로 통과하고, 볼트
