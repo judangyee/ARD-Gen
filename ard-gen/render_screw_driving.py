@@ -1,9 +1,20 @@
 """screw_driving.xml 모델 검증/데모 렌더링 스크립트.
 
 아직 진짜 admittance controller(토크 피드백 기반)는 없다 -- 이 스크립트는
-"모델 자체가 물리적으로 말이 되는가"를 눈으로 확인하기 위한 것으로,
-wrist_rotate를 0->pi까지 그냥 계속 돌리기만 한다(bolt_hinge_drive가 매 스텝
-그 각도를 그대로 복사해서 볼트를 구동).
+"모델 자체가 물리적으로 말이 되는가"를 눈으로 확인하기 위한 것이다.
+
+## 왜 "여러 바퀴(다회전)" 시퀀스가 필요한가
+
+피치 2mm/rev로 목표 삽입 깊이(34mm)까지 박으려면 17바퀴가 필요한데,
+wrist_rotate는 실제 VX300s처럼 관절 범위가 ±180도(반바퀴)뿐이다. 그래서
+실제 드라이버 작업처럼 "한계까지 돌리기 -> 놓고 손목만 되감기(볼트는 그
+자리에 고정) -> 다시 물고 이어서 돌리기"를 여러 번(_MAX_CYCLES까지) 반복
+한다. 이전 버전은 wrist_rotate를 0->pi까지 딱 한 번만 돌리고 끝냈는데,
+그때는 사실 나사산 관계 자체가 버그(중력만으로도 회전 없이 미끄러지는
+문제)로 깨져 있어서 "적은 회전으로도 끝까지 박히는" 것처럼 보였을 뿐이다
+-- 그 버그를 실제 액추에이터 기반으로 고치고 나니(assets/screw_driving.xml
+참고) 반바퀴로는 1mm도 안 들어간다는 실제 물리가 드러났고, 그래서 이
+다회전 시퀀스를 제대로 구현하게 됐다.
 
 ## 팔이 볼트를 따라 내려가야 하는 이유 (실측으로 발견한 문제)
 
@@ -44,8 +55,28 @@ _HOME_QPOS = {
 }
 _ARM_FOLLOW_JOINTS = ["waist", "shoulder", "elbow", "forearm_roll", "wrist_angle"]
 _JAC_DAMPING = 1e-4
-_N_DRIVE_STEPS = 650
-_MAX_WRIST_TARGET = np.pi  # VX300s의 실제 wrist_rotate 관절 한계 (±180도)
+_PITCH_PER_RAD = 0.002 / (2 * np.pi)  # 나사산 피치 2mm/rev
+_TARGET_DEPTH = 0.034  # bolt_slide 최대 범위(완전 삽입)
+
+# 다회전 시퀀스: wrist_rotate 물리적 한계(±pi)에 약간의 여유를 두고
+# [-2.8, 2.8] 구간을 왕복한다. "돌리기"(engaged, 볼트도 같이 돎) 구간과
+# "되감기"(disengaged, 손목만 원위치로, 볼트는 그 자리에 고정) 구간을
+# 번갈아 반복해서, 한 조인트의 반바퀴 한계를 넘는 회전을 누적한다.
+#
+# 처음엔 ctrl을 매 스텝 선형으로 램프시켰는데(0->100스텝에 걸쳐 -2.8->2.8),
+# 실측해보니 wrist_rotate 액추에이터(kp=7)가 그 램프 속도(0.2초에 5.6rad,
+# 즉 28rad/s)를 전혀 못 따라가서 실제 qpos는 사이클당 0.36rad밖에 못
+# 움직였다(25사이클 다 돌아도 bolt_slide 3.6mm/34mm에 그침). ctrl을
+# 매 스텝 램프하지 않고 목표값을 한 번에 넣고(step 함수) 충분한 스텝
+# 수(500) 동안 실제로 수렴하게 놔두는 방식으로 바꾸니 사이클당 약
+# 5.6rad(풀 스윙)를 실제로 달성했고, 20사이클 만에 목표 깊이(34mm)에
+# 도달하는 걸 확인했다(이론상 필요한 회전수 ~17-20바퀴와 일치).
+_TURN_LOW = -2.8
+_TURN_HIGH = 2.8
+_STEPS_PER_TURN = 500
+_STEPS_PER_REWIND = 500
+_MAX_CYCLES = 25
+_CAPTURE_EVERY = 15
 
 
 def parse_args() -> argparse.Namespace:
@@ -75,6 +106,8 @@ def main() -> None:
     wrist_act = m.actuator("wrist_rotate").id
     wrist_qpos = m.joint("wrist_rotate").qposadr[0]
     bolt_drive_act = m.actuator("bolt_hinge_drive").id
+    bolt_slide_drive_act = m.actuator("bolt_slide_drive").id
+    bolt_hinge_qpos = m.joint("bolt_hinge").qposadr[0]
     bolt_slide_qpos = m.joint("bolt_slide").qposadr[0]
     torque_adr = m.sensor("bolt_drive_torque").adr[0]
     tip_site_id = m.site("driver_tip_site").id
@@ -110,9 +143,10 @@ def main() -> None:
     # 뒤 오차가 시작 시점 대비 0.03mm까지 수렴하는 걸 확인했다.
     target_offset = d.site(tip_site_id).xpos - d.site(head_site_id).xpos
 
-    for step in range(_N_DRIVE_STEPS):
-        d.ctrl[wrist_act] = min(step * 0.005, _MAX_WRIST_TARGET)
-        d.ctrl[bolt_drive_act] = d.qpos[wrist_qpos]
+    def follow_step() -> None:
+        """볼트 slide 구동 + 팔 z-추종. 매 물리 스텝(회전 중이든 되감는
+        중이든) 공통으로 호출한다."""
+        d.ctrl[bolt_slide_drive_act] = _PITCH_PER_RAD * d.qpos[bolt_hinge_qpos]
 
         mujoco.mj_jacSite(m, d, jacp, jacr, tip_site_id)
         current_offset = d.site(tip_site_id).xpos - d.site(head_site_id).xpos
@@ -124,8 +158,41 @@ def main() -> None:
             d.ctrl[m.actuator(name).id] = d.qpos[qpos_adr] + dq[dof_local]
 
         mujoco.mj_step(m, d)
-        if step % 3 == 0:
-            capture()
+
+    step_count = 0
+    engage_wrist_ref = d.qpos[wrist_qpos]
+    engage_hinge_ref = d.qpos[bolt_hinge_qpos]
+    d.ctrl[wrist_act] = _TURN_LOW
+
+    for cycle in range(_MAX_CYCLES):
+        if d.qpos[bolt_slide_qpos] >= _TARGET_DEPTH * 0.99:
+            break
+
+        # 1) 돌리기(engaged): wrist_rotate 목표를 한 번에 반대쪽 끝으로 설정하고
+        #    (램프 아님) 충분한 스텝 동안 실제로 수렴하게 둔다. 물려서
+        #    wrist_rotate가 실제로 움직인 만큼(qpos 기준)만 bolt_hinge도 같이 돈다.
+        d.ctrl[wrist_act] = _TURN_HIGH
+        for t in range(_STEPS_PER_TURN):
+            d.ctrl[bolt_drive_act] = engage_hinge_ref + (d.qpos[wrist_qpos] - engage_wrist_ref)
+            follow_step()
+            step_count += 1
+            if step_count % _CAPTURE_EVERY == 0:
+                capture()
+
+        # 2) 되감기(disengaged): bolt_hinge ctrl은 지금 값에 고정해두고
+        #    wrist_rotate만 시작 위치로 되돌린다(볼트는 그대로 멈춰있음).
+        frozen_hinge_ctrl = d.ctrl[bolt_drive_act]
+        d.ctrl[wrist_act] = _TURN_LOW
+        for t in range(_STEPS_PER_REWIND):
+            d.ctrl[bolt_drive_act] = frozen_hinge_ctrl
+            follow_step()
+            step_count += 1
+            if step_count % _CAPTURE_EVERY == 0:
+                capture()
+
+        # 다음 사이클의 기준점을 갱신 (되감기 끝난 실제 위치 기준으로).
+        engage_wrist_ref = d.qpos[wrist_qpos]
+        engage_hinge_ref = d.qpos[bolt_hinge_qpos]
 
     for _ in range(args.freeze_frames):
         capture()
