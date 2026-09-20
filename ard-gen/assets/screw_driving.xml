@@ -242,13 +242,18 @@
                        기능엔 영향 없음). 손잡이(굵고 빨간)->샤프트(얇고
                        금속색)->납작 팁, 총 길이는 이전과 비슷하게 맞춰서
                        팁이 여전히 볼트 머리 근처에 오게 했다. -->
+                    <!-- 좌표로 계산해보니 원래도 겹쳐는 있었지만(팁 z범위
+                       [0.0778,0.0838] vs 머리 z범위 [0.074,0.082]) 겹친
+                       부분이 불투명한 머리 뒤에 가려져서 화면상 애매하게
+                       보였다. 전체를 4mm 더 밀어넣어서 겹침이 확실히
+                       보이게 했다. -->
                     <!-- 손잡이 -->
-                    <geom type="cylinder" pos="0.007 0 0" size="0.010 0.007" quat="1 0 1 0" mass="0.02" rgba="0.75 0.15 0.1 1" contype="0" conaffinity="0"/>
+                    <geom type="cylinder" pos="0.011 0 0" size="0.010 0.007" quat="1 0 1 0" mass="0.02" rgba="0.75 0.15 0.1 1" contype="0" conaffinity="0"/>
                     <!-- 샤프트 -->
-                    <geom type="cylinder" pos="0.022 0 0" size="0.0035 0.008" quat="1 0 1 0" mass="0.01" rgba="0.75 0.78 0.82 1" contype="0" conaffinity="0"/>
+                    <geom type="cylinder" pos="0.026 0 0" size="0.0035 0.008" quat="1 0 1 0" mass="0.01" rgba="0.75 0.78 0.82 1" contype="0" conaffinity="0"/>
                     <!-- 납작 팁(일자 드라이버 블레이드) -->
-                    <geom type="box" pos="0.033 0 0" size="0.003 0.0015 0.010" mass="0.003" rgba="0.75 0.78 0.82 1" contype="0" conaffinity="0"/>
-                    <site name="driver_tip_site" pos="0.033 0 0" size="0.003" rgba="0 1 0 1"/>
+                    <geom type="box" pos="0.037 0 0" size="0.003 0.0015 0.010" mass="0.003" rgba="0.75 0.78 0.82 1" contype="0" conaffinity="0"/>
+                    <site name="driver_tip_site" pos="0.037 0 0" size="0.003" rgba="0 1 0 1"/>
                   </body>
                 </body>
               </body>
