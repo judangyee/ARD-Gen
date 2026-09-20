@@ -210,6 +210,37 @@
       <site name="bolt_head_site" pos="0 0 0.008" size="0.003" rgba="0 1 0 1"/>
     </body>
 
+    <!-- 픽업 스탠드: 드라이버가 바닥/작업대가 아니라 여기 놓여 있다가
+         그리퍼가 와서 집어간다는 걸 보여주기 위한 순수 시각용 받침대
+         (충돌 없음 -- 드라이버는 gravcomp="1"이라 실제로 이 받침대에
+         물리적으로 얹혀있을 필요가 없다. 아래 팁이 닿는 높이에 맞춰서
+         "꽂혀있는" 것처럼만 보이게 배치). 다리는 실제 ground plane
+         (world z=-0.05)까지 내려가서 공중에 떠있는 것처럼 안 보이게 한다. -->
+    <body name="pickup_stand" pos="0.0362 -0.0932 0">
+      <geom type="cylinder" size="0.045 0.0564" pos="0 0 0.0064" rgba="0.35 0.32 0.3 1" contype="0" conaffinity="0"/>
+      <geom type="box" size="0.045 0.045 0.003" pos="0 0 0.0658" rgba="0.42 0.38 0.35 1" contype="0" conaffinity="0"/>
+    </body>
+
+    <!-- 드라이버: 원래 gripper_link의 자식(강체 고정)이었는데, "바닥에 놓인
+         드라이버를 집는 것부터 시작"하라는 요청으로 자유 바디(freejoint)로
+         바꿨다. 초기 위치/자세는 "waist만 -1.2rad로 돌리고 나머지 관절은
+         홈 자세와 동일"한 픽업 자세에서 정확히
+         gripper_link 기준 (0.13,0,0), 무회전 옵셋에 있던 자리를 그대로
+         forward-kinematics로 계산해서 박아넣었다(아래 equality의 weld
+         relpose와 정확히 같은 값) -- 그래야 나중에 팔이 이 자세로 돌아와서
+         weld를 켜는 순간 드라이버가 스냅(튕김) 없이 정확히 지금 이 자리에서
+         "잡히게" 된다. gravcomp="1"이라 weld 켜지기 전까지는 중력 없이
+         제자리에 가만히 떠 있는다(이 파일의 다른 팔 링크들과 같은 패턴 --
+         실제 접촉/마찰로 쥐는 물리는 다루지 않는다는 이 프로젝트의 기존
+         단순화를 grasp에도 그대로 적용한 것). -->
+    <body name="driver" pos="0.03624076 -0.09321673 0.1138424"
+          quat="0.58373355 0.39917141 0.58346724 -0.39935361" gravcomp="1">
+      <freejoint name="driver_free"/>
+      <geom type="cylinder" pos="0.011 0 0" size="0.010 0.007" quat="1 0 1 0" mass="0.02" rgba="0.75 0.15 0.1 1" contype="0" conaffinity="0"/>
+      <geom type="mesh" mesh="hex_tip" pos="0.0325 0 0" quat="1 0 1 0" mass="0.008" rgba="0.75 0.78 0.82 1" contype="0" conaffinity="0"/>
+      <site name="driver_tip_site" pos="0.044 0 0" size="0.003" rgba="0 1 0 1"/>
+    </body>
+
     <body name="base_link" childclass="vx300s">
       <inertial pos="-0.0534774 -0.000562575 0.0205961" quat="-0.00292324 0.712517 0.00480387 0.701633" mass="0.969034"
         diaginertia="0.0071633 0.00602451 0.00169819"/>
@@ -259,40 +290,6 @@
                     <joint name="right_finger" class="right_finger"/>
                     <geom pos="-0.0404 0.0575 0" quat="1 1 1 1" class="visual" mesh="vx300s_10_gripper_finger"/>
                   </body>
-                  <!-- driver: peg 자리에 들어가는 드라이버 도구. gripper_link에
-                       강체로 고정(자체 조인트 없음) -- "그리퍼가 드라이버를
-                       쥐고 있다"는 가정. 실제 구동력 전달은 아래 equality가
-                       wrist_rotate로 담당하므로, 이 지오메트리는 순수 시각용. -->
-                  <body name="driver" pos="0.13 0 0" gravcomp="1">
-                    <!-- 실린더 기본 축은 로컬 z라서, quat="1 0 1 0"(로컬 y축
-                       기준 90도 회전)으로 z->x가 되게 돌려 삽입 방향(로컬
-                       +x, peg와 동일 관례)을 보게 했다. 이전 버전은
-                       quat="1 1 0 0"(x축 기준 90도)를 써서 축이 옆(로컬
-                       y)을 보는 바람에 굵은 샤프트 몸통이 볼트 쪽으로 전혀
-                       안 뻗어있고 얇은 팁만 삐죽 나가 있어서, 렌더링에서
-                       "드라이버와 볼트가 안 닿아있는" 것처럼 보였다
-                       (실측/렌더 확인 후 수정). -->
-                    <!-- 단순 원통 하나짜리였던 걸 손잡이+샤프트+팁이 뚜렷이
-                       구분되는 실제 드라이버 형태로 다시 만들었다(물리는
-                       equality/actuator로 이상화돼 있어서 시각 형태를 바꿔도
-                       기능엔 영향 없음). 손잡이(굵고 빨간)->샤프트(얇고
-                       금속색)->납작 팁, 총 길이는 이전과 비슷하게 맞춰서
-                       팁이 여전히 볼트 머리 근처에 오게 했다. -->
-                    <!-- 좌표로 계산해보니 원래도 겹쳐는 있었지만(팁 z범위
-                       [0.0778,0.0838] vs 머리 z범위 [0.074,0.082]) 겹친
-                       부분이 불투명한 머리 뒤에 가려져서 화면상 애매하게
-                       보였다. 전체를 4mm 더 밀어넣어서 겹침이 확실히
-                       보이게 했다. -->
-                    <!-- 손잡이 -->
-                    <geom type="cylinder" pos="0.011 0 0" size="0.010 0.007" quat="1 0 1 0" mass="0.02" rgba="0.75 0.15 0.1 1" contype="0" conaffinity="0"/>
-                    <!-- 육각 비트(hex_tip.obj, 반지름 4mm/반길이 14.5mm 육각기둥).
-                       원통 샤프트+납작 블레이드 대신 육각 드라이버 비트로
-                       교체. 다른 원통들과 같은 quat="1 0 1 0"로 로컬
-                       z->x(삽입 방향)로 돌렸다. 손잡이 끝(x=0.018)부터
-                       시작해서 볼트 머리 속까지 뻗어나간다. -->
-                    <geom type="mesh" mesh="hex_tip" pos="0.0325 0 0" quat="1 0 1 0" mass="0.008" rgba="0.75 0.78 0.82 1" contype="0" conaffinity="0"/>
-                    <site name="driver_tip_site" pos="0.044 0 0" size="0.003" rgba="0 1 0 1"/>
-                  </body>
                 </body>
               </body>
             </body>
@@ -314,6 +311,16 @@
          안 먹힌다는 뜻 -- wrist_rotate<->bolt_hinge 결합 때 겪은 것과
          근본적으로 같은 종류의 문제로 보고, 같은 해법(전용 액추에이터 +
          코드에서 값 대입)으로 바꿨다. 아래 actuator의 bolt_slide_drive 참고. -->
+
+    <!-- 드라이버 집기(grasp): 실제 손가락 접촉/마찰로 쥐는 물리는 다루지
+         않고(이 파일의 다른 이상화들과 같은 결정), 팔이 픽업 자세에
+         도달하고 손가락을 닫는 순간 코드에서 이 weld를 active=1로 켜서
+         "그리퍼가 드라이버를 쥐고 있다"를 흉내낸다. relpose(0.13,0,0,
+         무회전)는 원래 driver가 gripper_link의 자식이었을 때의 고정
+         오프셋과 정확히 같다 -- 그래서 weld가 켜진 이후로는 이전에
+         검증된 나사 조이기 시퀀스(target_offset 계산, z-추종 등)가
+         전혀 손 댈 필요 없이 그대로 작동한다. -->
+    <weld name="driver_grasp" body1="gripper_link" body2="driver" relpose="0.13 0 0 1 0 0 0" active="false"/>
   </equality>
 
   <actuator>

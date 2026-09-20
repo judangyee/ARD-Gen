@@ -31,6 +31,25 @@ waist/shoulder/elbow/forearm_roll/wrist_angle로 위치를 보정한다). 이건
 만드는 임시 추종 보정이다 -- 나중에 토크 기반 컨트롤러를 만들 때 이
 z-추종 역할을 그 컨트롤러가 대신하게 된다.
 
+## 드라이버를 바닥에서 집는 것부터 시작 (grasp 단순화)
+
+원래 driver는 gripper_link의 자식으로 강체 고정돼 있었는데(peg_in_hole의
+peg와 같은 패턴), "드라이버를 바닥에 두고 줍는 것부터 시작하자"는 요청으로
+assets/screw_driving.xml에서 자유 바디(freejoint)로 바꿨다. 실제 손가락
+접촉/마찰로 쥐는 물리는 다루지 않고(이 프로젝트 전체에 걸친 기존
+단순화 방향과 동일하게), 팔이 픽업 자세에 도달해서 손가락을 닫는 순간
+코드에서 weld equality(driver_grasp)를 active=1로 켜서 "쥐었다"를
+흉내낸다. weld의 relpose가 원래 고정 오프셋(0.13,0,0, 무회전)과 정확히
+같고, 드라이버의 초기 자유 바디 위치도 그 오프셋을 픽업 자세에서
+forward-kinematics로 역산해 박아넣은 값이라, weld를 켜는 순간 스냅(튕김)
+없이 자연스럽게 "잡힌다"(실측 확인: 300스텝 방치해도 드러버 위치 변화
+<0.001mm).
+
+픽업 자세(waist=-1.2, 나머지 관절은 홈 자세와 동일)에서 waist만 0으로
+되돌리는 것만으로 홈 자세(기존 나사 조이기 시퀀스가 시작하던 자리)로
+정확히 돌아온다 -- 그래서 픽업+운반 단계는 별도 Jacobian IK 없이 두
+qpos 딕셔너리 사이를 직접 ctrl로 오가는 것만으로 충분하다.
+
 사용 예:
     MUJOCO_GL=osmesa python render_screw_driving.py --out-dir .
 """
@@ -54,6 +73,33 @@ _HOME_QPOS = {
     "wrist_angle": 1.40932,
     "wrist_rotate": 0.0,
 }
+# 픽업 자세: 홈 자세와 waist만 다르다(-1.2rad). assets/screw_driving.xml의
+# driver 초기 위치가 바로 이 자세에서 forward-kinematics로 역산된 값이라,
+# 팔이 여기 도달하면 그리퍼가 정확히 드라이버 자리에 와 있다.
+_PICKUP_QPOS = {
+    "waist": -1.2,
+    "shoulder": -0.89237,
+    "elbow": 1.05339,
+    "forearm_roll": 0.0,
+    "wrist_angle": 1.40932,
+    "wrist_rotate": 0.0,
+}
+# 시작 자세: 픽업 자세도 홈 자세도 아닌 임의의 자세에서 출발해서, 팔이
+# 실제로 "다가가서 집는" 모습이 보이게 한다.
+_REST_QPOS = {
+    "waist": 0.6,
+    "shoulder": -0.2,
+    "elbow": 0.3,
+    "forearm_roll": 0.0,
+    "wrist_angle": 0.0,
+    "wrist_rotate": 0.0,
+}
+_GRIPPER_OPEN = 0.057
+_GRIPPER_CLOSED = 0.021
+_STEPS_APPROACH = 500
+_STEPS_CLOSE = 100
+_STEPS_GRASP_HOLD = 50
+_STEPS_TRANSPORT = 500
 _ARM_FOLLOW_JOINTS = ["waist", "shoulder", "elbow", "forearm_roll", "wrist_angle"]
 _JAC_DAMPING = 1e-4
 _PITCH_PER_RAD = 0.002 / (2 * np.pi)  # 나사산 피치 2mm/rev
@@ -113,11 +159,12 @@ def main() -> None:
 
     m = mujoco.MjModel.from_xml_path(args.model_path)
     d = mujoco.MjData(m)
-    for name, val in _HOME_QPOS.items():
+    for name, val in _REST_QPOS.items():
         d.qpos[m.joint(name).qposadr[0]] = val
     mujoco.mj_forward(m, d)
-    for name, val in _HOME_QPOS.items():
+    for name, val in _REST_QPOS.items():
         d.ctrl[m.actuator(name).id] = val
+    d.ctrl[m.actuator("gripper").id] = _GRIPPER_OPEN
 
     arm_dofadr = [m.joint(n).dofadr[0] for n in _ARM_FOLLOW_JOINTS]
     arm_qposadr = [m.joint(n).qposadr[0] for n in _ARM_FOLLOW_JOINTS]
@@ -130,6 +177,7 @@ def main() -> None:
     torque_adr = m.sensor("bolt_drive_torque").adr[0]
     tip_site_id = m.site("driver_tip_site").id
     head_site_id = m.site("bolt_head_site").id
+    grasp_weld_id = m.equality("driver_grasp").id
 
     jacp = np.zeros((3, m.nv))
     jacr = np.zeros((3, m.nv))
@@ -151,6 +199,45 @@ def main() -> None:
         closeup_frames.append(_overlay_depth_readout(closeup_r.render().copy(), depth_m))
 
     capture()
+
+    def settle_arm(target_qpos: dict, steps: int) -> None:
+        """픽업/운반 단계용: Jacobian 추종 없이 6개 팔 관절 ctrl을 목표
+        qpos로 그냥 대입해두고 충분한 스텝 동안 실제로 수렴하게 둔다
+        (wrist_rotate 다회전 시퀀스에서 검증된 "램프 대신 목표값+충분한
+        정착 스텝" 패턴과 동일)."""
+        for name, val in target_qpos.items():
+            d.ctrl[m.actuator(name).id] = val
+        for t in range(steps):
+            mujoco.mj_step(m, d)
+            if (t + 1) % _CAPTURE_EVERY == 0:
+                capture()
+
+    # 1) 접근: 임의의 시작 자세(_REST_QPOS)에서 픽업 자세로 이동. 이 시점엔
+    #    아직 weld가 꺼져 있어서(active=false) 드라이버는 gravcomp로 픽업
+    #    스탠드 자리에 가만히 떠 있는다.
+    settle_arm(_PICKUP_QPOS, _STEPS_APPROACH)
+
+    # 2) 손가락 닫기: 실제 접촉/마찰로 쥐는 물리는 다루지 않고, 시각적으로만
+    #    닫는다 (이 시점에 그리퍼가 정확히 드라이버 자리에 와 있다 --
+    #    driver 초기 위치가 이 픽업 자세에서 역산된 값이기 때문).
+    d.ctrl[m.actuator("gripper").id] = _GRIPPER_CLOSED
+    for t in range(_STEPS_CLOSE):
+        mujoco.mj_step(m, d)
+        if (t + 1) % _CAPTURE_EVERY == 0:
+            capture()
+
+    # 3) grasp: weld를 켜서 "쥐었다"를 흉내낸다. relpose가 지금 실제
+    #    상대 자세와 정확히 일치하도록 맞춰뒀기 때문에 스냅(튕김) 없이
+    #    조용히 붙는다(실측 확인, 300스텝 방치해도 위치 변화 <0.001mm).
+    d.eq_active[grasp_weld_id] = 1
+    for t in range(_STEPS_GRASP_HOLD):
+        mujoco.mj_step(m, d)
+        if (t + 1) % _CAPTURE_EVERY == 0:
+            capture()
+
+    # 4) 운반: 픽업 자세 -> 홈 자세(waist만 원위치로). weld가 켜져 있으니
+    #    드라이버가 그리퍼를 따라 그대로 딸려온다.
+    settle_arm(_HOME_QPOS, _STEPS_TRANSPORT)
 
     # 목표 상대 오프셋(드라이버 팁 - 볼트 머리)을 시작 시점에 한 번만 기록해두고,
     # 매 스텝 "이번 스텝 변화량만" ctrl에 누적"하는 방식은 실측해보니 650스텝
