@@ -81,6 +81,11 @@
     <!-- 육각 드라이버 비트용 육각기둥 메쉬 (직접 생성, assets/hex_tip.obj).
          meshdir가 vx300s/assets라서 "../"로 한 단계 올라간다. -->
     <mesh name="hex_tip" file="../../hex_tip.obj"/>
+    <!-- 볼트 머리에 파넣을 육각 소켓(홈)용 -- 같은 육각기둥 메쉬를 재사용하되
+         scale="1.3 1.3 0.12"로 반지름은 30% 키우고 길이는 12%로 줄여서
+         짧고 넓은 "얕은 홈" 모양으로 만들었다. 순수 시각용(충돌 없음) --
+         실제 토크 전달은 여전히 코드에서 처리(아래 bolt_hinge_drive 참고). -->
+    <mesh name="hex_socket" file="../../hex_tip.obj" scale="1.3 1.3 0.12"/>
   </asset>
 
   <default>
@@ -174,6 +179,11 @@
       <joint name="bolt_hinge" type="hinge" axis="0 0 -1" range="-31.416 31.416" frictionloss="0.015" damping="0.05"/>
       <geom class="bolt_contact" name="bolt_shaft" type="cylinder" pos="0 0 -0.012" size="0.006 0.012" rgba="0.75 0.65 0.2 1"/>
       <geom class="bolt_contact" name="bolt_head" type="cylinder" pos="0 0 0.004" size="0.012 0.004" rgba="0.75 0.65 0.2 1"/>
+      <!-- 육각 소켓(홈): 순수 시각용(충돌 없음, 실제 힘 전달과는 무관 --
+           지금은 코드에서 bolt_hinge_drive ctrl로 이상화돼 있다). 드라이버
+           비트가 이 홈 안에 들어가 있는 것처럼 보이도록, 머리 윗면(로컬
+           z=0.008) 바로 아래에 얕게 박아넣었다. -->
+      <geom type="mesh" mesh="hex_socket" pos="0 0 0.0063" rgba="0.15 0.13 0.1 1" contype="0" conaffinity="0"/>
       <site name="bolt_head_site" pos="0 0 0.008" size="0.003" rgba="0 1 0 1"/>
     </body>
 
