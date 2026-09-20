@@ -83,14 +83,18 @@ def main() -> None:
 
     top_r = mujoco.Renderer(m, height=args.height, width=args.width)
     wrist_r = mujoco.Renderer(m, height=args.height, width=args.width)
+    closeup_r = mujoco.Renderer(m, height=args.height, width=args.width)
     top_frames: list = []
     wrist_frames: list = []
+    closeup_frames: list = []
 
     def capture() -> None:
         top_r.update_scene(d, camera="top_cam")
         top_frames.append(top_r.render().copy())
         wrist_r.update_scene(d, camera="wrist_cam")
         wrist_frames.append(wrist_r.render().copy())
+        closeup_r.update_scene(d, camera="closeup_cam")
+        closeup_frames.append(closeup_r.render().copy())
 
     capture()
     prev_slide = d.qpos[bolt_slide_qpos]
@@ -128,10 +132,13 @@ def main() -> None:
     os.makedirs(args.out_dir, exist_ok=True)
     top_path = os.path.join(args.out_dir, "screw_driving_top.mp4")
     wrist_path = os.path.join(args.out_dir, "screw_driving_wrist.mp4")
+    closeup_path = os.path.join(args.out_dir, "screw_driving_closeup.mp4")
     imageio.mimsave(top_path, top_frames, fps=args.fps, quality=8)
     imageio.mimsave(wrist_path, wrist_frames, fps=args.fps, quality=8)
-    print(f"[render_screw_driving] saved: {top_path}, {wrist_path} ({len(top_frames)} frames)")
+    imageio.mimsave(closeup_path, closeup_frames, fps=args.fps, quality=8)
+    print(f"[render_screw_driving] saved: {top_path}, {wrist_path}, {closeup_path} ({len(top_frames)} frames)")
 
+    closeup_r.close()
     top_r.close()
     wrist_r.close()
 

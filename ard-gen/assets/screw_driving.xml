@@ -148,6 +148,11 @@
     <geom name="ground" type="plane" pos="0 0 -0.05" size="0.8 0.8 0.01" contype="0" conaffinity="0" rgba="0.5 0.5 0.52 1"/>
 
     <camera name="top_cam" mode="targetbody" target="block" pos="0.28 0 0.32"/>
+    <!-- closeup_cam: 팔 전체가 z-추종하느라 같이 내려가면서 조여지는 디테일이
+         화면에서 묻히는 문제(실측 확인)를 해결하기 위해 추가. 블록만 딱
+         확대해서, 팔이 얼마나 내려가든 볼트 머리가 블록에 앉는 과정 자체에
+         집중해서 보여준다. -->
+    <camera name="closeup_cam" mode="targetbody" target="block" pos="0.14 0.05 0.10"/>
 
     <!-- 블록: 고정된 받침대. 얇은 벽 4개로 사각 구멍을 만들어(peg-in-hole의
          hole_wall과 동일한 트릭) 볼트 샤프트가 그 사이로 통과하고, 볼트
