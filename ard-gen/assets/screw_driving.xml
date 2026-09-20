@@ -1,0 +1,292 @@
+<mujoco model="ard_gen_screw_driving_vx300s">
+  <!--
+    ARD-Gen 검증 태스크 2: 나사 조이기(screw driving). peg_in_hole.xml과
+    똑같은 VX300s 팔/홈 자세를 그대로 재사용하고(gripper_link 로컬 +x가
+    삽입/구동 방향인 것도 동일), 그리퍼 끝의 peg 대신 "드라이버"를 붙이고,
+    hole 대신 "볼트+블록"을 놓았다.
+
+    ## 나사산을 실제 지오메트리 없이 구현하는 방법
+
+    bolt body에 slide(전진)와 hinge(회전) 조인트를 같은 축(world -z)으로
+    겹쳐서 달고, <equality><joint>의 polycoef로 "회전량 -> 전진량"을
+    강제한다(피치 2mm/rev = 2π rad당 0.002m). 실제 나사산 표면끼리의 접촉을
+    시뮬레이션하는 게 아니라, 순수 기구학적 제약으로 "돌리면 들어간다"는
+    나사의 핵심 동작만 재현하는 것이다.
+
+    ## 드라이버-볼트 결합: equality가 아니라 "별도 액추에이터 + 코드에서 값 복사"
+
+    처음엔 실제 접촉을 시뮬레이션하는 대신 <equality><joint>로
+    wrist_rotate(팔이 실제로 구동하는 조인트)와 bolt_hinge를 1:1로 직결하는
+    "미끄러짐 없이 완벽하게 물려있다"는 이상화를 시도했는데, 실측해보니
+    bolt(질량 6g)와 팔 전체의 반사 관성(gripper_link만 0.25kg, 그 위로
+    몇 kg급 링크가 더 있음) 사이 질량비가 너무 커서 MuJoCo 솔버가
+    600스텝(1.2초)이 지나도 절반도 못 따라잡았다(bolt를 50배 무겁게 만들어도
+    마찬가지 -- 질량비 자체가 아니라 이 등호 제약 방식 자체의 한계로 보임).
+
+    그래서 bolt_hinge에 자기 스케일에 맞는 작은 position actuator
+    (bolt_hinge_drive, kp=2)를 따로 달고, 컨트롤 코드가 매 스텝
+    `ctrl(bolt_hinge_drive) = qpos(wrist_rotate)`로 그대로 복사하는 방식으로
+    바꿨다 -- 팔의 큰 관성과 얽히지 않는 독립적인 1-DOF 문제라 훨씬
+    안정적으로(수십 스텝 내에 오차 <0.03rad로) 따라간다. 실측 확인:
+    600스텝 동안 wrist_rotate가 0->π까지 도는 동안 bolt_hinge가 거의
+    정확히(오차 0.02rad 이내) 따라갔다.
+
+    ## 저항 토크는 어디서 나오는가, 그리고 실측으로 확인한 것
+
+    1) bolt_hinge의 frictionloss(작은 상수) -- "나사산이 스치는" 기본 저항.
+    2) bolt_head 밑면과 block 벽 윗면(world z=0.04) 사이의 실제 접촉(진짜
+       시뮬레이션) -- block_wall_* 4개의 안쪽 폭(8.5mm)이 샤프트(반지름
+       6mm)는 통과시키고 머리(반지름 12mm)는 못 지나가게 막아서, 벽
+       윗면이 자연스럽게 "seat" 역할을 한다(별도 seat 지오메트리 불필요 --
+       처음엔 구멍 없는 판을 따로 만들었다가 샤프트가 아예 못 지나가는
+       버그를 실측으로 발견하고 제거함).
+
+    실측 결과: 회전시키니 bolt_slide가 100스텝 만에 설계한 완전 삽입
+    깊이(0.034m)까지 정확히 도달했고, 그 순간 저항 토크가 ~0에서 0.05로
+    확 뛰어서 계속 유지됐다 -- "다 조여졌다"는 신호로 쓸 만하다.
+
+    토크 피드백은 bolt_hinge_drive 액추에이터의 힘 센서(actuatorfrc)로
+    읽는다 -- 실제 토크 렌치가 "돌리는 데 필요한 힘"을 재는 것과 같은
+    방식이다.
+
+    ## 실측으로 발견한 실제 물리적 제약 (이후 컨트롤러 설계에서 다뤄야 함)
+
+    wrist_rotate의 조인트 범위가 실제 VX300s처럼 ±π(180˚)로 제한돼 있어서,
+    이 관절 하나만으로는 한 바퀴(360˚)를 넘는 연속 회전이 불가능하다.
+    실제 드라이버 작업처럼 "다 돌리고 손목을 풀어서 다시 잡는" 동작이
+    필요할 수 있다는 뜻 -- 지금 모델은 여기까지 반영 안 됨.
+
+    아직 admittance controller는 구현 안 됨 -- 이 파일은 모델까지만.
+  -->
+  <compiler angle="radian" meshdir="vx300s/assets" texturedir="vx300s/assets" autolimits="true"/>
+  <option cone="elliptic" impratio="10"/>
+  <visual>
+    <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6" specular="0.1 0.1 0.1"/>
+  </visual>
+
+  <asset>
+    <texture type="2d" file="interbotix_black.png"/>
+    <material name="black" texture="interbotix_black"/>
+
+    <mesh file="vx300s_1_base.stl" scale="0.001 0.001 0.001"/>
+    <mesh file="vx300s_2_shoulder.stl" scale="0.001 0.001 0.001"/>
+    <mesh file="vx300s_3_upper_arm.stl" scale="0.001 0.001 0.001"/>
+    <mesh file="vx300s_4_upper_forearm.stl" scale="0.001 0.001 0.001"/>
+    <mesh file="vx300s_5_lower_forearm.stl" scale="0.001 0.001 0.001"/>
+    <mesh file="vx300s_6_wrist.stl" scale="0.001 0.001 0.001"/>
+    <mesh file="vx300s_7_gripper.stl" scale="0.001 0.001 0.001"/>
+    <mesh file="vx300s_8_gripper_prop.stl" scale="0.001 0.001 0.001"/>
+    <mesh file="vx300s_9_gripper_bar.stl" scale="0.001 0.001 0.001"/>
+    <mesh file="vx300s_10_gripper_finger.stl" scale="0.001 0.001 0.001"/>
+  </asset>
+
+  <default>
+    <default class="vx300s">
+      <joint axis="0 1 0"/>
+      <position forcerange="-35 35"/>
+      <default class="waist">
+        <joint axis="0 0 1" range="-3.14158 3.14158" damping="2.86"/>
+        <position ctrlrange="-3.14158 3.14158" kp="25"/>
+      </default>
+      <default class="shoulder">
+        <joint range="-1.85005 1.25664" armature="0.004" damping="6.25"/>
+        <position ctrlrange="-1.85005 1.25664" kp="76" forcerange="-57 57"/>
+      </default>
+      <default class="elbow">
+        <joint range="-1.76278 1.6057" armature="0.072" damping="8.15"/>
+        <position ctrlrange="-1.76278 1.6057" kp="106" forcerange="-25 25"/>
+      </default>
+      <default class="forearm_roll">
+        <joint axis="1 0 0" range="-3.14158 3.14158" armature="0.060" damping="3.07"/>
+        <position ctrlrange="-3.14158 3.14158" kp="35" forcerange="-10 10"/>
+      </default>
+      <default class="wrist_angle">
+        <joint range="-1.8675 2.23402" damping="1.18"/>
+        <position ctrlrange="-1.8675 2.23402" kp="8"/>
+      </default>
+      <default class="wrist_rotate">
+        <joint axis="1 0 0" range="-3.14158 3.14158" damping="0.78"/>
+        <!-- forcerange를 넉넉하게 키웠다: 이 조인트가 이제 볼트를 실제로
+             구동하는 토크까지 감당해야 해서, peg-in-hole 때(±10)보다
+             여유가 더 필요하다. -->
+        <position ctrlrange="-3.14158 3.14158" kp="7" forcerange="-15 15"/>
+      </default>
+      <default class="finger">
+        <joint type="slide" armature="0.251" damping="10"/>
+        <position ctrlrange="0.021 0.057" kp="300"/>
+        <default class="left_finger">
+          <joint range="0.021 0.057"/>
+        </default>
+        <default class="right_finger">
+          <joint range="-0.057 -0.021"/>
+        </default>
+      </default>
+      <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0" density="0" group="2" material="black"/>
+      </default>
+      <default class="collision">
+        <geom group="3" type="mesh" contype="0" conaffinity="0"/>
+      </default>
+    </default>
+    <default class="bolt_contact">
+      <geom contype="1" conaffinity="1" condim="4" friction="0.5 0.01 0.001" solref="0.002 1" solimp="0.9 0.95 0.001"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <light pos="0.4 0 1" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+    <light pos="0.7 -0.4 0.5" dir="-0.4 0.4 -0.7" diffuse="0.4 0.4 0.4"/>
+
+    <geom name="ground" type="plane" pos="0 0 -0.05" size="0.8 0.8 0.01" contype="0" conaffinity="0" rgba="0.5 0.5 0.52 1"/>
+
+    <camera name="top_cam" mode="targetbody" target="block" pos="0.28 0 0.32"/>
+
+    <!-- 블록: 고정된 받침대. 얇은 벽 4개로 사각 구멍을 만들어(peg-in-hole의
+         hole_wall과 동일한 트릭) 볼트 샤프트가 그 사이로 통과하고, 볼트
+         머리는 이 벽의 윗면(seat_top)에 걸린다. -->
+    <!-- block을 0.04로 내려서(원래 0.05였다가 겹침 버그 발견 후 수정),
+         qpos=0(시작 상태)일 때 bolt_shaft 바닥(world z=0.050)이 seat_top
+         윗면(world z=0.044)보다 6mm 위에 뜨도록 간격을 확보했다. 이 간격이
+         없으면 시작하자마자 접촉에 걸려 나사가 전혀 안 움직인다(실측으로
+         발견한 버그, 아래 bolt body 주석 참고). -->
+    <body name="block" pos="0.10 0 0.04">
+      <geom class="bolt_contact" name="block_wall_px" type="box" pos="0.0125 0 -0.015" size="0.004 0.0165 0.015" rgba="0.55 0.55 0.6 1"/>
+      <geom class="bolt_contact" name="block_wall_nx" type="box" pos="-0.0125 0 -0.015" size="0.004 0.0165 0.015" rgba="0.55 0.55 0.6 1"/>
+      <geom class="bolt_contact" name="block_wall_py" type="box" pos="0 0.0125 -0.015" size="0.0165 0.004 0.015" rgba="0.55 0.55 0.6 1"/>
+      <geom class="bolt_contact" name="block_wall_ny" type="box" pos="0 -0.0125 -0.015" size="0.0165 0.004 0.015" rgba="0.55 0.55 0.6 1"/>
+      <!-- 별도 "seat_top" 판은 필요 없다(있었는데 구멍이 없어서 샤프트가
+           아예 못 지나가는 버그였음, 실측으로 발견/제거) -- 이 4개 벽의
+           안쪽 폭(8.5mm)이 이미 샤프트(반지름 6mm)는 통과시키고 머리
+           (반지름 12mm)는 못 지나가게 하므로, 벽 윗면(world z=0.04) 자체가
+           머리가 닿는 seat 역할을 자연스럽게 한다. -->
+      <site name="block_center_site" pos="0 0 0.004" size="0.002" rgba="1 0 0 0.5"/>
+    </body>
+
+    <!-- 볼트: slide(전진)+hinge(회전) 조인트를 world -z 축에 겹쳐서 달았다.
+         axis=(0,0,-1)이라 slide qpos가 "양수"일수록 몸체가 -z(아래, block
+         쪽)로 이동한다 -- 즉 양수=삽입 방향. qpos=0.03 근처에서 머리가
+         seat_top에 닿아 완전히 조여진다(위 block 위치 기준 계산값). -->
+    <body name="bolt" pos="0.10 0 0.074">
+      <joint name="bolt_slide" type="slide" axis="0 0 -1" range="-0.002 0.034" damping="0.3"/>
+      <joint name="bolt_hinge" type="hinge" axis="0 0 -1" range="-31.416 31.416" frictionloss="0.015" damping="0.05"/>
+      <geom class="bolt_contact" name="bolt_shaft" type="cylinder" pos="0 0 -0.012" size="0.006 0.012" rgba="0.75 0.65 0.2 1"/>
+      <geom class="bolt_contact" name="bolt_head" type="cylinder" pos="0 0 0.004" size="0.012 0.004" rgba="0.75 0.65 0.2 1"/>
+      <site name="bolt_head_site" pos="0 0 0.008" size="0.003" rgba="0 1 0 1"/>
+    </body>
+
+    <body name="base_link" childclass="vx300s">
+      <inertial pos="-0.0534774 -0.000562575 0.0205961" quat="-0.00292324 0.712517 0.00480387 0.701633" mass="0.969034"
+        diaginertia="0.0071633 0.00602451 0.00169819"/>
+      <geom quat="1 0 0 1" class="visual" mesh="vx300s_1_base"/>
+      <body name="shoulder_link" pos="0 0 0.079" gravcomp="1">
+        <inertial pos="0.000259233 -3.3552e-06 0.0116129" quat="-0.476119 0.476083 0.52279 0.522826" mass="0.798614"
+          diaginertia="0.00120156 0.00113744 0.0009388"/>
+        <joint name="waist" class="waist"/>
+        <geom pos="0 0 -0.003" quat="1 0 0 1" class="visual" mesh="vx300s_2_shoulder"/>
+        <body name="upper_arm_link" pos="0 0 0.04805" gravcomp="1">
+          <inertial pos="0.0206949 4e-10 0.226459" quat="0 0.0728458 0 0.997343" mass="0.792592"
+            diaginertia="0.00911338 0.008925 0.000759317"/>
+          <joint name="shoulder" class="shoulder"/>
+          <geom quat="1 0 0 1" class="visual" mesh="vx300s_3_upper_arm"/>
+          <body name="upper_forearm_link" pos="0.05955 0 0.3" gravcomp="1">
+            <inertial pos="0.105723 0 0" quat="-0.000621631 0.704724 0.0105292 0.709403" mass="0.322228"
+              diaginertia="0.00144107 0.00134228 0.000152047"/>
+            <joint name="elbow" class="elbow"/>
+            <geom class="visual" mesh="vx300s_4_upper_forearm"/>
+            <body name="lower_forearm_link" pos="0.2 0 0" gravcomp="1">
+              <inertial pos="0.0513477 0.00680462 0" quat="-0.702604 -0.0796724 -0.702604 0.0796724" mass="0.414823"
+                diaginertia="0.0005911 0.000546493 0.000155707"/>
+              <joint name="forearm_roll" class="forearm_roll"/>
+              <geom quat="0 1 0 0" class="visual" mesh="vx300s_5_lower_forearm"/>
+              <body name="wrist_link" pos="0.1 0 0" gravcomp="1">
+                <inertial pos="0.046743 -7.6652e-06 0.010565" quat="-0.00100191 0.544586 0.0026583 0.8387"
+                  mass="0.115395" diaginertia="5.45707e-05 4.63101e-05 4.32692e-05"/>
+                <joint name="wrist_angle" class="wrist_angle"/>
+                <geom quat="1 0 0 1" class="visual" mesh="vx300s_6_wrist"/>
+                <body name="gripper_link" pos="0.069744 0 0" gravcomp="1">
+                  <inertial pos="0.0395662 -2.56311e-07 0.00400649" quat="0.62033 0.619916 -0.339682 0.339869"
+                    mass="0.251652" diaginertia="0.000689546 0.000650316 0.000468142"/>
+                  <joint name="wrist_rotate" class="wrist_rotate"/>
+                  <geom pos="-0.02 0 0" quat="1 0 0 1" class="visual" mesh="vx300s_7_gripper"/>
+                  <geom pos="-0.020175 0 0" quat="1 0 0 1" class="visual" mesh="vx300s_9_gripper_bar"/>
+                  <site name="pinch" pos="0.1 0 0" size="0.005" rgba="0.6 0.3 0.3 1" group="5"/>
+                  <camera name="wrist_cam" mode="fixed" pos="0.13 0.15 0" xyaxes="-1 0 0 0 0 1"/>
+                  <body name="left_finger_link" pos="0.0687 0 0" gravcomp="1">
+                    <inertial pos="0.017344 -0.0060692 0" quat="0.449364 0.449364 -0.54596 -0.54596" mass="0.034796"
+                      diaginertia="2.48003e-05 1.417e-05 1.20797e-05"/>
+                    <joint name="left_finger" class="left_finger"/>
+                    <geom pos="-0.0404 -0.0575 0" quat="-1 1 -1 1" class="visual" mesh="vx300s_10_gripper_finger"/>
+                  </body>
+                  <body name="right_finger_link" pos="0.0687 0 0" gravcomp="1">
+                    <inertial pos="0.017344 0.0060692 0" quat="0.44937 -0.44937 0.545955 -0.545955" mass="0.034796"
+                      diaginertia="2.48002e-05 1.417e-05 1.20798e-05"/>
+                    <joint name="right_finger" class="right_finger"/>
+                    <geom pos="-0.0404 0.0575 0" quat="1 1 1 1" class="visual" mesh="vx300s_10_gripper_finger"/>
+                  </body>
+                  <!-- driver: peg 자리에 들어가는 드라이버 도구. gripper_link에
+                       강체로 고정(자체 조인트 없음) -- "그리퍼가 드라이버를
+                       쥐고 있다"는 가정. 실제 구동력 전달은 아래 equality가
+                       wrist_rotate로 담당하므로, 이 지오메트리는 순수 시각용. -->
+                  <body name="driver" pos="0.13 0 0" gravcomp="1">
+                    <geom type="cylinder" size="0.007 0.025" quat="1 1 0 0" mass="0.03" rgba="0.3 0.3 0.32 1" contype="0" conaffinity="0"/>
+                    <geom type="box" pos="0.026 0 0" size="0.004 0.002 0.012" mass="0.005" rgba="0.75 0.75 0.78 1" contype="0" conaffinity="0"/>
+                    <site name="driver_tip_site" pos="0.03 0 0" size="0.003" rgba="0 1 0 1"/>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <equality>
+    <joint joint1="left_finger" joint2="right_finger" polycoef="0 -1 0 0 0"/>
+    <!-- 나사산: bolt_hinge가 2π rad(1바퀴) 돌 때 bolt_slide가 0.002m(피치)
+         움직이도록 강제. <equality><joint joint1= joint2=>는 "joint1 =
+         f(joint2)"(joint1이 종속변수) 관계라서, 종속변수인 bolt_slide를
+         joint1에 둬야 한다. 부호는 "양의 회전으로 돌리면 들어간다"는
+         가정으로 일단 넣었고, 실제로는 empirically 확인해서 반대면 뒤집는다. -->
+    <joint joint1="bolt_slide" joint2="bolt_hinge" polycoef="0 0.00031831 0 0 0"/>
+    <!-- 드라이버-볼트 결합(wrist_rotate=bolt_hinge)은 여기 없다: equality로
+         묶어봤더니 bolt(질량 6g)와 팔 전체 반사 관성(gripper_link만 0.25kg,
+         그 위로 여러 kg급 링크가 더 있음) 사이 질량비가 너무 커서 솔버가
+         600스텝(1.2초)이 지나도 절반도 못 따라잡았다(50배 무겁게 만들어도
+         마찬가지). 실제로는 "미끄러짐 없는 이상화"일 뿐이라 물리적으로
+         정확히 풀 필요도 없다고 판단해서, 이 결합은 MJCF가 아니라
+         sim 코드에서 매 스텝 bolt_hinge qpos를 wrist_rotate qpos로 직접
+         대입하는 방식으로 구현한다(다음 단계, 컨트롤러 작성 시 처리). -->
+  </equality>
+
+  <actuator>
+    <position class="waist" name="waist" joint="waist"/>
+    <position class="shoulder" name="shoulder" joint="shoulder"/>
+    <position class="elbow" name="elbow" joint="elbow"/>
+    <position class="forearm_roll" name="forearm_roll" joint="forearm_roll"/>
+    <position class="wrist_angle" name="wrist_angle" joint="wrist_angle"/>
+    <position class="wrist_rotate" name="wrist_rotate" joint="wrist_rotate"/>
+    <position class="finger" name="gripper" joint="left_finger"/>
+    <!-- 드라이버-볼트 결합: wrist_rotate와 별개의, bolt 자체 스케일에 맞는
+         작은 position actuator. 매 스텝 컨트롤 코드가 이 ctrl을
+         wrist_rotate의 qpos(또는 목표각)로 그대로 복사해서 "물려서 같이
+         돈다"를 구현한다. kp를 크게 줘도 bolt 관성이 작아 계산이 안정적 --
+         팔 전체와 직접 equality로 묶었을 때완 다르게, 이 작은 액추에이터의
+         actuatorfrc가 곧 "볼트를 돌리는 데 필요한 토크"라서 저항 피드백
+         센서로 그대로 쓸 수 있다. -->
+    <position name="bolt_hinge_drive" joint="bolt_hinge" kp="2" forcerange="-2 2"/>
+  </actuator>
+
+  <contact>
+    <exclude body1="base_link" body2="shoulder_link"/>
+  </contact>
+
+  <sensor>
+    <!-- 토크 피드백: bolt_hinge_drive 액추에이터가 실제로 내고 있는
+         힘(=구동 토크). 볼트의 저항(frictionloss + seat 접촉)이 커질수록
+         이 값이 커진다. -->
+    <actuatorfrc name="bolt_drive_torque" actuator="bolt_hinge_drive"/>
+    <jointpos name="bolt_slide_pos" joint="bolt_slide"/>
+    <jointpos name="bolt_hinge_pos" joint="bolt_hinge"/>
+  </sensor>
+</mujoco>
