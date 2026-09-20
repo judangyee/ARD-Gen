@@ -8,3 +8,4 @@ bootstrap/policy.pt
 data/bootstrap/*.npz
 data/bootstrap/*.pt
 data/episodes/*.npz
+screw_driving_*.mp4
