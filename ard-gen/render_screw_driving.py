@@ -177,6 +177,7 @@ def main() -> None:
     torque_adr = m.sensor("bolt_drive_torque").adr[0]
     tip_site_id = m.site("driver_tip_site").id
     head_site_id = m.site("bolt_head_site").id
+    jac_ref_site_id = m.site("gripper_tip_ref").id
     grasp_weld_id = m.equality("driver_grasp").id
 
     jacp = np.zeros((3, m.nv))
@@ -251,10 +252,19 @@ def main() -> None:
 
     def follow_step() -> None:
         """볼트 slide 구동 + 팔 z-추종. 매 물리 스텝(회전 중이든 되감는
-        중이든) 공통으로 호출한다."""
+        중이든) 공통으로 호출한다.
+
+        driver가 gripper_link의 자식이 아니라 weld로 붙은 자유 바디가 된
+        뒤로는, driver_tip_site 자체의 Jacobian을 쓰면 안 된다 --
+        실측해보니 팔 관절에 대한 Jacobian이 전부 0이었다(weld 같은 등호
+        제약은 mj_jacSite가 보는 강체 트리 구조에 안 잡힌다). 그래서
+        "팔을 움직이면 실제로 뭐가 얼마나 움직이는가"는 gripper_link 위의
+        참조 사이트(gripper_tip_ref, 자식이었을 때의 tip 오프셋과 동일)로
+        구하고, 실제 오차(웰드의 잔류 컴플라이언스까지 포함한 진짜 위치
+        차이)는 여전히 진짜 tip/head 사이트로 계산한다."""
         d.ctrl[bolt_slide_drive_act] = _PITCH_PER_RAD * d.qpos[bolt_hinge_qpos]
 
-        mujoco.mj_jacSite(m, d, jacp, jacr, tip_site_id)
+        mujoco.mj_jacSite(m, d, jacp, jacr, jac_ref_site_id)
         current_offset = d.site(tip_site_id).xpos - d.site(head_site_id).xpos
         error = target_offset - current_offset
         jac_arm = jacp[:, arm_dofadr]

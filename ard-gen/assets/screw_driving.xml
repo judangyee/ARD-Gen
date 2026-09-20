@@ -277,6 +277,17 @@
                   <geom pos="-0.02 0 0" quat="1 0 0 1" class="visual" mesh="vx300s_7_gripper"/>
                   <geom pos="-0.020175 0 0" quat="1 0 0 1" class="visual" mesh="vx300s_9_gripper_bar"/>
                   <site name="pinch" pos="0.1 0 0" size="0.005" rgba="0.6 0.3 0.3 1" group="5"/>
+                  <!-- driver가 gripper_link의 자식(강체)이 아니라 weld로
+                       붙은 별도 자유 바디가 되면서, driver_tip_site에 대해
+                       mj_jacSite를 돌리면 팔 관절 쪽 Jacobian이 전부 0으로
+                       나온다(실측으로 발견 -- weld 같은 등호 제약은 강체
+                       트리 구조가 아니라서 Jacobian에 안 잡힌다). 그래서
+                       z-추종 보정에 쓸 "팁이 있었다면 그 자리"를 gripper_link
+                       위에 그대로 흉내낸 참조 사이트를 따로 둔다(원래
+                       driver가 자식이었을 때 tip까지의 오프셋과 동일:
+                       0.13+0.044=0.174). 에러 자체는 여전히 실제 tip/head
+                       site로 계산하고, Jacobian만 이 사이트에서 가져온다. -->
+                  <site name="gripper_tip_ref" pos="0.174 0 0" size="0.002" rgba="1 1 0 0.3" group="5"/>
                   <camera name="wrist_cam" mode="fixed" pos="0.13 0.15 0" xyaxes="-1 0 0 0 0 1"/>
                   <body name="left_finger_link" pos="0.0687 0 0" gravcomp="1">
                     <inertial pos="0.017344 -0.0060692 0" quat="0.449364 0.449364 -0.54596 -0.54596" mass="0.034796"
