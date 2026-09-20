@@ -85,7 +85,7 @@
          scale="1.3 1.3 0.12"로 반지름은 30% 키우고 길이는 12%로 줄여서
          짧고 넓은 "얕은 홈" 모양으로 만들었다. 순수 시각용(충돌 없음) --
          실제 토크 전달은 여전히 코드에서 처리(아래 bolt_hinge_drive 참고). -->
-    <mesh name="hex_socket" file="../../hex_tip.obj" scale="1.3 1.3 0.12"/>
+    <mesh name="hex_socket" file="../../hex_tip.obj" scale="1.12 1.12 0.12"/>
   </asset>
 
   <default>

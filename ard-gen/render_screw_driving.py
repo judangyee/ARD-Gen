@@ -71,12 +71,14 @@ def main() -> None:
         d.ctrl[m.actuator(name).id] = val
 
     arm_dofadr = [m.joint(n).dofadr[0] for n in _ARM_FOLLOW_JOINTS]
+    arm_qposadr = [m.joint(n).qposadr[0] for n in _ARM_FOLLOW_JOINTS]
     wrist_act = m.actuator("wrist_rotate").id
     wrist_qpos = m.joint("wrist_rotate").qposadr[0]
     bolt_drive_act = m.actuator("bolt_hinge_drive").id
     bolt_slide_qpos = m.joint("bolt_slide").qposadr[0]
     torque_adr = m.sensor("bolt_drive_torque").adr[0]
     tip_site_id = m.site("driver_tip_site").id
+    head_site_id = m.site("bolt_head_site").id
 
     jacp = np.zeros((3, m.nv))
     jacr = np.zeros((3, m.nv))
@@ -97,22 +99,29 @@ def main() -> None:
         closeup_frames.append(closeup_r.render().copy())
 
     capture()
-    prev_slide = d.qpos[bolt_slide_qpos]
+
+    # 목표 상대 오프셋(드라이버 팁 - 볼트 머리)을 시작 시점에 한 번만 기록해두고,
+    # 매 스텝 "이번 스텝 변화량만" ctrl에 누적"하는 방식은 실측해보니 650스텝
+    # 동안 오차가 계속 쌓여 center가 최대 6mm까지 벌어졌다. 그 다음 시도한
+    # "오차*게인을 매 스텝 ctrl에 누적"하는 폐루프도 적분(integrator)처럼
+    # 작동해서 91mm까지 발산했다. 최종적으로는 ctrl을 "누적"하지 않고
+    # "현재 실제 qpos + 오차 보정"으로 매 스텝 새로 계산해서 대입하는 방식
+    # (peg_in_hole_sim.py의 반복 IK와 같은 패턴)으로 안정화했다 -- 650스텝
+    # 뒤 오차가 시작 시점 대비 0.03mm까지 수렴하는 걸 확인했다.
+    target_offset = d.site(tip_site_id).xpos - d.site(head_site_id).xpos
 
     for step in range(_N_DRIVE_STEPS):
         d.ctrl[wrist_act] = min(step * 0.005, _MAX_WRIST_TARGET)
         d.ctrl[bolt_drive_act] = d.qpos[wrist_qpos]
 
         mujoco.mj_jacSite(m, d, jacp, jacr, tip_site_id)
-        slide_now = d.qpos[bolt_slide_qpos]
-        delta_slide = slide_now - prev_slide
-        prev_slide = slide_now
-        target_delta_world = np.array([0.0, 0.0, -delta_slide])
+        current_offset = d.site(tip_site_id).xpos - d.site(head_site_id).xpos
+        error = target_offset - current_offset
         jac_arm = jacp[:, arm_dofadr]
         jjt = jac_arm @ jac_arm.T + _JAC_DAMPING * np.eye(3)
-        dq = jac_arm.T @ np.linalg.solve(jjt, target_delta_world)
-        for name, dof_local in zip(_ARM_FOLLOW_JOINTS, range(len(_ARM_FOLLOW_JOINTS))):
-            d.ctrl[m.actuator(name).id] += dq[dof_local]
+        dq = jac_arm.T @ np.linalg.solve(jjt, error * 0.8)
+        for name, qpos_adr, dof_local in zip(_ARM_FOLLOW_JOINTS, arm_qposadr, range(len(_ARM_FOLLOW_JOINTS))):
+            d.ctrl[m.actuator(name).id] = d.qpos[qpos_adr] + dq[dof_local]
 
         mujoco.mj_step(m, d)
         if step % 3 == 0:
