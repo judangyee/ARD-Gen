@@ -228,8 +228,16 @@
                        쥐고 있다"는 가정. 실제 구동력 전달은 아래 equality가
                        wrist_rotate로 담당하므로, 이 지오메트리는 순수 시각용. -->
                   <body name="driver" pos="0.13 0 0" gravcomp="1">
-                    <geom type="cylinder" size="0.007 0.025" quat="1 1 0 0" mass="0.03" rgba="0.3 0.3 0.32 1" contype="0" conaffinity="0"/>
-                    <geom type="box" pos="0.026 0 0" size="0.004 0.002 0.012" mass="0.005" rgba="0.75 0.75 0.78 1" contype="0" conaffinity="0"/>
+                    <!-- 실린더 기본 축은 로컬 z라서, quat="1 0 1 0"(로컬 y축
+                       기준 90도 회전)으로 z->x가 되게 돌려 삽입 방향(로컬
+                       +x, peg와 동일 관례)을 보게 했다. 이전 버전은
+                       quat="1 1 0 0"(x축 기준 90도)를 써서 축이 옆(로컬
+                       y)을 보는 바람에 굵은 샤프트 몸통이 볼트 쪽으로 전혀
+                       안 뻗어있고 얇은 팁만 삐죽 나가 있어서, 렌더링에서
+                       "드라이버와 볼트가 안 닿아있는" 것처럼 보였다
+                       (실측/렌더 확인 후 수정). -->
+                    <geom type="cylinder" pos="0.013 0 0" size="0.006 0.013" quat="1 0 1 0" mass="0.03" rgba="0.3 0.3 0.32 1" contype="0" conaffinity="0"/>
+                    <geom type="box" pos="0.030 0 0" size="0.005 0.002 0.012" mass="0.005" rgba="0.75 0.75 0.78 1" contype="0" conaffinity="0"/>
                     <site name="driver_tip_site" pos="0.03 0 0" size="0.003" rgba="0 1 0 1"/>
                   </body>
                 </body>
