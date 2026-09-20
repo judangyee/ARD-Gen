@@ -44,6 +44,7 @@ os.environ.setdefault("MUJOCO_GL", "osmesa")
 import imageio
 import mujoco
 import numpy as np
+from PIL import Image, ImageDraw
 
 _HOME_QPOS = {
     "waist": 0.0,
@@ -77,6 +78,23 @@ _STEPS_PER_TURN = 500
 _STEPS_PER_REWIND = 500
 _MAX_CYCLES = 25
 _CAPTURE_EVERY = 15
+
+
+def _overlay_depth_readout(frame: np.ndarray, depth_m: float) -> np.ndarray:
+    """영상만 보면 사이클마다 손목이 크게 왔다갔다 흔드는 동작에 묻혀서
+    실제 삽입 진행(사이클당 ~1.7mm)이 잘 안 보인다는 피드백을 받고 추가한
+    번인(burn-in) 오버레이. 화면 어디를 보든 숫자/막대로 진행률이 명확하게
+    드러나게 한다."""
+    pct = max(0.0, min(1.0, depth_m / _TARGET_DEPTH))
+    img = Image.fromarray(frame)
+    draw = ImageDraw.Draw(img)
+    text = f"depth {depth_m * 1000:5.1f} / {_TARGET_DEPTH * 1000:.0f} mm ({pct * 100:4.1f}%)"
+    draw.rectangle([4, 4, 250, 24], fill=(0, 0, 0))
+    draw.text((8, 8), text, fill=(255, 220, 0))
+    bar_x0, bar_x1, bar_y0, bar_y1 = 8, 246, 28, 36
+    draw.rectangle([bar_x0, bar_y0, bar_x1, bar_y1], fill=(40, 40, 40))
+    draw.rectangle([bar_x0, bar_y0, bar_x0 + int((bar_x1 - bar_x0) * pct), bar_y1], fill=(80, 200, 80))
+    return np.array(img)
 
 
 def parse_args() -> argparse.Namespace:
@@ -124,12 +142,13 @@ def main() -> None:
     closeup_frames: list = []
 
     def capture() -> None:
+        depth_m = d.qpos[bolt_slide_qpos]
         top_r.update_scene(d, camera="top_cam")
-        top_frames.append(top_r.render().copy())
+        top_frames.append(_overlay_depth_readout(top_r.render().copy(), depth_m))
         wrist_r.update_scene(d, camera="wrist_cam")
-        wrist_frames.append(wrist_r.render().copy())
+        wrist_frames.append(_overlay_depth_readout(wrist_r.render().copy(), depth_m))
         closeup_r.update_scene(d, camera="closeup_cam")
-        closeup_frames.append(closeup_r.render().copy())
+        closeup_frames.append(_overlay_depth_readout(closeup_r.render().copy(), depth_m))
 
     capture()
 
