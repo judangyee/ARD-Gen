@@ -1,20 +1,46 @@
 """screw_driving.xml 모델 검증/데모 렌더링 스크립트.
 
-아직 진짜 admittance controller(토크 피드백 기반)는 없다 -- 이 스크립트는
-"모델 자체가 물리적으로 말이 되는가"를 눈으로 확인하기 위한 것이다.
+sim/screw_driving_sim.py의 admittance controller(토크 피드백으로 회전
+속도를 조절)를 그대로 가져다 써서 렌더링한다 -- 컨트롤 로직은 sim 모듈이
+소스이고(_KP_TORQUE 등 게인도 거기서 import), 이 스크립트는 카메라
+캡처/픽업 애니메이션만 더한 것이다.
 
 ## 왜 "여러 바퀴(다회전)" 시퀀스가 필요한가
 
 피치 2mm/rev로 목표 삽입 깊이(34mm)까지 박으려면 17바퀴가 필요한데,
 wrist_rotate는 실제 VX300s처럼 관절 범위가 ±180도(반바퀴)뿐이다. 그래서
 실제 드라이버 작업처럼 "한계까지 돌리기 -> 놓고 손목만 되감기(볼트는 그
-자리에 고정) -> 다시 물고 이어서 돌리기"를 여러 번(_MAX_CYCLES까지) 반복
-한다. 이전 버전은 wrist_rotate를 0->pi까지 딱 한 번만 돌리고 끝냈는데,
-그때는 사실 나사산 관계 자체가 버그(중력만으로도 회전 없이 미끄러지는
-문제)로 깨져 있어서 "적은 회전으로도 끝까지 박히는" 것처럼 보였을 뿐이다
--- 그 버그를 실제 액추에이터 기반으로 고치고 나니(assets/screw_driving.xml
+자리에 고정) -> 다시 물고 이어서 돌리기"를 여러 번 반복한다(완료 조건은
+bolt_slide가 목표 깊이에 도달하는 것, _MAX_CONTROL_TICKS는 안전장치).
+이전 버전은 wrist_rotate를 0->pi까지 딱 한 번만 돌리고 끝냈는데, 그때는
+사실 나사산 관계 자체가 버그(중력만으로도 회전 없이 미끄러지는 문제)로
+깨져 있어서 "적은 회전으로도 끝까지 박히는" 것처럼 보였을 뿐이다 -- 그
+버그를 실제 액추에이터 기반으로 고치고 나니(assets/screw_driving.xml
 참고) 반바퀴로는 1mm도 안 들어간다는 실제 물리가 드러났고, 그래서 이
 다회전 시퀀스를 제대로 구현하게 됐다.
+
+## admittance: 저항 토크로 회전 속도를 조절
+
+처음(다회전만 구현했을 때) 버전은 "돌리기" 구간마다 ctrl을 목표 극단값
+(-2.8/2.8)으로 한 번에 던지고 500스텝 동안 정착시키는 방식이었다 --
+wrist_rotate 액추에이터(kp=7)가 즉각적인 큰 램프를 못 따라간다는 걸
+실측으로 확인하고 고른 방법이었는데, 이 방식은 "지금 얼마나 빨리
+돌리고 있는지"를 컨트롤 법칙이 조절할 방법이 없어서 진짜 admittance와
+안 맞았다. 그래서 매 컨트롤 틱(dt=0.01s)마다 ctrl을 `rate*dt`만큼만
+전진시키는 진짜 속도 제어로 바꿨다: `rate = max(RATE_MIN, NOMINAL_RATE -
+kp_torque*저항토크)` -- 저항이 커질수록 느려지되(admittance), RATE_MIN
+아래로는 안 내려가서(전진이 완전히 멈추지 않음) 항상 목표에 수렴한다.
+wrist_rotate의 정상상태 추종 지연이 이 rate 범위(1~3rad/s)에서 rate에
+선형 비례하고 발산하지 않는다는 걸 실측으로 확인했다(sim/screw_driving_sim.py
+docstring 참고). "되감기" 구간은 disengaged라 저항이 안 걸리니 admittance
+감속 없이 항상 nominal rate로 되감는다.
+
+완료 판정은 (peg_in_hole과 마찬가지로) 토크가 아니라 기하학(bolt_slide
+깊이)로 한다 -- 다회전 전체에 걸쳐 저항 토크를 실측해보니 아직 목표
+깊이의 1/3도 안 됐을 때부터 이미 plateau 토크가 크게 뛰고 사이클마다
+계속 커져서(block 벽에 눌리며 생기는 누적 마찰로 보임), 고정 임계값으로
+"덜 조여짐"과 "다 조여짐"을 구분할 수 없었다(실측 확인). 토크 피드백은
+컨트롤 법칙(속도 조절)에만 쓰고, 완료 판정은 여전히 기하학 신호를 쓴다.
 
 ## 팔이 볼트를 따라 내려가야 하는 이유 (실측으로 발견한 문제)
 
@@ -65,6 +91,8 @@ import mujoco
 import numpy as np
 from PIL import Image, ImageDraw
 
+from sim.screw_driving_sim import DT, N_SUBSTEPS, NOMINAL_RATE, PITCH_PER_RAD, RATE_MIN, TURN_HIGH, TURN_LOW
+
 _HOME_QPOS = {
     "waist": 0.0,
     "shoulder": -0.89237,
@@ -102,27 +130,18 @@ _STEPS_GRASP_HOLD = 50
 _STEPS_TRANSPORT = 500
 _ARM_FOLLOW_JOINTS = ["waist", "shoulder", "elbow", "forearm_roll", "wrist_angle"]
 _JAC_DAMPING = 1e-4
-_PITCH_PER_RAD = 0.002 / (2 * np.pi)  # 나사산 피치 2mm/rev
 _TARGET_DEPTH = 0.034  # bolt_slide 최대 범위(완전 삽입)
 
-# 다회전 시퀀스: wrist_rotate 물리적 한계(±pi)에 약간의 여유를 두고
-# [-2.8, 2.8] 구간을 왕복한다. "돌리기"(engaged, 볼트도 같이 돎) 구간과
-# "되감기"(disengaged, 손목만 원위치로, 볼트는 그 자리에 고정) 구간을
-# 번갈아 반복해서, 한 조인트의 반바퀴 한계를 넘는 회전을 누적한다.
-#
-# 처음엔 ctrl을 매 스텝 선형으로 램프시켰는데(0->100스텝에 걸쳐 -2.8->2.8),
-# 실측해보니 wrist_rotate 액추에이터(kp=7)가 그 램프 속도(0.2초에 5.6rad,
-# 즉 28rad/s)를 전혀 못 따라가서 실제 qpos는 사이클당 0.36rad밖에 못
-# 움직였다(25사이클 다 돌아도 bolt_slide 3.6mm/34mm에 그침). ctrl을
-# 매 스텝 램프하지 않고 목표값을 한 번에 넣고(step 함수) 충분한 스텝
-# 수(500) 동안 실제로 수렴하게 놔두는 방식으로 바꾸니 사이클당 약
-# 5.6rad(풀 스윙)를 실제로 달성했고, 20사이클 만에 목표 깊이(34mm)에
-# 도달하는 걸 확인했다(이론상 필요한 회전수 ~17-20바퀴와 일치).
-_TURN_LOW = -2.8
-_TURN_HIGH = 2.8
-_STEPS_PER_TURN = 500
-_STEPS_PER_REWIND = 500
-_MAX_CYCLES = 25
+# 다회전(turn/rewind) + admittance 속도 제어 파라미터는 sim/screw_driving_sim.py
+# 것을 그대로 가져다 쓴다 -- 이 렌더 스크립트가 실제로 쓰는 컨트롤러와 다른
+# 로직을 보여주면 "검증"의 의미가 없기 때문이다. 이전 버전(커밋 이력 참고)은
+# 여기서 자체적으로 "ctrl 목표값 한 번에 대입 + 500스텝 정착"하는 방식을
+# 썼는데, 그건 admittance(토크로 속도를 조절)와 근본적으로 안 맞는 방식이라
+# (목표를 한 번에 던지면 "지금 얼마나 빨리 돌릴지"를 조절할 방법이 없다)
+# sim 모듈 쪽에서 매 컨트롤 틱마다 `rate*dt`만큼만 전진시키는 진짜 속도
+# 제어로 바꿨고, 이 렌더 스크립트도 그걸 그대로 따라간다.
+_KP_TORQUE = 1.2  # sim/screw_driving_sim.py에서 실측 검증된 기본 게인
+_MAX_CONTROL_TICKS = 15000
 _CAPTURE_EVERY = 15
 
 
@@ -250,9 +269,9 @@ def main() -> None:
     # 뒤 오차가 시작 시점 대비 0.03mm까지 수렴하는 걸 확인했다.
     target_offset = d.site(tip_site_id).xpos - d.site(head_site_id).xpos
 
-    def follow_step() -> None:
-        """볼트 slide 구동 + 팔 z-추종. 매 물리 스텝(회전 중이든 되감는
-        중이든) 공통으로 호출한다.
+    def follow_tick() -> None:
+        """볼트 slide 구동 + 팔 z-추종. 매 컨트롤 틱(N_SUBSTEPS만큼 물리
+        서브스텝)마다 호출한다.
 
         driver가 gripper_link의 자식이 아니라 weld로 붙은 자유 바디가 된
         뒤로는, driver_tip_site 자체의 Jacobian을 쓰면 안 된다 --
@@ -262,7 +281,7 @@ def main() -> None:
         참조 사이트(gripper_tip_ref, 자식이었을 때의 tip 오프셋과 동일)로
         구하고, 실제 오차(웰드의 잔류 컴플라이언스까지 포함한 진짜 위치
         차이)는 여전히 진짜 tip/head 사이트로 계산한다."""
-        d.ctrl[bolt_slide_drive_act] = _PITCH_PER_RAD * d.qpos[bolt_hinge_qpos]
+        d.ctrl[bolt_slide_drive_act] = PITCH_PER_RAD * d.qpos[bolt_hinge_qpos]
 
         mujoco.mj_jacSite(m, d, jacp, jacr, jac_ref_site_id)
         current_offset = d.site(tip_site_id).xpos - d.site(head_site_id).xpos
@@ -273,42 +292,44 @@ def main() -> None:
         for name, qpos_adr, dof_local in zip(_ARM_FOLLOW_JOINTS, arm_qposadr, range(len(_ARM_FOLLOW_JOINTS))):
             d.ctrl[m.actuator(name).id] = d.qpos[qpos_adr] + dq[dof_local]
 
-        mujoco.mj_step(m, d)
+        mujoco.mj_step(m, d, nstep=N_SUBSTEPS)
 
-    step_count = 0
+    # admittance 다회전 시퀀스: sim/screw_driving_sim.py의 ScrewDrivingSim.step()과
+    # 정확히 같은 컨트롤 법칙. "돌리기(engaged)" 구간에서만 저항 토크로 속도를
+    # 늦추고(admittance), "되감기(disengaged)" 구간은 저항이 안 걸리니 항상
+    # nominal rate로 되감는다.
+    phase = "turn"
     engage_wrist_ref = d.qpos[wrist_qpos]
     engage_hinge_ref = d.qpos[bolt_hinge_qpos]
-    d.ctrl[wrist_act] = _TURN_LOW
+    d.ctrl[wrist_act] = TURN_LOW
 
-    for cycle in range(_MAX_CYCLES):
+    for tick in range(1, _MAX_CONTROL_TICKS + 1):
+        current_wrist_ctrl = float(d.ctrl[wrist_act])
+        torque = float(d.sensordata[torque_adr])
+
+        if phase == "turn":
+            rate = max(RATE_MIN, NOMINAL_RATE - _KP_TORQUE * max(0.0, abs(torque)))
+            new_ctrl = min(current_wrist_ctrl + rate * DT, TURN_HIGH)
+            d.ctrl[wrist_act] = new_ctrl
+            d.ctrl[bolt_drive_act] = engage_hinge_ref + (d.qpos[wrist_qpos] - engage_wrist_ref)
+            if new_ctrl >= TURN_HIGH:
+                phase = "rewind"
+                frozen_hinge_ctrl = float(d.ctrl[bolt_drive_act])
+        else:
+            new_ctrl = max(current_wrist_ctrl - NOMINAL_RATE * DT, TURN_LOW)
+            d.ctrl[wrist_act] = new_ctrl
+            d.ctrl[bolt_drive_act] = frozen_hinge_ctrl
+            if new_ctrl <= TURN_LOW:
+                phase = "turn"
+                engage_wrist_ref = d.qpos[wrist_qpos]
+                engage_hinge_ref = d.qpos[bolt_hinge_qpos]
+
+        follow_tick()
+        if tick % _CAPTURE_EVERY == 0:
+            capture()
+
         if d.qpos[bolt_slide_qpos] >= _TARGET_DEPTH * 0.99:
             break
-
-        # 1) 돌리기(engaged): wrist_rotate 목표를 한 번에 반대쪽 끝으로 설정하고
-        #    (램프 아님) 충분한 스텝 동안 실제로 수렴하게 둔다. 물려서
-        #    wrist_rotate가 실제로 움직인 만큼(qpos 기준)만 bolt_hinge도 같이 돈다.
-        d.ctrl[wrist_act] = _TURN_HIGH
-        for t in range(_STEPS_PER_TURN):
-            d.ctrl[bolt_drive_act] = engage_hinge_ref + (d.qpos[wrist_qpos] - engage_wrist_ref)
-            follow_step()
-            step_count += 1
-            if step_count % _CAPTURE_EVERY == 0:
-                capture()
-
-        # 2) 되감기(disengaged): bolt_hinge ctrl은 지금 값에 고정해두고
-        #    wrist_rotate만 시작 위치로 되돌린다(볼트는 그대로 멈춰있음).
-        frozen_hinge_ctrl = d.ctrl[bolt_drive_act]
-        d.ctrl[wrist_act] = _TURN_LOW
-        for t in range(_STEPS_PER_REWIND):
-            d.ctrl[bolt_drive_act] = frozen_hinge_ctrl
-            follow_step()
-            step_count += 1
-            if step_count % _CAPTURE_EVERY == 0:
-                capture()
-
-        # 다음 사이클의 기준점을 갱신 (되감기 끝난 실제 위치 기준으로).
-        engage_wrist_ref = d.qpos[wrist_qpos]
-        engage_hinge_ref = d.qpos[bolt_hinge_qpos]
 
     for _ in range(args.freeze_frames):
         capture()
