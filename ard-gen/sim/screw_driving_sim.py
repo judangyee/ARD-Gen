@@ -365,18 +365,21 @@ def _run_episode_with_sim(
 
     final_depth = depth_profile[-1] if depth_profile else 0.0
     mean_abs_torque = float(np.mean(np.abs(torque_profile))) if torque_profile else 0.0
-    # 속도 조절형 admittance였을 때는 max_torque가 게인에 거의 안 움직여서
-    # (실측: kp_torque 0->2.0에도 1.38->1.37) mean_abs_torque로 바꿨었는데,
-    # 토크 리미터로 바꾼 지금은 반대로 max_torque가 정확히 torque_limit
-    # 근처에서 눌린다(리미터의 정의상 당연함, __main__ 데모에서 실측 확인).
-    # 그래서 다시 max_torque로 페널티를 준다 -- 이게 이 컨트롤러가 실제로
-    # 보호하려는 값이기 때문. step_count 페널티는 "너무 낮은 torque_limit
-    # 때문에 사이클마다 조금씩만 돌고 끝나서 완료가 오래 걸리는" 비용을
-    # 잡아준다 -- 두 페널티가 서로 반대 방향으로 당기게 해서 CMA-ES가 진짜
-    # 트레이드오프(안전 vs 속도)를 보게 한다.
-    reward = 20.0 * final_depth - 3.0 * max_torque - 0.001 * step_count
+    # 처음엔 success 여부와 상관없이 항상 -3.0*max_torque를 뺐는데, 그렇게
+    # CMA-ES를 돌려보니 torque_limit=0.15(자연 문턱값 ~1.4의 1/10)로
+    # 수렴해버렸다(실측 확인: reward=-15.5, "리미터 없음" 베이스라인의
+    # +36.9보다 훨씬 나쁜데도!). 원인: 실패(데드락) 구간에서는 torque_limit을
+    # 낮출수록 max_torque도 같이 낮아지니까, "무조건 낮은 torque_limit이
+    # 리워드에 유리"해 보이는 가짜 경사가 생겨서 CMA-ES가 성공 문턱값과는
+    # 반대 방향(더 낮게)으로 끌려갔다 -- 정작 성공 여부(depth, +50 보너스)가
+    # 주는 진짜 신호보다 이 가짜 경사가 훨씬 강했다. 그래서 max_torque
+    # 페널티는 "완료된 경우에만" 적용하도록 고쳤다 -- 실패한 시도의 토크가
+    # 낮다고 보상해줄 이유가 없고(어차피 나사를 못 박았으니), 이렇게 해야
+    # "일단 문턱값을 넘겨서 완료하고, 그 안에서 torque_limit을 낮춘다"는
+    # 원래 의도한 트레이드오프만 남는다.
+    reward = 20.0 * final_depth - 0.001 * step_count
     if success:
-        reward += 50.0
+        reward += 50.0 - 3.0 * max_torque
 
     return {
         "depth_profile": np.array(depth_profile, dtype=np.float32),
