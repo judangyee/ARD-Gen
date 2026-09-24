@@ -16,13 +16,24 @@ MuJoCo 기반 peg-in-hole 태스크에서 admittance controller 게인을 CMA-ES
 ard-gen/
 ├── assets/
 │   ├── peg_in_hole.xml          # MuJoCo 모델 (VX300s + hole + peg)
+│   ├── screw_driving.xml        # MuJoCo 모델 (VX300s + 드라이버 + 볼트/블록) -- 검증 태스크 2
 │   └── vx300s/                  # mujoco_menagerie의 VX300s 메쉬/라이선스
-├── sim/peg_in_hole_sim.py       # 시뮬레이션 실행 + admittance controller
-├── optimize/cma_search.py       # CMA-ES 최적화 스크립트
-├── render_result.py             # seed_trajectory.npz의 게인으로 롤아웃을 mp4로 렌더링
+├── sim/
+│   ├── peg_in_hole_sim.py       # 시뮬레이션 실행 + admittance controller (태스크 1)
+│   └── screw_driving_sim.py     # 시뮬레이션 실행 + 토크 리미터 컨트롤러 (태스크 2)
+├── optimize/
+│   ├── cma_search.py                  # CMA-ES 게인 탐색 (태스크 1)
+│   └── screw_driving_cma_search.py    # CMA-ES 게인 탐색 (태스크 2)
+├── render_result.py             # seed_trajectory.npz의 게인으로 롤아웃을 mp4로 렌더링 (태스크 1)
+├── render_screw_driving.py      # 픽업+토크 리미터 조이기 시퀀스를 mp4로 렌더링 (태스크 2)
 ├── requirements.txt
 └── README.md
 ```
+
+이 문서 대부분은 **검증 태스크 1(peg-in-hole)** 을 다룬다. **검증 태스크
+2(나사 조이기, screw driving)** 는 맨 아래 별도 섹션에 정리했다 — 모델·
+그립·컨트롤러 자체는 완전히 다른 내용이지만, "직접 돌려보고 실측으로
+버그를 찾는다"는 이 저장소 전체의 작업 방식은 똑같이 적용했다.
 
 ## 모델 (assets/peg_in_hole.xml, assets/vx300s/)
 
@@ -340,3 +351,155 @@ force 상태뿐이라 admittance controller가 가진 정보 이상을 배울 �
   힘이 과도하게(400~700N) 쌓이는데도 admittance controller가 빠져나오지
   못하는 경우가 있다 — 게인을 마찰에 따라 적응시키거나, 힘이 임계치를
   넘으면 후퇴(retract) 후 재시도하는 로직이 없어서다.
+
+---
+
+# 검증 태스크 2: 나사 조이기 (screw driving)
+
+peg-in-hole과 같은 VX300s 팔/홈 자세를 재사용하되, 그리퍼 끝에 드라이버를
+달고 나사(볼트+블록)를 완전히 조여 넣는 태스크. peg-in-hole이 "위치 보정"
+admittance를 다뤘다면, 이쪽은 "회전/토크"를 다룬다 — `PIPELINE.md`의
+"검증 태스크" 절에서 원래 계획했던 "뚜껑돌리기(토크제어)" 대신 이 태스크로
+구현했다.
+
+- 모델: `assets/screw_driving.xml`
+- 시뮬레이션 + 컨트롤러: `sim/screw_driving_sim.py`
+- 게인 탐색: `optimize/screw_driving_cma_search.py`
+- 데모 렌더링: `render_screw_driving.py`
+
+## 모델 (assets/screw_driving.xml)
+
+- **나사산을 실제 지오메트리 없이 구현**: bolt body에 slide(전진)+hinge(회전)
+  조인트를 같은 축에 겹쳐서 달고, "회전량 → 전진량"(피치 2mm/rev)을
+  강제한다. 처음엔 `<equality><joint>`로 이 관계를 걸었는데(그리고
+  wrist_rotate↔bolt_hinge 결합도 같은 방식으로), **실측해보니 이
+  모델 규모에서 `<equality><joint>`가 외력(중력)에 전혀 저항하지
+  못했다** — 회전을 하나도 안 시키고 중력만 준 상태에서 볼트가 혼자
+  완전 삽입 깊이까지 미끄러져 내려갔다. polycoef를 키우거나 solref/solimp를
+  훨씬 강하게 줘도, 두 조인트를 다른 body로 분리해도 동일했다. 두 결합
+  모두 같은 해법으로 대체했다: **전용 position actuator + 컨트롤 코드가
+  매 스텝 목표값을 계산해서 대입** — 이 모델 규모에서는 이 패턴이
+  `<equality><joint>`보다 신뢰할 만하다는 게 두 번 반복 확인된 경험칙이다.
+- **드라이버를 바닥(픽업 스탠드)에서 집는 것부터 시작**: 원래(peg-in-hole의
+  peg와 같은 패턴) 드라이버는 그리퍼에 강체로 고정돼 있었는데, "집는 것부터
+  시작하자"는 요청으로 자유 바디(freejoint)로 바꿨다. 실제 손가락
+  접촉/마찰로 쥐는 물리는 다루지 않고(이 저장소 전체의 grasp 단순화
+  방향과 동일), 팔이 픽업 자세에 도달해 손가락을 닫는 순간 코드에서
+  weld equality를 켜서 "쥐었다"를 흉내낸다. weld의 relpose가 원래 고정
+  오프셋과 정확히 같은 값이라 스냅(튕김) 없이 잡힌다.
+- **wrist_rotate는 진짜 ±180˚로 막혀 있다**: 실제 VX300s 하드웨어를 그대로
+  가져온 값인지 의심이 들어서 mujoco_menagerie 원본(`assets/vx300s/vx300s.xml`,
+  이 저장소가 손댄 적 없는 파일)을 확인했는데 똑같이
+  `range="-3.14158 3.14158"`였다 — 우리가 임의로 좁힌 게 아니라 실제
+  하드웨어 스펙. 그래서 피치 2mm/rev로 34mm를 박으려면 17~20바퀴가
+  필요한데 한 번에 반 바퀴 이상 못 돈다는 실제 물리적 제약이 있다.
+
+## 다회전(turn/rewind) 시퀀스
+
+한 번에 못 돌리니 "한계까지 돌리기(engaged) → 손목만 되감기(disengaged,
+볼트는 그 자리에 고정) → 다시 물고 이어서 돌리기"를 반복한다. 초기 버전은
+"ctrl을 목표 극단값으로 한 번에 던지고 500스텝 정착"시키는 방식이었는데
+(wrist_rotate 액추에이터가 즉각적인 큰 램프를 못 따라간다는 걸 실측으로
+확인하고 고른 임시방편), 이후 매 컨트롤 틱마다 `NOMINAL_RATE*dt`만큼만
+전진시키는 진짜 속도 제어로 정리했다.
+
+## 드라이버가 볼트를 계속 따라가야 하는 이유 (z-추종)
+
+볼트가 조여지는 동안 34mm 내려가는데 팔이 안 움직이면 드라이버와 볼트 머리
+사이 간격이 계속 벌어진다. 매 스텝 Jacobian 기반으로 팔(waist~wrist_angle
+5개 관절)을 보정해서 드라이버가 볼트를 따라 내려가게 한다. 드라이버가
+gripper_link의 자식이 아니라 weld로 붙은 자유 바디가 된 뒤로 실측으로
+잡은 버그: `driver_tip_site` 자체로 Jacobian을 구하면 팔 관절 쪽이 전부
+0이 나온다(weld 같은 등호 제약은 mj_jacSite가 보는 강체 트리 구조에 안
+잡힌다) — gripper_link 위에 참조 사이트(`gripper_tip_ref`, 원래 자식이었을
+때의 오프셋과 동일)를 따로 두고 Jacobian은 거기서, 오차는 여전히 진짜
+tip/head 사이트로 계산해서 해결했다.
+
+## 컨트롤러: 속도 조절 admittance → 토크 리미터로 재설계
+
+처음엔 peg-in-hole처럼 "저항 토크가 크면 회전 속도를 늦추는" PD형
+admittance(`kp_torque`, `kd_torque`)를 만들었다. `optimize/screw_driving_cma_search.py`로
+실제 게인 탐색을 돌려보니 **CMA-ES가 두 게인을 전부 0으로 수렴시켰다** —
+실측 추적 결과, 이 모델의 저항 토크는 회전 *속도*가 아니라 *사이클(=삽입
+깊이)*에 달려 있어서 느리게 돈다고 그 순간의 저항이 줄지 않았다(오히려
+느리게 돌면 저항이 큰 뒷부분 사이클에 더 오래 머물러서 평균 저항이 살짝
+올라가기까지 했다).
+
+그래서 실제 전동 드라이버의 **토크 리미터(클러치)** 방식으로 다시 짰다:
+속도는 항상 일정하게 돌리고, 저항 토크가 `torque_limit`을 넘으면 그
+사이클의 돌리기를 즉시 멈추고 되감기로 넘어간다. 이번엔 실제로
+`max_torque`를 낮출 수 있었다(0.437/0.658/1.063/1.380 — limit
+0.3/0.6/1.0/무제한). 하지만 뚜렷한 **문턱값**도 함께 발견했다: 이 씬의
+자연 저항 최대치(~1.4, 마찰이 더 큰 씬에서는 ~1.5) *미만*으로 설정하면
+매 사이클이 항상 조기 종료돼서 **삽입이 영원히 멈춘다**(스텝 예산을
+15000→40000으로 늘려도 깊이가 그대로 — 느린 게 아니라 진짜 데드락, 실제
+클러치를 너무 낮게 설정했을 때와 같은 고장 모드). 문턱값 이상이면 리미터가
+사실상 안 걸려서 "무제한"과 완전히 동일하게 끝난다.
+
+완료 판정은 (peg-in-hole과 마찬가지로) 토크가 아니라 기하학(`bolt_slide`
+깊이)으로 한다 — 저항 토크가 목표 깊이의 1/3도 안 됐을 때부터 이미 크게
+뛰고 사이클마다 계속 커져서(seat에 눌리며 생기는 누적 효과로 보임), 고정
+임계값으로 "덜 조여짐"과 "다 조여짐"을 구분할 수 없었다.
+
+## CMA-ES 게인 탐색 (optimize/screw_driving_cma_search.py)
+
+`torque_limit` 하나를 탐색한다. 평가 시나리오 2개(기본 마찰, 5배 마찰)에
+대한 평균 리워드로 적합도를 매긴다. 이 과정에서 실제로 부딪힌 버그 두 개:
+
+1. **리워드가 실패를 보상하는 역설**: 처음엔 성공 여부와 무관하게 항상
+   `-3.0*max_torque`를 뺐는데, 그러면 데드락(실패) 구간에서 `torque_limit`을
+   낮출수록 `max_torque`도 같이 낮아지니 "무조건 낮게 설정하는 게
+   유리해 보이는" 가짜 경사가 생긴다 — 이게 실제 성공 신호(깊이, +50
+   보너스)보다 강해서 CMA-ES가 `torque_limit≈0.15`(데드락 영역)로
+   수렴해버렸다(reward −15.5, 무제한 베이스라인 +36.9보다 훨씬 나쁨).
+   **토크 페널티를 성공한 경우에만 적용**하도록 고쳐서 해결.
+2. **`cma` 패키지 자체 버그**: 1차원 파라미터 + `bounds` 옵션 조합으로
+   돌리면 몇 세대 뒤 `es.tell()` 내부에서 `"not yet initialized (dimension
+   needed)"` 오류로 죽는다(최소 재현 스크립트로 우리 코드/리워드와 무관함을
+   확인). `bounds`를 라이브러리에 안 맡기고 `evaluate_gains()`에서 직접
+   클리핑하는 방식으로 우회.
+3. 시작점(`x0`)을 문턱값보다 훨씬 낮게 잡았더니, 초기 세대 후보가 전부
+   "실패 평지" 안에 몰려서(리워드 분산이 거의 0) CMA-ES가 조기 수렴
+   조건(`tolfun`)에 걸려 일찍 멈추는 것도 확인했다 — `x0`을 문턱값 근처로,
+   `sigma0`을 넉넉히 잡아서 매 세대 성공/실패 후보가 섞이게 해서 해결.
+
+**최종 결과**: `torque_limit ≈ 1.79`, reward 36.80, `success=True`,
+`max_torque=1.380` — 무제한 베이스라인과 완전히 동일한 성능(성공 구간
+안에서는 리미터가 걸리지 않는 한 어떤 값이든 리워드가 같은 평지이고,
+CMA-ES는 그 평지 안의 한 지점에 안착했다). 실제 클러치 설정값으로는
+문턱값보다 안전 마진이 있는 합리적인 값이다.
+
+## 실행 방법
+
+```bash
+# 모델 검증(단독, 게인 하나 고정)
+python sim/screw_driving_sim.py
+
+# 게인 탐색
+python optimize/screw_driving_cma_search.py --max-generations 10 --popsize 6
+
+# 픽업 -> 운반 -> 토크 리미터 조이기 전체 시퀀스를 3개 카메라로 렌더링
+MUJOCO_GL=osmesa python render_screw_driving.py --out-dir .
+```
+
+## 한계 / 아직 안 된 것
+
+- **ARD-Gen 파이프라인(0→1→2-A→2-B→4→5단계)에 편입되지 않았음**:
+  peg-in-hole과 달리 모델+컨트롤러+게인 탐색까지만 있고, 씬 랜덤화
+  (`pipeline/scene_sampler.py` 대응)·diffusion 기반 게인 생성·에피소드
+  생성/필터링·언어 라벨링 단계는 아직 없다.
+- **`seat_friction_scale`은 효과가 없어서 뺐다**: block_wall_* 접촉의
+  마찰 계수를 0.02~100배로 흔들어도 저항 토크가 전혀 안 변하는 걸 실측으로
+  확인했다(sliding 성분만이든 [sliding,torsional,rolling] 세 성분을 다
+  스케일하든 동일) — 이 모델의 저항은 거의 전적으로 `bolt_hinge`의
+  frictionloss에서 나온다.
+  `hinge_friction_scale`은 실제로 유의미한 영향을 준다(scene_config에 남김).
+- **CMA-ES 탐색이 아직 소규모**: popsize 6, 세대 10, 시나리오 2개짜리
+  검증 수준이다. peg-in-hole의 `evaluate_generalization.py`처럼 무작위
+  시나리오 대량(N=200~300)에 대한 사후 검증은 아직 안 해봤다.
+- **토크 센서 기반 완료 판정은 포기했다**: 저항 토크가 사이클마다
+  누적돼서 커지는 패턴이라(원인 미확정 — seat friction은 아님을 확인,
+  bolt_hinge frictionloss가 유력 후보) 고정 임계값으로 "다 조여짐"을
+  판정할 수 없었다. 지금은 `bolt_slide` 깊이(기하학적 신호)로만 판정한다
+  — 실제 로봇이라면 이 센서가 없으니, 나중에 진짜 토크 센서만으로 완료를
+  판정해야 한다면 이 사이클별 누적 원인부터 규명해야 한다.
