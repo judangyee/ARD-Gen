@@ -154,7 +154,7 @@
     <geom name="ground" type="plane" pos="0 0 0" size="0.8 0.8 0.01" contype="0" conaffinity="0" rgba="0.5 0.5 0.52 1"/>
 
     <camera name="wide_cam" mode="targetbody" target="hole_socket" pos="-0.4 0.75 0.9"/>
-    <camera name="top_cam" mode="targetbody" target="hole_socket" pos="0.8 -0.3 1.1"/>
+    <camera name="top_cam" mode="targetbody" target="hole_socket" pos="0.0 0.0 1.5"/>
 
     <!-- Hole: 왼팔(Stabilizer)이 쥐는 자유 바디. 벽/바닥 치수는
          assets/peg_in_hole.xml과 동일(위 docstring 참고). -->
