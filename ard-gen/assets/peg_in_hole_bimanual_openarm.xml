@@ -154,7 +154,12 @@
     <geom name="ground" type="plane" pos="0 0 0" size="0.8 0.8 0.01" contype="0" conaffinity="0" rgba="0.5 0.5 0.52 1"/>
 
     <camera name="wide_cam" mode="targetbody" target="hole_socket" pos="-0.4 0.75 0.9"/>
-    <camera name="top_cam" mode="targetbody" target="hole_socket" pos="0.0 0.0 1.5"/>
+    <!-- 로봇 받침대(안 움직이는 고정 베이스) 정중앙 바로 위에서 수직으로
+         내려다보는 고정 카메라("로봇 머리에서 내려다보는" 뷰) --
+         mode="targetbody"처럼 하나 대상을 따라가며 각도를 트는 게 아니라
+         완전히 고정된 자세(quat 항등원 = 로컬 -z가 그대로 world -z,
+         즉 똑바로 아래). -->
+    <camera name="top_cam" pos="0.0 0.0 2.3" quat="1 0 0 0"/>
 
     <!-- Hole: 왼팔(Stabilizer)이 쥐는 자유 바디. 벽/바닥 치수는
          assets/peg_in_hole.xml과 동일(위 docstring 참고). -->
