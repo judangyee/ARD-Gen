@@ -1,0 +1,124 @@
+<mujoco model="ard_gen_bimanual_openarm">
+  <!--
+    ARD-Gen 양팔 기본 환경 -- assets/bimanual_vx300s.xml과 같은 역할(특정
+    태스크에 안 묶인 범용 베이스)이지만, 로봇을 VX300s에서 OpenArm으로
+    교체한 버전이다("로봇을 openarm으로 바꿔줘" 요청). VX300s 버전처럼
+    이 파일에도 컨트롤러/시뮬레이션 로직은 전혀 없다(sim/, optimize/,
+    render_*.py 없음) -- 순수 MJCF 환경만이다.
+
+    ## OpenArm이란
+
+    enactic/openarm(Apache-2.0) -- 완전 오픈소스 7자유도 양팔 로봇
+    (실제 액추에이터: DM8009/DM4340/DM4310 모터, 평행 2핑거 그리퍼).
+    이 프로젝트가 직접 만든 게 아니라 공식 MuJoCo 자산
+    (github.com/enactic/openarm_mujoco, v2, Apache-2.0)을 그대로 가져다
+    썼다 -- assets/openarm/ 아래에 필요한 만큼만(bimanual XML + pedestal
+    + arm/gripper/body 메시, task 전용 cell/valve 등은 제외) 복사해뒀고
+    라이선스 원문은 assets/openarm/LICENSE에 있다.
+
+    VX300s 버전과 달리 몸통 구조 자체가 다르다: VX300s는 두 팔의 베이스를
+    이 프로젝트가 직접 따로 배치했지만(base_link_l를 (0.10,0.187,0)에),
+    OpenArm은 공식 자산이 애초에 "받침대(pedestal) 하나 위에 양팔이 6.2cm
+    간격으로 나란히 붙어있는" 구조로 설계돼 있어서(휴머노이드 상체처럼)
+    그 구조를 그대로 썼다 -- assets/openarm/pedestal/openarm_pedestal.xml
+    이 받침대(z=0.698에 부착)와 양팔을 <attach>로 붙이고,
+    assets/openarm/pedestal/pedestal.xml이 그 위에 기본 "home" 키프레임
+    (양팔 각각 joint4=90도, 나머지 0 -- 팔이 앞으로 뻗어 아래를 향함)을
+    정의한다. 이 파일은 그 받침대를 <attach>로 가져오고, 바닥/조명/카메라/
+    워크피스만 추가한다.
+
+    ## 몸 왼팔/오른팔 구분
+
+    OpenArm 쪽 명명 규칙은 이미 official 파일이 openarm_left_*/
+    openarm_right_*로 정해놨다(이 프로젝트의 VX300s 파일들이 오른팔=기본
+    이름, 왼팔=_l 접미사를 쓰는 것과 반대 순서지만, ARD-VLA 역할 구분
+    자체는 동일하게 유지했다):
+      - openarm_right_*: Actuator(작업팔) -- 그리퍼에 아무 도구도 없음.
+      - openarm_left_*: Stabilizer(고정팔) -- 아래 workpiece를 weld로 쥐고
+        있다.
+    (VX300s 버전과 반대로 이번엔 오른쪽이 비어있고 왼쪽이 쥐는 것도
+    OpenArm 원본 키프레임을 그대로 썼기 때문 -- 두 팔이 대칭이라 어느
+    쪽을 Stabilizer로 써도 상관없고, 그냥 원본 구조를 안 건드리는 쪽을
+    택했다.)
+
+    OpenArm 액추에이터 게인은 원본 openarm_bimanual.xml 값(motor_DM8009/
+    DM4340/DM4310 class 그대로, kp 190~230)을 그대로 썼다 -- VX300s
+    버전에서 왼팔 게인을 ~10배 올렸던 이유(자유공간용 게인이 반작용력
+    아래서 밀림, 실측 확인함)가 여기서도 재현되는지는 아직 검증 안 했다
+    (컨트롤러/태스크가 없는 "환경만" 단계라 반작용력 자체가 생길 상황이
+    없음 -- 다음에 실제 태스크를 얹을 때 동일한 방식으로 확인해야 한다).
+
+    ## workpiece
+
+    VX300s 버전과 같은 패턴: 왼팔(Stabilizer)이 쥐는 자유 바디(박스),
+    weld의 relpose는 "왼팔이 home 키프레임에 있을 때 workpiece가 왼쪽
+    그리퍼 손가락 사이(핑거 조인트 원점에서 로컬 -z로 3.5cm 더 나간
+    지점, 즉 핑거 패드 근처 -- ee_base_link 기준 로컬 (-0.00143,0,-0.103))
+    에 오도록" 실측 FK로 계산했다(그 로컬 오프셋의 월드 좌표
+    (0.319,0.1535,0.47657)를 목표 위치로, 목표 회전은 무회전으로 두고
+    relpose_pos = R_ee^T(target_pos-ee_pos), relpose_quat =
+    conj(ee_quat)*target_quat 공식 그대로 -- VX300s 버전과 동일한 계산
+    방식, mj_step으로 실제로 그 자리에 오는지 검증 완료). 핑거 조인트
+    원점(로컬 z=-0.068)에 두면 그리퍼 하우징 메시 안에 파묻혀서 렌더로
+    안 보였다 -- 패드 쪽으로 밀어낸 이유.
+
+    ## 아직 없는 것 (일부러 안 넣음, "환경만" 요청에 따라)
+
+    admittance controller, sim 모듈, 게인 재탐색, 렌더 스크립트, 어떤
+    태스크 로직도 없다. VX300s 버전과 마찬가지로 이 환경 위에 태스크를
+    짓는 건 다음 작업.
+  -->
+  <compiler angle="radian"/>
+  <option cone="elliptic" impratio="10"/>
+  <visual>
+    <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6" specular="0.1 0.1 0.1"/>
+  </visual>
+
+  <asset>
+    <model name="arm_pedestal" file="openarm/pedestal/openarm_pedestal.xml"/>
+  </asset>
+
+  <default>
+    <default class="workpiece_contact">
+      <geom contype="1" conaffinity="1" condim="4" friction="0.5 0.01 0.001" solref="0.002 1" solimp="0.9 0.95 0.001"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <light pos="0.4 0 1.5" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+    <light pos="0.7 -0.4 1.0" dir="-0.4 0.4 -0.7" diffuse="0.4 0.4 0.4"/>
+
+    <geom name="ground" type="plane" pos="0 0 0" size="0.8 0.8 0.01" contype="0" conaffinity="0" rgba="0.5 0.5 0.52 1"/>
+
+    <camera name="wide_cam" mode="targetbody" target="workpiece" pos="-0.43 1.07 0.89"/>
+    <camera name="top_cam" mode="targetbody" target="workpiece" pos="0.18 0.02 1.6"/>
+
+    <!-- 범용 워크피스: 왼팔(Stabilizer)이 쥐고 있는 자유 바디. relpose
+         계산 근거는 위 docstring 참고. -->
+    <body name="workpiece" pos="0.319 0.1535 0.4765699" gravcomp="1">
+      <freejoint name="workpiece_free"/>
+      <geom class="workpiece_contact" name="workpiece_box" type="box" size="0.02 0.02 0.02" rgba="0.55 0.55 0.6 1"/>
+      <site name="workpiece_center_site" pos="0 0 0" size="0.002" rgba="1 0 0 0.5"/>
+    </body>
+
+    <!-- OpenArm 양팔 + 받침대 (공식 자산, assets/openarm/ 참고) -->
+    <attach model="arm_pedestal" prefix=""/>
+  </worldbody>
+
+  <equality>
+    <weld name="workpiece_grasp" body1="openarm_left_ee_base_link" body2="workpiece"
+          relpose="-0.00143 0 -0.103 0.7071069 0 0.70710667 0"
+          solref="0.002 1" solimp="0.95 0.99 0.0001 0.5 2"
+          active="true"/>
+  </equality>
+
+  <keyframe>
+    <!-- workpiece(자유조인트 7: pos 3 + quat 4) + 양팔(18, openarm/pedestal/pedestal.xml의
+         home 키프레임과 동일한 값) -- 순서는 worldbody 선언 순서(workpiece가 attach보다
+         먼저 나옴)를 그대로 반영했고, 실제 컴파일된 모델에서 mj_name2id로 재검증함. -->
+    <key name="home"
+      qpos="0.319 0.1535 0.4765699 1 0 0 0
+            0.0 0.0 0.0 1.570796 0.0 0.0 0.0 0.0 0.0
+            0.0 0.0 0.0 1.570796 0.0 0.0 0.0 0.0 0.0" />
+  </keyframe>
+</mujoco>
