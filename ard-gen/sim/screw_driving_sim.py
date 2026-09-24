@@ -91,8 +91,23 @@ _HOME_QPOS = {
 _ARM_JOINTS_HOME = list(_HOME_QPOS.keys())
 
 
+# block_wall_*(seat) 접촉의 friction 계수를 스케일하는 "seat_friction_scale"도
+# scene_config 후보로 시도했었다 -- 실측해보니 sliding(index 0)만 스케일하든
+# [sliding, torsional, rolling] 세 성분을 다 같이 스케일하든, 0.02배~100배까지
+# 흔들어도 max_torque/step_count가 완전히 그대로였다(byte-identical). bolt_hinge
+# frictionloss는(아래) 20배 스케일에서 실제로 차이가 났던 것과 대조적이다. 즉 이
+# 모델에서는 저항 토크가 seat 접촉의 마찰 계수가 아니라 거의 전적으로
+# bolt_hinge의 frictionloss(+ 사이클이 누적될수록 커지는 다른 요인, 아직 정확한
+# 원인 불명)에서 나온다는 뜻이라 -- 효과가 없는 손잡이를 scene_config에 넣어두는
+# 건 오해만 부르므로 뺐다.
+_NOMINAL_HINGE_FRICTIONLOSS = 0.015  # bolt_hinge 기본값
+
+
 def _default_scene_config() -> dict[str, Any]:
-    return {"target_depth": TARGET_DEPTH}
+    return {
+        "target_depth": TARGET_DEPTH,
+        "hinge_friction_scale": 1.0,  # bolt_hinge frictionloss 스케일 (실측상 유의미하게 저항에 영향을 줌)
+    }
 
 
 class ScrewDrivingSim:
@@ -119,6 +134,10 @@ class ScrewDrivingSim:
         self._head_site_id = self.model.site("bolt_head_site").id
         self._jac_ref_site_id = self.model.site("gripper_tip_ref").id
         self._torque_adr = self.model.sensor("bolt_drive_torque").adr[0]
+
+        self._bolt_hinge_dofadr = self.model.joint("bolt_hinge").dofadr[0]
+
+        self._prev_torque = 0.0
 
         self._jacp = np.zeros((3, self.model.nv))
         self._jacr = np.zeros((3, self.model.nv))
@@ -150,6 +169,13 @@ class ScrewDrivingSim:
         (0.13,0,0, 무회전)"에 맞게 직접 계산해서 대입한다 -- weld의
         relpose와 정확히 같은 값이라 물리를 한 스텝도 안 돌려도 이미
         제약이 만족된 상태로 시작한다."""
+        cfg = _default_scene_config()
+        if scene_config:
+            cfg.update(scene_config)
+        self.model.dof_frictionloss[self._bolt_hinge_dofadr] = (
+            _NOMINAL_HINGE_FRICTIONLOSS * cfg["hinge_friction_scale"]
+        )
+
         mujoco.mj_resetData(self.model, self.data)
         for name, val in _HOME_QPOS.items():
             self.data.qpos[self._arm_qposadr[name]] = val
@@ -176,6 +202,7 @@ class ScrewDrivingSim:
         self._phase = "turn"
         self._engage_wrist_ref = self.data.qpos[self._wrist_qposadr]
         self._engage_hinge_ref = self.data.qpos[self._bolt_hinge_qposadr]
+        self._prev_torque = self.get_torque()
         self.data.ctrl[self._arm_actuator_ids["wrist_rotate"]] = TURN_LOW
 
     def get_torque(self) -> float:
@@ -205,22 +232,32 @@ class ScrewDrivingSim:
             self.data.ctrl[self._arm_actuator_ids[name]] = self.data.qpos[qadr] + dq[i]
 
     def step(self, gains: dict[str, float]) -> dict[str, float]:
-        """admittance 제어 틱 하나를 진행한다.
+        """admittance 제어 틱 하나를 진행한다. peg_in_hole의 Kp_xy/Kd_xy와
+        같은 PD 구조: 저항 토크 자체(Kp)뿐 아니라 저항이 얼마나 빠르게
+        커지고 있는지(Kd, d(torque)/dt)까지 봐서 속도를 줄인다 -- 저항이
+        갑자기 급증하는 상황(예: seat에 막 닿는 순간)에 Kp만으로는 한 틱
+        늦게 반응하는데, Kd가 있으면 그 변화율에 먼저 반응해서 더 빨리
+        늦출 수 있다.
 
-        gains: {"kp_torque": 저항 토크 1단위당 회전 속도를 얼마나
-                줄일지(rad/s per N*m)}. rate = NOMINAL_RATE -
-                kp_torque*max(0,torque), RATE_MIN 이하로는 안 내려간다.
+        gains: {"kp_torque": 저항 토크 1단위당 속도 감소량(rad/s per N*m),
+                "kd_torque": 저항 변화율 1단위당 속도 감소량(rad/s per
+                N*m/s)}. rate = NOMINAL_RATE - kp_torque*max(0,torque) -
+                kd_torque*max(0,d_torque), RATE_MIN 이하로는 안 내려간다.
 
         반환: {"torque": float, "rate": float, "wrist_ctrl": float,
                "phase": "turn"|"rewind"} -- 이번 틱에서 실제로 쓰인 값들
                (에피소드 로깅용)."""
         kp_torque = float(gains.get("kp_torque", 0.0))
+        kd_torque = float(gains.get("kd_torque", 0.0))
         wrist_act = self._arm_actuator_ids["wrist_rotate"]
         current_wrist_ctrl = float(self.data.ctrl[wrist_act])
         torque = self.get_torque()
+        d_torque = (torque - self._prev_torque) / DT
+        self._prev_torque = torque
 
         if self._phase == "turn":
-            rate = max(RATE_MIN, NOMINAL_RATE - kp_torque * max(0.0, abs(torque)))
+            resistance = kp_torque * max(0.0, abs(torque)) + kd_torque * max(0.0, d_torque)
+            rate = max(RATE_MIN, NOMINAL_RATE - resistance)
             new_ctrl = min(current_wrist_ctrl + rate * DT, TURN_HIGH)
             self.data.ctrl[wrist_act] = new_ctrl
             self.data.ctrl[self._bolt_hinge_drive_id] = (
@@ -250,8 +287,9 @@ def run_episode(gains: dict[str, float], scene_config: dict[str, Any] | None = N
     MAX_CONTROL_STEPS 도달)를 실행한다.
 
     Args:
-        gains: {"kp_torque": float}
-        scene_config: {"target_depth": float} (없으면 기본 0.034m)
+        gains: {"kp_torque": float, "kd_torque": float}
+        scene_config: {"target_depth": float, "hinge_friction_scale": float}
+            (없는 키는 _default_scene_config() 기본값)
 
     Returns:
         dict with: depth_profile, torque_profile, rate_profile, phase_profile,
@@ -293,7 +331,19 @@ def _run_episode_with_sim(
             break
 
     final_depth = depth_profile[-1] if depth_profile else 0.0
-    reward = 20.0 * final_depth - 0.02 * max(0.0, max_torque - 1.0) - 0.001 * step_count
+    mean_abs_torque = float(np.mean(np.abs(torque_profile))) if torque_profile else 0.0
+    # max_torque가 아니라 mean_abs_torque로 페널티를 준다 -- 실측해보니
+    # kp_torque를 0->2.0까지 올려도 max_torque는 거의 그대로였다(1.38->1.37,
+    # 오차 수준). 이 모델의 저항은 회전 "속도"가 아니라 사이클(=깊이)에 달려
+    # 있어서(뒤 사이클일수록 저항이 누적돼서 커짐, assets/screw_driving.xml
+    # 참고), 느리게 돈다고 그 순간의 저항 자체가 줄지는 않는다 -- 다만
+    # kp_torque를 올리면 스텝 수가 늘어나서(더 오래 걸려서) 오히려
+    # mean_abs_torque가 살짝 올라간다(더 오래 저항 구간에 머무르므로). 즉
+    # 이 컨트롤 법칙은 (이 모델 한정) "저항을 줄여주는" 효과가 없고, 순전히
+    # "느려지는 비용"만 있다는 게 실측으로 드러난 결론이다 -- 정직하게
+    # mean_abs_torque를 그대로 페널티에 반영해서 CMA-ES가 이 트레이드오프를
+    # 있는 그대로 보고 선택하게 한다.
+    reward = 20.0 * final_depth - 2.0 * mean_abs_torque - 0.001 * step_count
     if success:
         reward += 50.0
 
@@ -304,6 +354,7 @@ def _run_episode_with_sim(
         "phase_profile": phase_profile,
         "insertion_depth": float(final_depth),
         "max_torque": float(max_torque),
+        "mean_abs_torque": mean_abs_torque,
         "step_count": step_count,
         "success": success,
         "reward": float(reward),
@@ -313,7 +364,7 @@ def _run_episode_with_sim(
 
 
 if __name__ == "__main__":
-    result = run_episode({"kp_torque": 1.2})
+    result = run_episode({"kp_torque": 1.2, "kd_torque": 0.0})
     print(
         f"[screw_driving_sim] success={result['success']} "
         f"depth={result['insertion_depth'] * 1000:.2f}mm "
