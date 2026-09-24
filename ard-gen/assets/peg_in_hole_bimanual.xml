@@ -1,0 +1,320 @@
+<mujoco model="ard_gen_peg_in_hole_bimanual_vx300s">
+  <!--
+    ARD-Gen 3단계(Stabilizer) 검증용 양팔 모델. assets/peg_in_hole.xml의
+    단일 팔(Actuator, 오른팔) 버전을 그대로 두고, 왼팔(Stabilizer)을
+    추가했다 -- 오른팔의 이름/관절/홈 자세/게인은 전혀 안 건드렸으므로
+    sim/peg_in_hole_sim.py의 오른팔 제어 코드는 이 파일에서도 수정 없이
+    그대로 쓸 수 있다(단, hole_socket이 이제 자유 바디라는 점은 시뮬레이션
+    쪽에서 인지해야 한다 -- 아래 참고).
+
+    ## hole_socket을 자유 바디로 바꾼 이유와 왼팔이 쥐는 방식
+
+    PIPELINE.md 3단계 설계 메모에서 미리 경고했던 대로, Stabilizer가
+    "물체를 고정하는 역할"을 하려면 hole 워크피스가 world에 박혀있는 게
+    아니라 왼팔이 쥐는 자유물체여야 한다. 실제 손가락 접촉/마찰로 쥐는
+    물리는 다루지 않고(이 저장소 전체의 grasp 단순화 방향과 동일,
+    screw_driving.xml의 driver pickup과 같은 패턴), 대신 weld equality로
+    "쥐었다"를 흉내낸다 -- 다만 여기서는 픽업 애니메이션 자체를 만들지
+    않고 처음부터 weld를 active="true"로 켜놓는다(peg_in_hole_sim.py가
+    peg를 애초에 애니메이션 없이 강체로 취급하는 것과 같은 이유:
+    "쥐는 과정"은 검증 대상이 아니라 "쥐고 있는 상태에서 오른팔이 여전히
+    일하는가"가 검증 대상이라서).
+
+    relpose는 "왼팔 그리퍼가 지금 이 홈 자세에 있을 때, hole_socket이
+    원래(단일 팔 버전과 똑같은) 위치/자세 (0.10, 0, 0.0438), 무회전에
+    정확히 오도록" 미리 계산해서 박아넣은 값이다(계산 스크립트: FK로
+    gripper_link_l의 pose를 구한 뒤 relpose_pos = R^T(hole_pos-grip_pos),
+    relpose_quat = conj(grip_quat)*hole_quat). 그래서 왼팔이 어떤 각도로
+    접근하든 hole 자체의 실제 위치/자세는 오른팔이 기대하는 값과 정확히
+    같다 -- 오른팔의 holeopening 높이/좌표 가정(README, peg_in_hole.xml
+    상단 주석)이 전혀 안 깨진다는 뜻이다.
+
+    ## 왼팔 배치
+
+    base_l = (0.10, 0.187, 0)에 무회전으로 놓고, 홈 자세를
+    waist_l=-pi/2, shoulder_l=0.700, elbow_l=0.912, wrist_angle_l=1.533
+    (forearm_roll_l/wrist_rotate_l=0)로 잡았다 -- 오른팔이 위에서
+    수직으로 peg를 삽입하는 동안, 왼팔은 hole 블록을 +y쪽 옆면에서
+    수평으로 붙잡아서 두 팔의 작업 공간이 겹치지 않게 했다(오른팔
+    삽입축은 -z 수직 방향, 왼팔 접근은 -y 수평 방향).
+
+    ## 아직 검증 안 된 것
+
+    이 파일은 모델(기구학+grasp)까지만이다. 오른팔의 기존 admittance
+    게인(Kp_xy, Kd_xy, sim/peg_in_hole_sim.py 기본값)이 hole이 이제
+    완전히 고정이 아니라 weld의 잔류 컴플라이언스를 가진 상태에서도
+    여전히 통하는지는 별도로 실측 검증이 필요하다(PIPELINE.md 3단계
+    메모가 미리 경고한 부분) -- 왼팔 관절 게인이 hole을 얼마나 "단단하게"
+    붙잡고 있는지에 따라 오른팔의 반작용력이 hole에 그대로 전달돼서
+    물리가 달라질 수 있다.
+  -->
+  <compiler angle="radian" meshdir="vx300s/assets" texturedir="vx300s/assets" autolimits="true"/>
+  <option cone="elliptic" impratio="10"/>
+  <visual>
+    <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6" specular="0.1 0.1 0.1"/>
+  </visual>
+
+  <asset>
+    <texture type="2d" file="interbotix_black.png"/>
+    <material name="black" texture="interbotix_black"/>
+
+    <mesh file="vx300s_1_base.stl" scale="0.001 0.001 0.001"/>
+    <mesh file="vx300s_2_shoulder.stl" scale="0.001 0.001 0.001"/>
+    <mesh file="vx300s_3_upper_arm.stl" scale="0.001 0.001 0.001"/>
+    <mesh file="vx300s_4_upper_forearm.stl" scale="0.001 0.001 0.001"/>
+    <mesh file="vx300s_5_lower_forearm.stl" scale="0.001 0.001 0.001"/>
+    <mesh file="vx300s_6_wrist.stl" scale="0.001 0.001 0.001"/>
+    <mesh file="vx300s_7_gripper.stl" scale="0.001 0.001 0.001"/>
+    <mesh file="vx300s_8_gripper_prop.stl" scale="0.001 0.001 0.001"/>
+    <mesh file="vx300s_9_gripper_bar.stl" scale="0.001 0.001 0.001"/>
+    <mesh file="vx300s_10_gripper_finger.stl" scale="0.001 0.001 0.001"/>
+  </asset>
+
+  <default>
+    <default class="vx300s">
+      <joint axis="0 1 0"/>
+      <position forcerange="-35 35"/>
+      <default class="waist">
+        <joint axis="0 0 1" range="-3.14158 3.14158" damping="2.86"/>
+        <position ctrlrange="-3.14158 3.14158" kp="25"/>
+      </default>
+      <default class="shoulder">
+        <joint range="-1.85005 1.25664" armature="0.004" damping="6.25"/>
+        <position ctrlrange="-1.85005 1.25664" kp="76" forcerange="-57 57"/>
+      </default>
+      <default class="elbow">
+        <joint range="-1.76278 1.6057" armature="0.072" damping="8.15"/>
+        <position ctrlrange="-1.76278 1.6057" kp="106" forcerange="-25 25"/>
+      </default>
+      <default class="forearm_roll">
+        <joint axis="1 0 0" range="-3.14158 3.14158" armature="0.060" damping="3.07"/>
+        <position ctrlrange="-3.14158 3.14158" kp="35" forcerange="-10 10"/>
+      </default>
+      <default class="wrist_angle">
+        <joint range="-1.8675 2.23402" damping="1.18"/>
+        <position ctrlrange="-1.8675 2.23402" kp="8"/>
+      </default>
+      <default class="wrist_rotate">
+        <joint axis="1 0 0" range="-3.14158 3.14158" damping="0.78"/>
+        <position ctrlrange="-3.14158 3.14158" kp="7"/>
+      </default>
+      <default class="finger">
+        <joint type="slide" armature="0.251" damping="10"/>
+        <position ctrlrange="0.021 0.057" kp="300"/>
+        <default class="left_finger">
+          <joint range="0.021 0.057"/>
+        </default>
+        <default class="right_finger">
+          <joint range="-0.057 -0.021"/>
+        </default>
+      </default>
+      <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0" density="0" group="2" material="black"/>
+      </default>
+      <default class="collision">
+        <geom group="3" type="mesh" contype="0" conaffinity="0"/>
+      </default>
+    </default>
+    <default class="peg_contact">
+      <geom contype="1" conaffinity="1" condim="4" friction="0.5 0.01 0.001" solref="0.002 1" solimp="0.9 0.95 0.001"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <light pos="0.4 0 1" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+    <light pos="0.7 -0.4 0.5" dir="-0.4 0.4 -0.7" diffuse="0.4 0.4 0.4"/>
+
+    <geom name="ground" type="plane" pos="0 0 -0.05" size="0.8 0.8 0.01" contype="0" conaffinity="0" rgba="0.5 0.5 0.52 1"/>
+
+    <camera name="top_cam" mode="targetbody" target="hole_socket" pos="0.28 0 0.32"/>
+    <!-- 양팔이 다 보이는 넓은 뷰. hole을 타겟팅하되 훨씬 멀리서 본다. -->
+    <camera name="wide_cam" mode="targetbody" target="hole_socket" pos="0.10 0.55 0.45"/>
+
+    <!-- Hole: 이제 왼팔이 쥐는 자유 바디. gravcomp="1"로 중력 없이 제자리에
+         뜬 채로 시작한다(weld가 항상 켜져 있어서 실제로는 문제되지
+         않지만, screw_driving.xml의 driver와 같은 이유로 일관되게 둔다). -->
+    <body name="hole_socket" pos="0.10 0 0.0438" gravcomp="1">
+      <freejoint name="hole_free"/>
+      <geom class="peg_contact" name="hole_wall_px" type="box" pos="0.0155 0 -0.0275" size="0.004 0.0195 0.0275" rgba="0.55 0.55 0.6 1"/>
+      <geom class="peg_contact" name="hole_wall_nx" type="box" pos="-0.0155 0 -0.0275" size="0.004 0.0195 0.0275" rgba="0.55 0.55 0.6 1"/>
+      <geom class="peg_contact" name="hole_wall_py" type="box" pos="0 0.0155 -0.0275" size="0.0195 0.004 0.0275" rgba="0.55 0.55 0.6 1"/>
+      <geom class="peg_contact" name="hole_wall_ny" type="box" pos="0 -0.0155 -0.0275" size="0.0195 0.004 0.0275" rgba="0.55 0.55 0.6 1"/>
+      <geom class="peg_contact" name="hole_floor" type="box" pos="0 0 -0.057" size="0.0115 0.0115 0.002" rgba="0.55 0.55 0.6 1"/>
+      <site name="hole_center_site" pos="0 0 0" size="0.002" rgba="1 0 0 0.5"/>
+    </body>
+
+    <!-- 오른팔 (Actuator) -- assets/peg_in_hole.xml과 완전히 동일, 이름도 그대로. -->
+    <body name="base_link" childclass="vx300s">
+      <inertial pos="-0.0534774 -0.000562575 0.0205961" quat="-0.00292324 0.712517 0.00480387 0.701633" mass="0.969034"
+        diaginertia="0.0071633 0.00602451 0.00169819"/>
+      <geom quat="1 0 0 1" class="visual" mesh="vx300s_1_base"/>
+      <body name="shoulder_link" pos="0 0 0.079" gravcomp="1">
+        <inertial pos="0.000259233 -3.3552e-06 0.0116129" quat="-0.476119 0.476083 0.52279 0.522826" mass="0.798614"
+          diaginertia="0.00120156 0.00113744 0.0009388"/>
+        <joint name="waist" class="waist"/>
+        <geom pos="0 0 -0.003" quat="1 0 0 1" class="visual" mesh="vx300s_2_shoulder"/>
+        <body name="upper_arm_link" pos="0 0 0.04805" gravcomp="1">
+          <inertial pos="0.0206949 4e-10 0.226459" quat="0 0.0728458 0 0.997343" mass="0.792592"
+            diaginertia="0.00911338 0.008925 0.000759317"/>
+          <joint name="shoulder" class="shoulder"/>
+          <geom quat="1 0 0 1" class="visual" mesh="vx300s_3_upper_arm"/>
+          <body name="upper_forearm_link" pos="0.05955 0 0.3" gravcomp="1">
+            <inertial pos="0.105723 0 0" quat="-0.000621631 0.704724 0.0105292 0.709403" mass="0.322228"
+              diaginertia="0.00144107 0.00134228 0.000152047"/>
+            <joint name="elbow" class="elbow"/>
+            <geom class="visual" mesh="vx300s_4_upper_forearm"/>
+            <body name="lower_forearm_link" pos="0.2 0 0" gravcomp="1">
+              <inertial pos="0.0513477 0.00680462 0" quat="-0.702604 -0.0796724 -0.702604 0.0796724" mass="0.414823"
+                diaginertia="0.0005911 0.000546493 0.000155707"/>
+              <joint name="forearm_roll" class="forearm_roll"/>
+              <geom quat="0 1 0 0" class="visual" mesh="vx300s_5_lower_forearm"/>
+              <body name="wrist_link" pos="0.1 0 0" gravcomp="1">
+                <inertial pos="0.046743 -7.6652e-06 0.010565" quat="-0.00100191 0.544586 0.0026583 0.8387"
+                  mass="0.115395" diaginertia="5.45707e-05 4.63101e-05 4.32692e-05"/>
+                <joint name="wrist_angle" class="wrist_angle"/>
+                <geom quat="1 0 0 1" class="visual" mesh="vx300s_6_wrist"/>
+                <body name="gripper_link" pos="0.069744 0 0" gravcomp="1">
+                  <inertial pos="0.0395662 -2.56311e-07 0.00400649" quat="0.62033 0.619916 -0.339682 0.339869"
+                    mass="0.251652" diaginertia="0.000689546 0.000650316 0.000468142"/>
+                  <joint name="wrist_rotate" class="wrist_rotate"/>
+                  <geom pos="-0.02 0 0" quat="1 0 0 1" class="visual" mesh="vx300s_7_gripper"/>
+                  <geom pos="-0.020175 0 0" quat="1 0 0 1" class="visual" mesh="vx300s_9_gripper_bar"/>
+                  <site name="pinch" pos="0.1 0 0" size="0.005" rgba="0.6 0.3 0.3 1" group="5"/>
+                  <camera name="wrist_cam" mode="fixed" pos="0.13 0.15 0" xyaxes="-1 0 0 0 0 1"/>
+                  <body name="left_finger_link" pos="0.0687 0 0" gravcomp="1">
+                    <inertial pos="0.017344 -0.0060692 0" quat="0.449364 0.449364 -0.54596 -0.54596" mass="0.034796"
+                      diaginertia="2.48003e-05 1.417e-05 1.20797e-05"/>
+                    <joint name="left_finger" class="left_finger"/>
+                    <geom pos="-0.0404 -0.0575 0" quat="-1 1 -1 1" class="visual" mesh="vx300s_10_gripper_finger"/>
+                  </body>
+                  <body name="right_finger_link" pos="0.0687 0 0" gravcomp="1">
+                    <inertial pos="0.017344 0.0060692 0" quat="0.44937 -0.44937 0.545955 -0.545955" mass="0.034796"
+                      diaginertia="2.48002e-05 1.417e-05 1.20798e-05"/>
+                    <joint name="right_finger" class="right_finger"/>
+                    <geom pos="-0.0404 0.0575 0" quat="1 1 1 1" class="visual" mesh="vx300s_10_gripper_finger"/>
+                  </body>
+                  <body name="peg" pos="0.13 0 0" gravcomp="1">
+                    <geom class="peg_contact" name="peg_shaft" type="box" size="0.03 0.01 0.01" mass="0.04" rgba="0.95 0.35 0.05 1"/>
+                    <geom class="peg_contact" name="peg_tip_ball" type="sphere" pos="0.03 0 0" size="0.01" mass="0.01" rgba="0.95 0.35 0.05 1"/>
+                    <site name="peg_tip_site" pos="0.04 0 0" size="0.003" rgba="0 1 0 1"/>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+
+    <!-- 왼팔 (Stabilizer) -- 오른팔과 같은 VX300s, 모든 이름에 _l 접미사.
+         base_l 위치/홈 자세 계산 근거는 파일 상단 docstring 참고. -->
+    <body name="base_link_l" pos="0.10 0.187 0" childclass="vx300s">
+      <inertial pos="-0.0534774 -0.000562575 0.0205961" quat="-0.00292324 0.712517 0.00480387 0.701633" mass="0.969034"
+        diaginertia="0.0071633 0.00602451 0.00169819"/>
+      <geom quat="1 0 0 1" class="visual" mesh="vx300s_1_base"/>
+      <body name="shoulder_link_l" pos="0 0 0.079" gravcomp="1">
+        <inertial pos="0.000259233 -3.3552e-06 0.0116129" quat="-0.476119 0.476083 0.52279 0.522826" mass="0.798614"
+          diaginertia="0.00120156 0.00113744 0.0009388"/>
+        <joint name="waist_l" class="waist"/>
+        <geom pos="0 0 -0.003" quat="1 0 0 1" class="visual" mesh="vx300s_2_shoulder"/>
+        <body name="upper_arm_link_l" pos="0 0 0.04805" gravcomp="1">
+          <inertial pos="0.0206949 4e-10 0.226459" quat="0 0.0728458 0 0.997343" mass="0.792592"
+            diaginertia="0.00911338 0.008925 0.000759317"/>
+          <joint name="shoulder_l" class="shoulder"/>
+          <geom quat="1 0 0 1" class="visual" mesh="vx300s_3_upper_arm"/>
+          <body name="upper_forearm_link_l" pos="0.05955 0 0.3" gravcomp="1">
+            <inertial pos="0.105723 0 0" quat="-0.000621631 0.704724 0.0105292 0.709403" mass="0.322228"
+              diaginertia="0.00144107 0.00134228 0.000152047"/>
+            <joint name="elbow_l" class="elbow"/>
+            <geom class="visual" mesh="vx300s_4_upper_forearm"/>
+            <body name="lower_forearm_link_l" pos="0.2 0 0" gravcomp="1">
+              <inertial pos="0.0513477 0.00680462 0" quat="-0.702604 -0.0796724 -0.702604 0.0796724" mass="0.414823"
+                diaginertia="0.0005911 0.000546493 0.000155707"/>
+              <joint name="forearm_roll_l" class="forearm_roll"/>
+              <geom quat="0 1 0 0" class="visual" mesh="vx300s_5_lower_forearm"/>
+              <body name="wrist_link_l" pos="0.1 0 0" gravcomp="1">
+                <inertial pos="0.046743 -7.6652e-06 0.010565" quat="-0.00100191 0.544586 0.0026583 0.8387"
+                  mass="0.115395" diaginertia="5.45707e-05 4.63101e-05 4.32692e-05"/>
+                <joint name="wrist_angle_l" class="wrist_angle"/>
+                <geom quat="1 0 0 1" class="visual" mesh="vx300s_6_wrist"/>
+                <body name="gripper_link_l" pos="0.069744 0 0" gravcomp="1">
+                  <inertial pos="0.0395662 -2.56311e-07 0.00400649" quat="0.62033 0.619916 -0.339682 0.339869"
+                    mass="0.251652" diaginertia="0.000689546 0.000650316 0.000468142"/>
+                  <joint name="wrist_rotate_l" class="wrist_rotate"/>
+                  <geom pos="-0.02 0 0" quat="1 0 0 1" class="visual" mesh="vx300s_7_gripper"/>
+                  <geom pos="-0.020175 0 0" quat="1 0 0 1" class="visual" mesh="vx300s_9_gripper_bar"/>
+                  <site name="pinch_l" pos="0.1 0 0" size="0.005" rgba="0.3 0.4 0.7 1" group="5"/>
+                  <body name="left_finger_link_l" pos="0.0687 0 0" gravcomp="1">
+                    <inertial pos="0.017344 -0.0060692 0" quat="0.449364 0.449364 -0.54596 -0.54596" mass="0.034796"
+                      diaginertia="2.48003e-05 1.417e-05 1.20797e-05"/>
+                    <joint name="left_finger_l" class="left_finger"/>
+                    <geom pos="-0.0404 -0.0575 0" quat="-1 1 -1 1" class="visual" mesh="vx300s_10_gripper_finger"/>
+                  </body>
+                  <body name="right_finger_link_l" pos="0.0687 0 0" gravcomp="1">
+                    <inertial pos="0.017344 0.0060692 0" quat="0.44937 -0.44937 0.545955 -0.545955" mass="0.034796"
+                      diaginertia="2.48002e-05 1.417e-05 1.20798e-05"/>
+                    <joint name="right_finger_l" class="right_finger"/>
+                    <geom pos="-0.0404 0.0575 0" quat="1 1 1 1" class="visual" mesh="vx300s_10_gripper_finger"/>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <equality>
+    <joint joint1="left_finger" joint2="right_finger" polycoef="0 -1 0 0 0"/>
+    <joint joint1="left_finger_l" joint2="right_finger_l" polycoef="0 -1 0 0 0"/>
+    <!-- 왼팔이 hole_socket을 쥔다. relpose는 "왼팔이 아래 홈 자세에 있을 때
+         hole_socket이 (0.10,0,0.0438), 무회전에 오도록" 미리 계산한 값
+         (파일 상단 docstring 참고) -- 픽업 애니메이션 없이 처음부터
+         active="true"로 켜둔다.
+
+         solref/solimp를 기본값보다 훨씬 강하게 줬다: 기본값으로 처음
+         돌려보니(양팔 admittance 실측 검증) 오른팔이 peg를 삽입하는
+         반작용력에 hole이 밀리고 돌아가서(대각선 오프셋 시나리오에서
+         350스텝 만에 z로 8cm 밀리고 자세가 크게 틀어짐) 3개 대표
+         시나리오 중 2개가 실패했다. solref="0.002 1"/solimp="0.95 0.99
+         0.0001 0.5 2"로 강화하고 같은 크기의 합성 힘(2,2,-5N)을 걸어
+         비교해보니 300스텝 방치 변위가 80mm대에서 3~4mm대로 줄었다
+         (실측 확인) -- screw_driving.xml에서 겪은 "이 프로젝트 규모에서
+         solref/solimp를 강하게 줘도 equality가 힘에 안 버틴다"는
+         경험칙과 달리, 여기서는(weld, 6-DOF 전체 구속이라 여러 자유도가
+         동시에 저항해서인지) 실제로 효과가 있었다. -->
+    <weld name="hole_grasp" body1="gripper_link_l" body2="hole_socket"
+          relpose="-0.0302036 0.0000007 -0.0252713 -0.00120468 -0.70710705 -0.70710446 -0.00120468"
+          solref="0.002 1" solimp="0.95 0.99 0.0001 0.5 2"
+          active="true"/>
+  </equality>
+
+  <actuator>
+    <position class="waist" name="waist" joint="waist"/>
+    <position class="shoulder" name="shoulder" joint="shoulder"/>
+    <position class="elbow" name="elbow" joint="elbow"/>
+    <position class="forearm_roll" name="forearm_roll" joint="forearm_roll"/>
+    <position class="wrist_angle" name="wrist_angle" joint="wrist_angle"/>
+    <position class="wrist_rotate" name="wrist_rotate" joint="wrist_rotate"/>
+    <position class="finger" name="gripper" joint="left_finger"/>
+
+    <position class="waist" name="waist_l" joint="waist_l"/>
+    <position class="shoulder" name="shoulder_l" joint="shoulder_l"/>
+    <position class="elbow" name="elbow_l" joint="elbow_l"/>
+    <position class="forearm_roll" name="forearm_roll_l" joint="forearm_roll_l"/>
+    <position class="wrist_angle" name="wrist_angle_l" joint="wrist_angle_l"/>
+    <position class="wrist_rotate" name="wrist_rotate_l" joint="wrist_rotate_l"/>
+    <position class="finger" name="gripper_l" joint="left_finger_l"/>
+  </actuator>
+
+  <contact>
+    <exclude body1="base_link" body2="shoulder_link"/>
+    <exclude body1="base_link_l" body2="shoulder_link_l"/>
+  </contact>
+
+  <sensor>
+    <force name="peg_force" site="peg_tip_site"/>
+    <torque name="peg_torque" site="peg_tip_site"/>
+  </sensor>
+</mujoco>
