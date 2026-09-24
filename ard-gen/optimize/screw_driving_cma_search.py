@@ -1,4 +1,4 @@
-"""screw driving admittance controller 게인(kp_torque, kd_torque)을 CMA-ES로 찾는다.
+"""screw driving 토크 리미터 게인(torque_limit)을 CMA-ES로 찾는다.
 
 optimize/cma_search.py(peg_in_hole)와 같은 구조: 몇 가지 대표 시나리오에
 대해 sim/screw_driving_sim.run_episode()를 돌려서 평균 리워드로 게인을
@@ -6,22 +6,29 @@ optimize/cma_search.py(peg_in_hole)와 같은 구조: 몇 가지 대표 시나�
 
 ## 이 탐색이 실제로 찾아낸 것 (미리 밝혀두는 정직한 결론)
 
-돌리기 전에 먼저 실측한 사실: kp_torque를 0 -> 2.0까지 올려도 max_torque는
-거의 안 변한다(1.38 -> 1.37, 오차 수준). 이 모델의 저항 토크는 회전
-"속도"가 아니라 사이클(=삽입 깊이)에 달려 있어서(뒤 사이클일수록 저항이
-누적돼서 커짐 -- sim/screw_driving_sim.py 상단 docstring 참고), 느리게
-돈다고 그 순간의 저항 자체가 줄어들지 않는다. 오히려 kp_torque를 올리면
-스텝 수가 늘어나서(더 오래 걸려서) mean_abs_torque가 살짝 올라간다(저항이
-큰 뒷부분 사이클에 상대적으로 더 오래 머무르므로). 그래서 리워드를
-mean_abs_torque 기준으로 정직하게 설계하면(mean_torque가 아니라 max_torque로
-페널티를 줬다면 이 효과가 가려졌을 것) CMA-ES는 아마 kp_torque를 0에 가깝게
-수렴시킬 것이다 -- 이건 버그가 아니라 "이 모델에서는 회전 속도를 늦추는
-방식의 admittance가 저항을 줄여주지 않는다"는 실측 결론이다. RATE_MIN>0을
-둬서 최소 속도는 보장하니 안전(완전 정지/역전 없음)하다는 점은 여전히
-유효하다.
+처음 만든 컨트롤러는 "저항 토크가 크면 회전 속도를 늦추는" PD형
+admittance(kp_torque, kd_torque)였는데, 그 버전으로 이 스크립트를 먼저
+돌려봤더니 CMA-ES가 두 게인을 전부 거의 0으로 수렴시켰다(kp_torque=0
+베이스라인과 리워드가 완전히 동일). 실측 추적 결과: 이 모델의 저항
+토크는 회전 "속도"가 아니라 사이클(=삽입 깊이)에 달려 있어서, 느리게
+돈다고 그 순간의 저항이 줄지 않았다 -- 그래서 속도 조절은 버리고, 실제
+전동 드라이버처럼 "설정 토크(torque_limit)에 닿으면 그 사이클의 돌리기를
+즉시 멈추는" 토크 리미터로 컨트롤 법칙 자체를 다시 짰다
+(sim/screw_driving_sim.py 상단 docstring 참고).
+
+이 리미터는 실측해보니 뚜렷한 문턱값을 보인다: torque_limit이 자연
+저항의 최대치(이 시나리오에서 약 1.35~1.4) *미만*이면, 매 사이클
+돌리기가 항상 조기 종료돼서 삽입이 영원히 멈춘다(15000스텝이든
+40000스텝이든 깊이가 똑같은 데서 멈춤 -- 진짜 데드락이지 "느린 게"
+아니다, 실제 클러치가 나사를 끝까지 못 박고 계속 미끄러지기만 하는 것과
+같은 고장 모드). 문턱값 이상이면 리미터가 사실상 안 걸려서 "무제한"과
+정확히 같은 스텝 수/깊이로 끝난다. 즉 이 게인 탐색의 진짜 목표는 "그
+문턱값에 최대한 가깝게(그러나 위에서) 안전마진을 찾는" 것이고, 리워드가
+성공(완료)에 큰 가중치를 주고 그 안에서 낮은 max_torque를 선호하게
+설계돼 있어서 CMA-ES가 자연스럽게 그 경계로 수렴하도록 했다.
 
 사용 예:
-    python optimize/screw_driving_cma_search.py --max-generations 10 --threshold 80
+    python optimize/screw_driving_cma_search.py --max-generations 10
 """
 from __future__ import annotations
 
@@ -38,9 +45,12 @@ import numpy as np
 from sim.screw_driving_sim import ScrewDrivingSim, _default_scene_config, _run_episode_with_sim
 
 # 대표 평가 시나리오 2개: 기본 저항과, 실측상 저항에 유의미한 영향을 주는
-# hinge_friction_scale을 키운 "더 뻑뻑한 나사" 시나리오. seat_friction_scale은
-# scene_config에서 뺐다(0.02~100배를 흔들어도 저항이 전혀 안 변한다는 걸
-# 실측으로 확인, sim/screw_driving_sim.py 참고).
+# hinge_friction_scale을 키운 "더 뻑뻑한 나사" 시나리오 -- 마찰이 클수록
+# 자연 저항의 문턱값도 높아지므로, 단일 torque_limit 게인이 두 시나리오
+# 모두에서 안전(완료)하려면 더 뻑뻑한 쪽 문턱값까지 커버해야 한다는 긴장을
+# 만든다. seat_friction_scale은 scene_config에서 뺐다(0.02~100배를
+# 흔들어도 저항이 전혀 안 변한다는 걸 실측으로 확인, sim/screw_driving_sim.py
+# 참고).
 EVAL_SCENE_CONFIGS: list[dict] = []
 for _hinge_scale in [1.0, 5.0]:
     _cfg = _default_scene_config()
@@ -49,13 +59,12 @@ for _hinge_scale in [1.0, 5.0]:
 
 PRIMARY_SCENE_CONFIG = EVAL_SCENE_CONFIGS[0]
 
-KP_BOUNDS = (0.0, 3.0)
-KD_BOUNDS = (0.0, 1.0)
+TORQUE_LIMIT_BOUNDS = (0.1, 4.0)
 
 
-def evaluate_gains(sims: list[ScrewDrivingSim], kp_torque: float, kd_torque: float) -> float:
+def evaluate_gains(sims: list[ScrewDrivingSim], torque_limit: float) -> float:
     """대표 시나리오들에 대한 평균 리워드를 계산한다."""
-    gains = {"kp_torque": kp_torque, "kd_torque": kd_torque}
+    gains = {"torque_limit": torque_limit}
     rewards = []
     for sim, cfg in zip(sims, EVAL_SCENE_CONFIGS):
         result = _run_episode_with_sim(sim, gains, cfg)
@@ -77,12 +86,14 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    x0 = [0.5, 0.1]
-    sigma0 = 1.0
+    # 일부러 문턱값(~1.4)보다 훨씬 낮은 값에서 시작한다 -- CMA-ES가 몇 세대에
+    # 걸쳐 "이 값들은 전부 완료를 못 한다"는 걸 겪으며 값을 끌어올려서 실제
+    # 안전 문턱을 찾아가는 과정을 보여주기 위함.
+    x0 = [0.5]
+    sigma0 = 0.8
 
     opts = {
-        "bounds": [[KP_BOUNDS[0], KD_BOUNDS[0]], [KP_BOUNDS[1], KD_BOUNDS[1]]],
-        "CMA_stds": [0.5, 0.15],
+        "bounds": [[TORQUE_LIMIT_BOUNDS[0]], [TORQUE_LIMIT_BOUNDS[1]]],
         "popsize": args.popsize,
         "maxiter": args.max_generations,
         "seed": args.seed,
@@ -99,7 +110,7 @@ def main() -> None:
     while not es.stop() and generation < args.max_generations:
         generation += 1
         candidates = es.ask()
-        rewards = [evaluate_gains(sims, kp, kd) for kp, kd in candidates]
+        rewards = [evaluate_gains(sims, cand[0]) for cand in candidates]
         es.tell(candidates, [-r for r in rewards])
 
         gen_best_idx = int(np.argmax(rewards))
@@ -108,15 +119,12 @@ def main() -> None:
 
         if gen_best_reward > best_overall["reward"]:
             best_overall["reward"] = gen_best_reward
-            best_overall["gains"] = {
-                "kp_torque": float(candidates[gen_best_idx][0]),
-                "kd_torque": float(candidates[gen_best_idx][1]),
-            }
+            best_overall["gains"] = {"torque_limit": float(candidates[gen_best_idx][0])}
 
         print(
             f"[screw_driving_cma_search] gen {generation:3d}: "
             f"best_reward_this_gen={gen_best_reward:8.3f} best_overall={best_overall['reward']:8.3f} "
-            f"gains(kp,kd)={candidates[gen_best_idx][0]:.4f},{candidates[gen_best_idx][1]:.4f}"
+            f"torque_limit={candidates[gen_best_idx][0]:.4f}"
         )
 
         if best_overall["reward"] >= args.threshold:
@@ -138,12 +146,14 @@ def main() -> None:
         f"step_count={final_result['step_count']} reward={final_result['reward']:.2f}"
     )
 
-    # 비교용: kp_torque=0(admittance 없음)일 때 같은 시나리오 결과.
+    # 비교용: torque_limit 없음(리미터 없음)일 때 같은 시나리오 결과.
     baseline_sim = ScrewDrivingSim()
-    baseline_result = _run_episode_with_sim(baseline_sim, {"kp_torque": 0.0, "kd_torque": 0.0}, PRIMARY_SCENE_CONFIG)
+    baseline_result = _run_episode_with_sim(
+        baseline_sim, {"torque_limit": float("inf")}, PRIMARY_SCENE_CONFIG
+    )
     print(
-        f"[screw_driving_cma_search] kp_torque=0 베이스라인: success={baseline_result['success']} "
-        f"mean_abs_torque={baseline_result['mean_abs_torque']:.4f} "
+        f"[screw_driving_cma_search] 리미터 없음 베이스라인: success={baseline_result['success']} "
+        f"max_torque={baseline_result['max_torque']:.3f} "
         f"step_count={baseline_result['step_count']} reward={baseline_result['reward']:.2f}"
     )
 
@@ -153,9 +163,7 @@ def main() -> None:
         depth_profile=final_result["depth_profile"],
         torque_profile=final_result["torque_profile"],
         rate_profile=final_result["rate_profile"],
-        gains=np.array(
-            [best_overall["gains"]["kp_torque"], best_overall["gains"]["kd_torque"]], dtype=np.float32
-        ),
+        gains=np.array([best_overall["gains"]["torque_limit"]], dtype=np.float32),
         scene_config=np.array(json.dumps(PRIMARY_SCENE_CONFIG)),
         success=np.array(final_result["success"]),
         insertion_depth=np.array(final_result["insertion_depth"], dtype=np.float32),
@@ -175,7 +183,7 @@ def main() -> None:
         plt.plot(range(1, len(best_reward_per_gen) + 1), best_reward_per_gen, marker="o", markersize=3)
         plt.xlabel("generation")
         plt.ylabel("best reward (this generation)")
-        plt.title("screw_driving CMA-ES convergence")
+        plt.title("screw_driving CMA-ES convergence (torque_limit)")
         plt.tight_layout()
         plt.savefig(args.curve_path, dpi=120)
         print(f"[screw_driving_cma_search] 수렴 곡선 저장: {args.curve_path}")

@@ -1,8 +1,7 @@
 """screw_driving.xml 모델 검증/데모 렌더링 스크립트.
 
-sim/screw_driving_sim.py의 admittance controller(토크 피드백으로 회전
-속도를 조절)를 그대로 가져다 써서 렌더링한다 -- 컨트롤 로직은 sim 모듈이
-소스이고(_KP_TORQUE 등 게인도 거기서 import), 이 스크립트는 카메라
+sim/screw_driving_sim.py의 토크 리미터 컨트롤러를 그대로 가져다 써서
+렌더링한다 -- 컨트롤 로직은 sim 모듈이 소스이고, 이 스크립트는 카메라
 캡처/픽업 애니메이션만 더한 것이다.
 
 ## 왜 "여러 바퀴(다회전)" 시퀀스가 필요한가
@@ -19,28 +18,33 @@ bolt_slide가 목표 깊이에 도달하는 것, _MAX_CONTROL_TICKS는 안전장
 참고) 반바퀴로는 1mm도 안 들어간다는 실제 물리가 드러났고, 그래서 이
 다회전 시퀀스를 제대로 구현하게 됐다.
 
-## admittance: 저항 토크로 회전 속도를 조절
+## 토크 리미터: 속도 조절이 아니라 "설정 토크에 닿으면 그 사이클을 멈춘다"
 
-처음(다회전만 구현했을 때) 버전은 "돌리기" 구간마다 ctrl을 목표 극단값
-(-2.8/2.8)으로 한 번에 던지고 500스텝 동안 정착시키는 방식이었다 --
-wrist_rotate 액추에이터(kp=7)가 즉각적인 큰 램프를 못 따라간다는 걸
-실측으로 확인하고 고른 방법이었는데, 이 방식은 "지금 얼마나 빨리
-돌리고 있는지"를 컨트롤 법칙이 조절할 방법이 없어서 진짜 admittance와
-안 맞았다. 그래서 매 컨트롤 틱(dt=0.01s)마다 ctrl을 `rate*dt`만큼만
-전진시키는 진짜 속도 제어로 바꿨다: `rate = max(RATE_MIN, NOMINAL_RATE -
-kp_torque*저항토크)` -- 저항이 커질수록 느려지되(admittance), RATE_MIN
-아래로는 안 내려가서(전진이 완전히 멈추지 않음) 항상 목표에 수렴한다.
-wrist_rotate의 정상상태 추종 지연이 이 rate 범위(1~3rad/s)에서 rate에
-선형 비례하고 발산하지 않는다는 걸 실측으로 확인했다(sim/screw_driving_sim.py
-docstring 참고). "되감기" 구간은 disengaged라 저항이 안 걸리니 admittance
-감속 없이 항상 nominal rate로 되감는다.
+처음엔 peg_in_hole처럼 "저항 토크가 크면 회전 속도를 늦추는" PD형
+admittance(kp_torque, kd_torque)를 만들었는데, optimize/screw_driving_cma_search.py로
+실제 게인 탐색을 돌려보니 CMA-ES가 두 게인을 전부 0으로 수렴시켰다(실측
+확인: kp_torque를 0->2.0까지 올려도 max_torque가 거의 그대로, 1.380 vs
+1.368). 이 모델의 저항은 회전 "속도"가 아니라 사이클(=삽입 깊이)에 달려
+있어서 느리게 돈다고 그 순간의 저항이 줄지 않았기 때문이다 -- 그래서
+실제 전동 드라이버의 토크 리미터(클러치)처럼 다시 짰다: 속도는 항상
+NOMINAL_RATE로 일정하게 돌리고, 저항 토크가 `torque_limit`을 넘으면
+그 사이클의 "돌리기"를 즉시 멈추고 되감기로 넘어간다(sim/screw_driving_sim.py
+docstring에 CMA-ES 실측 근거가 자세히 있다).
+
+이 리미터는 실측해보니 뚜렷한 문턱값을 보인다: torque_limit이 자연
+저항의 최대치(이 씬에서 약 1.4) *미만*이면 매 사이클이 항상 조기
+종료돼서 삽입이 영원히 멈춘다(스텝을 아무리 늘려도 깊이가 그대로 --
+느린 게 아니라 진짜 데드락). 문턱값 이상이면 리미터가 사실상 안 걸려서
+"무제한"과 똑같이 끝난다. 그래서 이 데모는 문턱값보다 확실히 위인
+_TORQUE_LIMIT을 써서 완료되는 걸 보여준다 -- 값을 문턱값 아래로 낮추면
+어떻게 되는지는 sim/screw_driving_sim.py의 __main__ 데모나
+optimize/screw_driving_cma_search.py 결과 참고.
 
 완료 판정은 (peg_in_hole과 마찬가지로) 토크가 아니라 기하학(bolt_slide
 깊이)로 한다 -- 다회전 전체에 걸쳐 저항 토크를 실측해보니 아직 목표
 깊이의 1/3도 안 됐을 때부터 이미 plateau 토크가 크게 뛰고 사이클마다
 계속 커져서(block 벽에 눌리며 생기는 누적 마찰로 보임), 고정 임계값으로
-"덜 조여짐"과 "다 조여짐"을 구분할 수 없었다(실측 확인). 토크 피드백은
-컨트롤 법칙(속도 조절)에만 쓰고, 완료 판정은 여전히 기하학 신호를 쓴다.
+"덜 조여짐"과 "다 조여짐"을 구분할 수 없었다(실측 확인).
 
 ## 팔이 볼트를 따라 내려가야 하는 이유 (실측으로 발견한 문제)
 
@@ -91,7 +95,7 @@ import mujoco
 import numpy as np
 from PIL import Image, ImageDraw
 
-from sim.screw_driving_sim import DT, N_SUBSTEPS, NOMINAL_RATE, PITCH_PER_RAD, RATE_MIN, TURN_HIGH, TURN_LOW
+from sim.screw_driving_sim import DT, N_SUBSTEPS, NOMINAL_RATE, PITCH_PER_RAD, TURN_HIGH, TURN_LOW
 
 _HOME_QPOS = {
     "waist": 0.0,
@@ -132,15 +136,15 @@ _ARM_FOLLOW_JOINTS = ["waist", "shoulder", "elbow", "forearm_roll", "wrist_angle
 _JAC_DAMPING = 1e-4
 _TARGET_DEPTH = 0.034  # bolt_slide 최대 범위(완전 삽입)
 
-# 다회전(turn/rewind) + admittance 속도 제어 파라미터는 sim/screw_driving_sim.py
-# 것을 그대로 가져다 쓴다 -- 이 렌더 스크립트가 실제로 쓰는 컨트롤러와 다른
-# 로직을 보여주면 "검증"의 의미가 없기 때문이다. 이전 버전(커밋 이력 참고)은
-# 여기서 자체적으로 "ctrl 목표값 한 번에 대입 + 500스텝 정착"하는 방식을
-# 썼는데, 그건 admittance(토크로 속도를 조절)와 근본적으로 안 맞는 방식이라
-# (목표를 한 번에 던지면 "지금 얼마나 빨리 돌릴지"를 조절할 방법이 없다)
-# sim 모듈 쪽에서 매 컨트롤 틱마다 `rate*dt`만큼만 전진시키는 진짜 속도
-# 제어로 바꿨고, 이 렌더 스크립트도 그걸 그대로 따라간다.
-_KP_TORQUE = 1.2  # sim/screw_driving_sim.py에서 실측 검증된 기본 게인
+# 다회전(turn/rewind) + 토크 리미터 파라미터는 sim/screw_driving_sim.py 것을
+# 그대로 가져다 쓴다 -- 이 렌더 스크립트가 실제로 쓰는 컨트롤러와 다른 로직을
+# 보여주면 "검증"의 의미가 없기 때문이다.
+# _TORQUE_LIMIT=1.6은 이 씬의 자연 저항 문턱값(~1.4, hinge_friction_scale이
+# 더 큰 씬에서는 ~1.5)보다 확실히 위로 잡은 안전한 값이다 -- 문턱값
+# 아래로는(예: 1.0) 매 사이클이 항상 조기 종료돼서 삽입이 영원히 멈춘다는
+# 걸 실측으로 확인했다(sim/screw_driving_sim.py __main__ 참고). 데모는
+# "완료되는" 쪽을 보여주는 게 목적이라 안전 마진을 넉넉히 뒀다.
+_TORQUE_LIMIT = 1.6
 _MAX_CONTROL_TICKS = 15000
 _CAPTURE_EVERY = 15
 
@@ -294,10 +298,11 @@ def main() -> None:
 
         mujoco.mj_step(m, d, nstep=N_SUBSTEPS)
 
-    # admittance 다회전 시퀀스: sim/screw_driving_sim.py의 ScrewDrivingSim.step()과
-    # 정확히 같은 컨트롤 법칙. "돌리기(engaged)" 구간에서만 저항 토크로 속도를
-    # 늦추고(admittance), "되감기(disengaged)" 구간은 저항이 안 걸리니 항상
-    # nominal rate로 되감는다.
+    # 다회전 시퀀스 + 토크 리미터: sim/screw_driving_sim.py의
+    # ScrewDrivingSim.step()과 정확히 같은 컨트롤 법칙. "돌리기(engaged)"
+    # 구간에서 저항 토크가 _TORQUE_LIMIT을 넘으면 그 자리에서 즉시
+    # 되감기로 전환한다(클러치가 미끄러지는 것과 같음). "되감기(disengaged)"
+    # 구간은 저항이 안 걸리니 리밋이 걸릴 일이 없다.
     phase = "turn"
     engage_wrist_ref = d.qpos[wrist_qpos]
     engage_hinge_ref = d.qpos[bolt_hinge_qpos]
@@ -308,13 +313,16 @@ def main() -> None:
         torque = float(d.sensordata[torque_adr])
 
         if phase == "turn":
-            rate = max(RATE_MIN, NOMINAL_RATE - _KP_TORQUE * max(0.0, abs(torque)))
-            new_ctrl = min(current_wrist_ctrl + rate * DT, TURN_HIGH)
-            d.ctrl[wrist_act] = new_ctrl
-            d.ctrl[bolt_drive_act] = engage_hinge_ref + (d.qpos[wrist_qpos] - engage_wrist_ref)
-            if new_ctrl >= TURN_HIGH:
+            if abs(torque) >= _TORQUE_LIMIT:
                 phase = "rewind"
                 frozen_hinge_ctrl = float(d.ctrl[bolt_drive_act])
+            else:
+                new_ctrl = min(current_wrist_ctrl + NOMINAL_RATE * DT, TURN_HIGH)
+                d.ctrl[wrist_act] = new_ctrl
+                d.ctrl[bolt_drive_act] = engage_hinge_ref + (d.qpos[wrist_qpos] - engage_wrist_ref)
+                if new_ctrl >= TURN_HIGH:
+                    phase = "rewind"
+                    frozen_hinge_ctrl = float(d.ctrl[bolt_drive_act])
         else:
             new_ctrl = max(current_wrist_ctrl - NOMINAL_RATE * DT, TURN_LOW)
             d.ctrl[wrist_act] = new_ctrl
