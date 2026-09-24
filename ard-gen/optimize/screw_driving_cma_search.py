@@ -62,9 +62,13 @@ PRIMARY_SCENE_CONFIG = EVAL_SCENE_CONFIGS[0]
 TORQUE_LIMIT_BOUNDS = (0.1, 4.0)
 
 
+def _clip(torque_limit: float) -> float:
+    return float(np.clip(torque_limit, TORQUE_LIMIT_BOUNDS[0], TORQUE_LIMIT_BOUNDS[1]))
+
+
 def evaluate_gains(sims: list[ScrewDrivingSim], torque_limit: float) -> float:
     """대표 시나리오들에 대한 평균 리워드를 계산한다."""
-    gains = {"torque_limit": torque_limit}
+    gains = {"torque_limit": _clip(torque_limit)}
     rewards = []
     for sim, cfg in zip(sims, EVAL_SCENE_CONFIGS):
         result = _run_episode_with_sim(sim, gains, cfg)
@@ -86,14 +90,24 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    # 일부러 문턱값(~1.4)보다 훨씬 낮은 값에서 시작한다 -- CMA-ES가 몇 세대에
-    # 걸쳐 "이 값들은 전부 완료를 못 한다"는 걸 겪으며 값을 끌어올려서 실제
-    # 안전 문턱을 찾아가는 과정을 보여주기 위함.
-    x0 = [0.5]
-    sigma0 = 0.8
+    # x0를 문턱값(~1.4) 근처에 두고 sigma0을 넉넉히 줘서, 첫 세대부터 문턱값
+    # 위/아래 후보가 고르게 섞이게 한다 -- 낮은 값에서 시작해봤더니(x0=0.5,
+    # sigma0=0.8) 실패 구간(reward가 거의 균일하게 낮은 평지)에 세대 전체가
+    # 갇혀서 CMA-ES가 "더 볼 것도 없다"며 조기 수렴해버리는 경우가 있었다
+    # (평지 안에서는 reward 분산이 tolfun 문턱 아래로 떨어짐). x0/sigma0을
+    # 이렇게 잡으면 매 세대 성공/실패 후보가 섞여 들어와서 진짜 경사(성공
+    # 여부)를 바로 보게 된다(실측 확인).
+    #
+    # bounds 옵션은 일부러 안 쓴다 -- cma 4.4.4에서 1차원 + bounds 조합으로
+    # 돌리면 몇 세대 뒤 es.tell() 내부(_stds_into_limits)에서
+    # "not yet initialized (dimension needed)" 오류로 죽는 버그를 실측으로
+    # 재현했다(사인 없는 최소 재현 스크립트로도 동일하게 재현됨 -- 우리
+    # 리워드 함수나 시뮬레이션과 무관한 라이브러리 쪽 문제). 그래서 bounds는
+    # CMA-ES 쪽에 안 맡기고 evaluate_gains()에서 직접 클리핑한다(_clip 참고).
+    x0 = [1.0]
+    sigma0 = 1.5
 
     opts = {
-        "bounds": [[TORQUE_LIMIT_BOUNDS[0]], [TORQUE_LIMIT_BOUNDS[1]]],
         "popsize": args.popsize,
         "maxiter": args.max_generations,
         "seed": args.seed,
@@ -119,12 +133,12 @@ def main() -> None:
 
         if gen_best_reward > best_overall["reward"]:
             best_overall["reward"] = gen_best_reward
-            best_overall["gains"] = {"torque_limit": float(candidates[gen_best_idx][0])}
+            best_overall["gains"] = {"torque_limit": _clip(candidates[gen_best_idx][0])}
 
         print(
             f"[screw_driving_cma_search] gen {generation:3d}: "
             f"best_reward_this_gen={gen_best_reward:8.3f} best_overall={best_overall['reward']:8.3f} "
-            f"torque_limit={candidates[gen_best_idx][0]:.4f}"
+            f"torque_limit={_clip(candidates[gen_best_idx][0]):.4f}"
         )
 
         if best_overall["reward"] >= args.threshold:
