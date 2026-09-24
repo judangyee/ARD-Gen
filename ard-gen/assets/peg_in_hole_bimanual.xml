@@ -299,12 +299,22 @@
     <position class="wrist_rotate" name="wrist_rotate" joint="wrist_rotate"/>
     <position class="finger" name="gripper" joint="left_finger"/>
 
-    <position class="waist" name="waist_l" joint="waist_l"/>
-    <position class="shoulder" name="shoulder_l" joint="shoulder_l"/>
-    <position class="elbow" name="elbow_l" joint="elbow_l"/>
-    <position class="forearm_roll" name="forearm_roll_l" joint="forearm_roll_l"/>
-    <position class="wrist_angle" name="wrist_angle_l" joint="wrist_angle_l"/>
-    <position class="wrist_rotate" name="wrist_rotate_l" joint="wrist_rotate_l"/>
+    <!-- 왼팔(Stabilizer) 액추에이터는 class 기본 kp보다 훨씬 강하게 오버라이드
+         했다 -- 실측으로 확인한 문제: weld 자체는(solref/solimp 강화 후)
+         잘 버티는데, 왼팔 자신의 조인트(특히 wrist_angle_l, 기본 kp=8)가
+         오른팔의 삽입 반작용 토크에 밀려서(피크 시 wrist_angle_l이 목표보다
+         0.4rad=23도나 처짐) gripper_l 자체가 통째로 밀려났다 -- hole이
+         밀리는 원인이 weld가 아니라 왼팔 관절의 위치제어 강성 부족이었다는
+         뜻. 오른팔은 원래 자유공간에서 가벼운 peg를 들고 부드럽게 움직이는
+         용도로 튜닝된 게인이라 그대로 두고, 왼팔은 "제자리에서 버티기"가
+         유일한 역할이므로 kp를 10배 가까이 올리고 forcerange도 맞춰
+         늘렸다. -->
+    <position name="waist_l" joint="waist_l" ctrlrange="-3.14158 3.14158" kp="250" forcerange="-100 100"/>
+    <position name="shoulder_l" joint="shoulder_l" ctrlrange="-1.85005 1.25664" kp="760" forcerange="-200 200"/>
+    <position name="elbow_l" joint="elbow_l" ctrlrange="-1.76278 1.6057" kp="1060" forcerange="-150 150"/>
+    <position name="forearm_roll_l" joint="forearm_roll_l" ctrlrange="-3.14158 3.14158" kp="350" forcerange="-60 60"/>
+    <position name="wrist_angle_l" joint="wrist_angle_l" ctrlrange="-1.8675 2.23402" kp="240" forcerange="-60 60"/>
+    <position name="wrist_rotate_l" joint="wrist_rotate_l" ctrlrange="-3.14158 3.14158" kp="210" forcerange="-60 60"/>
     <position class="finger" name="gripper_l" joint="left_finger_l"/>
   </actuator>
 
