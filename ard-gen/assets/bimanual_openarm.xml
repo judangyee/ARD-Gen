@@ -6,77 +6,96 @@
     이 파일에도 컨트롤러/시뮬레이션 로직은 전혀 없다(sim/, optimize/,
     render_*.py 없음) -- 순수 MJCF 환경만이다.
 
-    ## OpenArm이란
+    ## 왜 v0.3인가
 
-    enactic/openarm(Apache-2.0) -- 완전 오픈소스 7자유도 양팔 로봇
-    (실제 액추에이터: DM8009/DM4340/DM4310 모터, 평행 2핑거 그리퍼).
-    이 프로젝트가 직접 만든 게 아니라 공식 MuJoCo 자산
-    (github.com/enactic/openarm_mujoco, v2, Apache-2.0)을 그대로 가져다
-    썼다 -- assets/openarm/ 아래에 필요한 만큼만(bimanual XML + pedestal
-    + arm/gripper/body 메시, task 전용 cell/valve 등은 제외) 복사해뒀고
-    라이선스 원문은 assets/openarm/LICENSE에 있다.
+    처음엔 enactic/openarm_mujoco의 v2(현재 README가 "메인"으로 미는
+    버전)로 만들었는데, 렌더해서 보여줬더니 사용자가 "깃헙에서 본 손이랑
+    다르다"고 함 -- v2는 손가락이 회전(피벗)해서 오므라드는 둥근 집게형
+    그리퍼인데, 실제로 v1/v0.3은 훨씬 흔히 보는 평행 조(그리퍼가 레일 위
+    에서 직선으로 벌어지고 오므라듦) 모양이라 그쪽을 본 것으로 보임.
+    v1/v0.3 렌더를 같이 만들어서 보여주고 고르게 했고, v0.3을 선택함
+    -- 그래서 이 파일은 v2가 아니라 v0.3 자산을 쓴다(assets/openarm/
+    전체를 v0.3으로 교체, v2 자산은 삭제함).
 
-    VX300s 버전과 달리 몸통 구조 자체가 다르다: VX300s는 두 팔의 베이스를
-    이 프로젝트가 직접 따로 배치했지만(base_link_l를 (0.10,0.187,0)에),
-    OpenArm은 공식 자산이 애초에 "받침대(pedestal) 하나 위에 양팔이 6.2cm
-    간격으로 나란히 붙어있는" 구조로 설계돼 있어서(휴머노이드 상체처럼)
-    그 구조를 그대로 썼다 -- assets/openarm/pedestal/openarm_pedestal.xml
-    이 받침대(z=0.698에 부착)와 양팔을 <attach>로 붙이고,
-    assets/openarm/pedestal/pedestal.xml이 그 위에 기본 "home" 키프레임
-    (양팔 각각 joint4=90도, 나머지 0 -- 팔이 앞으로 뻗어 아래를 향함)을
-    정의한다. 이 파일은 그 받침대를 <attach>로 가져오고, 바닥/조명/카메라/
-    워크피스만 추가한다.
+    ## v0.3이 v1/v2와 다른 점
 
-    ## 몸 왼팔/오른팔 구분
+    v0.3은 v1/v2와 로봇 구조 자체가 다르다(더 이른 프로토타입 버전이라
+    관절 배치, 몸통 형상이 다름). 그리고 결정적으로 **자산 구성 방식이
+    다르다**:
+      - v1/v2는 팔 본체(openarm_bimanual.xml)와 받침대(pedestal)가
+        분리돼 있고 <model>+<attach>로 조립한다(assets/bimanual_openarm.xml
+        의 이전 버전, 즉 v2 기반 버전이 이 방식이었음 -- git 이력 참고).
+      - v0.3은 받침대(pedestal_link)까지 openarm_bimanual.mjcf.xml
+        하나에 다 들어있는 단일 파일이라 <attach> 없이 그냥 MuJoCo
+        <include>로 통째로 가져오면 된다(<include>는 여러 <worldbody>를
+        하나로 합쳐주므로, 이 파일의 워크피스/카메라/조명용 <worldbody>와
+        vendor 파일의 로봇용 <worldbody>가 따로 있어도 문제없이 병합됨 --
+        실측 확인함).
+      - **v0.3의 액추에이터는 <position>이 아니라 <motor>(순수 토크)다**
+        -- v1/v2/VX300s는 전부 위치제어 액추에이터가 이미 갖춰져 있어서
+        그대로 갖다 썼지만, v0.3은 이 프로젝트의 다른 모든 자산 파일과
+        달리 "qpos+ctrl 세팅만으로 자세를 유지"하는 게 안 된다. 그래서
+        vendor 파일(assets/openarm/openarm_bimanual.xml)은 원본 그대로
+        두고(라이선스/출처 원칙과 동일, 수정 없음), 이 파일 자체의
+        <actuator>에 우리가 직접 고른 kp/kv로 <position> 액추에이터를
+        14개(팔 7관절 x 2 + 그리퍼 주 조인트 x 2) 추가했다. vendor의
+        <motor> 액추에이터는 그대로 남아있지만(파일이 nu=16+16=32가 됨)
+        ctrl=0으로 안 건드리면 토크가 0이라 우리 위치 액추에이터와
+        간섭 안 한다 -- 다음에 이 파일 위에 태스크를 지을 때는 반드시
+        pos_* 이름의 액추에이터만 쓸 것(motor 쪽 이름은 vendor 파일의
+        *_ctrl).
 
-    OpenArm 쪽 명명 규칙은 이미 official 파일이 openarm_left_*/
-    openarm_right_*로 정해놨다(이 프로젝트의 VX300s 파일들이 오른팔=기본
-    이름, 왼팔=_l 접미사를 쓰는 것과 반대 순서지만, ARD-VLA 역할 구분
-    자체는 동일하게 유지했다):
-      - openarm_right_*: Actuator(작업팔) -- 그리퍼에 아무 도구도 없음.
-      - openarm_left_*: Stabilizer(고정팔) -- 아래 workpiece를 weld로 쥐고
-        있다.
-    (VX300s 버전과 반대로 이번엔 오른쪽이 비어있고 왼쪽이 쥐는 것도
-    OpenArm 원본 키프레임을 그대로 썼기 때문 -- 두 팔이 대칭이라 어느
-    쪽을 Stabilizer로 써도 상관없고, 그냥 원본 구조를 안 건드리는 쪽을
-    택했다.)
+    ## kp/kv 값 근거
 
-    OpenArm 액추에이터 게인은 원본 openarm_bimanual.xml 값(motor_DM8009/
-    DM4340/DM4310 class 그대로, kp 190~230)을 그대로 썼다 -- VX300s
-    버전에서 왼팔 게인을 ~10배 올렸던 이유(자유공간용 게인이 반작용력
-    아래서 밀림, 실측 확인함)가 여기서도 재현되는지는 아직 검증 안 했다
-    (컨트롤러/태스크가 없는 "환경만" 단계라 반작용력 자체가 생길 상황이
-    없음 -- 다음에 실제 태스크를 얹을 때 동일한 방식으로 확인해야 한다).
+    vendor 파일의 <motor> ctrlrange(예: right_rev1 ±9.5, rev2 ±8.0,
+    rev4 ±3.0, rev6 ±0.35)가 일부 관절(rev3/rev5/rev7)엔 아예 안 박혀
+    있어서(class 기본값 ±0.2로 대체되는데 이건 명백히 자리채움값으로
+    보임 -- 나머지 관절은 자세하게 값이 있는데 이 셋만 없음) 이 값들을
+    근거로 kp를 역산할 수 없었다. 그래서 VX300s 왼팔 게인을 정했을 때와
+    같은 방식(직접 홀드 테스트)으로 정했다: 관절별 kp를 실측으로 훑어서
+    (base=150 기준 waist~150x2, shoulder~150x1.5, elbow류~150, wrist류
+    ~150x0.4, 마지막 관절~150x0.3, 그리퍼~30, kv=kp*0.08) qpos=0(아래
+    "home 자세가 왜 전부 0인가" 참고)을 유지한 채 500~6000스텝 동안
+    workpiece 처짐을 쟀다 -- 3.35mm에서 수렴하고 더 안 늘어남(발산 없음,
+    kp를 더 올리면(300~600대) 오히려 QACC가 발산하는 경고가 떠서 이
+    영역은 피함). VX300s 버전보다도 처짐이 적다(16~20mm -> 3.35mm)
+    -- 그때는 오른팔 free-space 게인을 그대로 왼팔에 쓰다 10배 올린
+    것에 비해, 이번엔 처음부터 직접 홀드 테스트로 골랐기 때문으로 보임.
+
+    ## home 자세가 왜 전부 0인가
+
+    v0.3은 v1/v2와 달리 공식 "home" 키프레임이 없다(vendor 파일에
+    <keyframe> 자체가 없음). 그런데 qpos=0(모든 관절 0)으로 렌더해보니
+    이미 두 팔이 받침대 옆으로 자연스럽게 늘어뜨려진, 쓸 만한 자세였다
+    (사람이 팔을 몸 옆에 붙이고 서 있는 것과 비슷한 모양 -- v1/v2처럼
+    팔꿈치를 90도로 접어서 앞으로 뻗는 자세는 아니지만 "환경만" 단계
+    에서 굳이 새로 관절각을 설계할 필요가 없었음). 그래서 별도 계산 없이
+    qpos=0을 그대로 home으로 썼다.
 
     ## workpiece
 
-    VX300s 버전과 같은 패턴: 왼팔(Stabilizer)이 쥐는 자유 바디(박스),
-    weld의 relpose는 "왼팔이 home 키프레임에 있을 때 workpiece가 왼쪽
-    그리퍼 손가락 사이(핑거 조인트 원점에서 로컬 -z로 3.5cm 더 나간
-    지점, 즉 핑거 패드 근처 -- ee_base_link 기준 로컬 (-0.00143,0,-0.103))
-    에 오도록" 실측 FK로 계산했다(그 로컬 오프셋의 월드 좌표
-    (0.319,0.1535,0.47657)를 목표 위치로, 목표 회전은 무회전으로 두고
-    relpose_pos = R_ee^T(target_pos-ee_pos), relpose_quat =
-    conj(ee_quat)*target_quat 공식 그대로 -- VX300s 버전과 동일한 계산
-    방식, mj_step으로 실제로 그 자리에 오는지 검증 완료). 핑거 조인트
-    원점(로컬 z=-0.068)에 두면 그리퍼 하우징 메시 안에 파묻혀서 렌더로
-    안 보였다 -- 패드 쪽으로 밀어낸 이유.
+    VX300s/v2 버전과 같은 패턴: 왼팔(Stabilizer)이 쥐는 자유 바디(박스),
+    오른팔(Actuator)은 맨손. weld의 relpose는 "왼팔이 home(qpos=0)에
+    있을 때 workpiece가 왼쪽 죠(jaw) 사이 중점(left_link_left_jaw와
+    left_link_right_jaw의 월드 좌표 중점)에 오도록" 실측 FK로 계산했다
+    (target_pos를 그 중점으로, target_quat은 무회전으로 두고 relpose_pos
+    = R_gc^T(target_pos-gc_pos), relpose_quat = conj(gc_quat)*target_quat,
+    body1은 left_gripper_center -- vendor 파일이 이미 정의해둔 TCP용
+    더미 바디라 그대로 앵커로 씀). mj_step으로 실제로 그 자리에 오는지,
+    그리고 위 kp/kv로 안정적으로 유지되는지 검증 완료(3.35mm 처짐에서
+    수렴, 6000스텝까지 발산 없음).
 
     ## 아직 없는 것 (일부러 안 넣음, "환경만" 요청에 따라)
 
-    admittance controller, sim 모듈, 게인 재탐색, 렌더 스크립트, 어떤
-    태스크 로직도 없다. VX300s 버전과 마찬가지로 이 환경 위에 태스크를
-    짓는 건 다음 작업.
+    admittance controller, sim 모듈, 게인 재탐색(지금 kp/kv는 "중력 하에
+    안 무너진다"만 확인한 것이지 태스크용으로 튜닝한 게 아님), 렌더
+    스크립트, 어떤 태스크 로직도 없다.
   -->
   <compiler angle="radian"/>
   <option cone="elliptic" impratio="10"/>
   <visual>
     <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6" specular="0.1 0.1 0.1"/>
   </visual>
-
-  <asset>
-    <model name="arm_pedestal" file="openarm/pedestal/openarm_pedestal.xml"/>
-  </asset>
 
   <default>
     <default class="workpiece_contact">
@@ -90,35 +109,66 @@
 
     <geom name="ground" type="plane" pos="0 0 0" size="0.8 0.8 0.01" contype="0" conaffinity="0" rgba="0.5 0.5 0.52 1"/>
 
-    <camera name="wide_cam" mode="targetbody" target="workpiece" pos="-0.43 1.07 0.89"/>
-    <camera name="top_cam" mode="targetbody" target="workpiece" pos="0.18 0.02 1.6"/>
+    <camera name="wide_cam" mode="targetbody" target="workpiece" pos="-0.78 0.98 0.79"/>
+    <camera name="top_cam" mode="targetbody" target="workpiece" pos="0.03 0.1 1.6"/>
 
     <!-- 범용 워크피스: 왼팔(Stabilizer)이 쥐고 있는 자유 바디. relpose
          계산 근거는 위 docstring 참고. -->
-    <body name="workpiece" pos="0.319 0.1535 0.4765699" gravcomp="1">
+    <body name="workpiece" pos="0.19411917 0.00273055 0.22862546" gravcomp="1">
       <freejoint name="workpiece_free"/>
       <geom class="workpiece_contact" name="workpiece_box" type="box" size="0.02 0.02 0.02" rgba="0.55 0.55 0.6 1"/>
       <site name="workpiece_center_site" pos="0 0 0" size="0.002" rgba="1 0 0 0.5"/>
     </body>
-
-    <!-- OpenArm 양팔 + 받침대 (공식 자산, assets/openarm/ 참고) -->
-    <attach model="arm_pedestal" prefix=""/>
   </worldbody>
 
+  <!-- OpenArm v0.3 양팔 + 받침대 (공식 자산, 수정 없이 그대로 -- assets/openarm/
+       참고). <include>는 이 파일의 <worldbody>와 여기 안에 있는 <worldbody>를
+       하나로 합쳐준다. -->
+  <include file="openarm/openarm_bimanual.xml"/>
+
   <equality>
-    <weld name="workpiece_grasp" body1="openarm_left_ee_base_link" body2="workpiece"
-          relpose="-0.00143 0 -0.103 0.7071069 0 0.70710667 0"
+    <weld name="workpiece_grasp" body1="left_gripper_center" body2="workpiece"
+          relpose="0.023595 -0.000640245 0 0.49833374 0.49283287 0.50007081 0.50863389"
           solref="0.002 1" solimp="0.95 0.99 0.0001 0.5 2"
           active="true"/>
   </equality>
 
+  <!-- vendor 파일(assets/openarm/openarm_bimanual.xml)의 <motor> 액추에이터
+       16개는 그대로 남아있다(ctrl=0으로 안 건드리면 토크 0, 간섭 없음).
+       여기 추가한 <position> 14개(pos_* 이름)가 이 환경의 실제 제어
+       인터페이스다 -- 근거는 위 docstring "kp/kv 값 근거" 참고. -->
+  <actuator>
+    <position name="pos_right_rev1" joint="right_rev1" kp="300" kv="24" ctrlrange="-2.0943951 2.0943951"/>
+    <position name="pos_right_rev2" joint="right_rev2" kp="225" kv="18" ctrlrange="-3.14159265 0"/>
+    <position name="pos_right_rev3" joint="right_rev3" kp="150" kv="12" ctrlrange="-3.66519143 0.52359878"/>
+    <position name="pos_right_rev4" joint="right_rev4" kp="150" kv="12" ctrlrange="-0.34906585 2.7925268"/>
+    <position name="pos_right_rev5" joint="right_rev5" kp="60" kv="4.8" ctrlrange="-2.0943951 2.0943951"/>
+    <position name="pos_right_rev6" joint="right_rev6" kp="60" kv="4.8" ctrlrange="-1.57079633 1.57079633"/>
+    <position name="pos_right_rev7" joint="right_rev7" kp="45" kv="3.6" ctrlrange="-0.95993109 0.95993109"/>
+    <position name="pos_right_gripper" joint="right_left_pris1" kp="30" kv="2.4" ctrlrange="-0.0451 0"/>
+
+    <position name="pos_left_rev1" joint="left_rev1" kp="300" kv="24" ctrlrange="-2.0943951 2.0943951"/>
+    <position name="pos_left_rev2" joint="left_rev2" kp="225" kv="18" ctrlrange="0 3.14159265"/>
+    <position name="pos_left_rev3" joint="left_rev3" kp="150" kv="12" ctrlrange="-3.66519143 0.52359878"/>
+    <position name="pos_left_rev4" joint="left_rev4" kp="150" kv="12" ctrlrange="-0.34906585 2.7925268"/>
+    <position name="pos_left_rev5" joint="left_rev5" kp="60" kv="4.8" ctrlrange="-2.0943951 2.0943951"/>
+    <position name="pos_left_rev6" joint="left_rev6" kp="60" kv="4.8" ctrlrange="-1.57079633 1.57079633"/>
+    <position name="pos_left_rev7" joint="left_rev7" kp="45" kv="3.6" ctrlrange="-0.95993109 0.95993109"/>
+    <position name="pos_left_gripper" joint="left_left_pris1" kp="30" kv="2.4" ctrlrange="-0.0451 0"/>
+  </actuator>
+
   <keyframe>
-    <!-- workpiece(자유조인트 7: pos 3 + quat 4) + 양팔(18, openarm/pedestal/pedestal.xml의
-         home 키프레임과 동일한 값) -- 순서는 worldbody 선언 순서(workpiece가 attach보다
-         먼저 나옴)를 그대로 반영했고, 실제 컴파일된 모델에서 mj_name2id로 재검증함. -->
+    <!-- workpiece(자유조인트 7: pos 3 + quat 4) + 양팔(18, 전부 0 -- 위
+         docstring "home 자세가 왜 전부 0인가" 참고) -- 순서는 worldbody
+         선언 순서(workpiece가 include보다 먼저 나옴)를 그대로 반영했고,
+         실제 컴파일된 모델에서 조인트 qposadr로 재검증함. -->
     <key name="home"
-      qpos="0.319 0.1535 0.4765699 1 0 0 0
-            0.0 0.0 0.0 1.570796 0.0 0.0 0.0 0.0 0.0
-            0.0 0.0 0.0 1.570796 0.0 0.0 0.0 0.0 0.0" />
+      qpos="0.19411917 0.00273055 0.22862546 1 0 0 0
+            0 0 0 0 0 0 0 0 0
+            0 0 0 0 0 0 0 0 0"
+      ctrl="0 0 0 0 0 0 0 0
+            0 0 0 0 0 0 0 0
+            0 0 0 0 0 0 0 0
+            0 0 0 0 0 0 0 0"/>
   </keyframe>
 </mujoco>
