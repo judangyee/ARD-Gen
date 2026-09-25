@@ -260,14 +260,24 @@ _LEFT_ARM_HOME_QPOS = {
     "openarm_left_joint6": -0.21247894792122013,
     "openarm_left_joint7": -0.4267928774062192,
 }
-_GRIPPER_CLOSED_CTRL = 0.0  # 실제로 닫힘 값이 맞다 -- 오른팔 finger_joint1/2
-# range가 [-0.7854, 0]이라 0이 열림이 아니라 "닫힘" 끝이다(양팔 다 range
-# 부호가 반대라 처음엔 반대로 착각했었음). mj_geomDistance로 직접 재보니
-# 이 각도에서 손끝 패드끼리 거의 닿기만 하고(파고듦 3μm 수준, 무시 가능)
-# 예전에 기록했던 "1.5cm 자기충돌" 관찰은 바디 world position을 잘못
-# 재던(조인트를 바꿔도 바디 원점 자체는 안 움직이는 걸 못 알아챈) 스크립트
-# 버그였던 것으로 보인다 -- 실제로는 자기충돌 문제가 없고, grasp이 이상해
-# 보였던 진짜 원인은 peg의 anchor 위치였다(아래 _PEG_LOCAL_OFFSET 참고).
+_GRIPPER_CLOSED_CTRL = 0.0  # 왼팔(hole_socket을 쥠) 전용. 실제로 닫힘 값이
+# 맞다 -- 왼팔 finger_joint1/2 range가 [-0.7854, 0]이라 0이 열림이 아니라
+# "닫힘" 끝이다(양팔 다 range 부호가 반대라 처음엔 반대로 착각했었음).
+# mj_geomDistance로 직접 재보니 이 각도에서 손끝 패드끼리 거의 닿기만
+# 하고(파고듦 3μm 수준, 무시 가능) 예전에 기록했던 "1.5cm 자기충돌" 관찰은
+# 바디 world position을 잘못 재던(조인트를 바꿔도 바디 원점 자체는 안
+# 움직이는 걸 못 알아챈) 스크립트 버그였던 것으로 보인다.
+
+_RIGHT_GRIPPER_GRASP_CTRL = -0.115  # 오른팔(peg를 쥠) 전용, 왼팔과 값이
+# 다르다 -- peg 재조정 1~3차(아래 _PEG_LOCAL_OFFSET 참고)는 매번 anchor
+# 위치만 옮겼을 뿐 손가락은 계속 _GRIPPER_CLOSED_CTRL(=0, 완전히 닫힘,
+# 패드 간격 0에 가까움)로 둔 채였다 -- peg 단면이 2cm인데 손가락 사이
+# 간격이 0이면 애초에 peg가 들어갈 공간이 없으니 anchor를 아무리
+# 옮겨도 "그리퍼로 잡는 것처럼" 보일 수가 없었다("지금 물건을 잡는방식이
+# 그리퍼로 잡는게 아닌거 같은데" 피드백으로 이 근본 원인을 알아챔).
+# mj_geomDistance(finger_inner_right_00, finger_outer_right_00 -- 실측으로
+# 확인한 실제 손끝 접촉쌍)로 각도별 간격을 재서, peg 폭(2cm)보다 살짝
+# 넉넉한 ~21mm 간격이 나오는 -0.115로 정했다.
 
 # peg free body를 오른팔 ee 프레임으로부터 직접 FK로 세팅할 때 쓰는 로컬
 # 오프셋 -- assets/peg_in_hole_bimanual_openarm.xml의 weld relpose와 동일한 값
@@ -298,7 +308,18 @@ _GRIPPER_CLOSED_CTRL = 0.0  # 실제로 닫힘 값이 맞다 -- 오른팔 finger
 # 간격이 줄어들다 못해 음수가 될 뻔했는데, 그건 reset()에서
 # home_tip_z 대신 _HOVER_GAP_M을 직접 쓰도록 고쳐서(아래) grasp 위치와
 # 무관하게 만들었다.
-_PEG_LOCAL_OFFSET = np.array([-0.02222, 0, -0.21186])
+#
+# 재조정 4차 -- "지금 물건을 잡는방식이 그리퍼로 잡는게 아닌거 같은데"
+# 피드백 이후 근본 원인 발견: 1~3차 내내 손가락은 _GRIPPER_CLOSED_CTRL(완전
+# 닫힘, 패드 간격 ~0)이었다 -- anchor를 아무리 옮겨도 peg가 들어갈 틈 자체가
+# 없었으니 "펜치로 집은 것"이 아니라 "닫힌 손가락 끝에 아무렇게나 붙어있는
+# 것"처럼 보일 수밖에 없었다. 오른손을 _RIGHT_GRIPPER_GRASP_CTRL(위, 패드
+# 간격 ~21mm)로 벌려서 재측정: 실제 손끝 접촉쌍(finger_inner_right_00 /
+# finger_outer_right_00 -- 3차에서 쓴 "01" corner-extreme이 아니라, 이번엔
+# mj_geomDistance로 두 표면이 실제로 마주보고 가장 가까워지는 쌍을 다시
+# 확인했다)의 간격 중점이 ee_base_link 로컬 (-0.0259,0,-0.1604). peg 로컬
+# z=+0.02(샤프트 맨 위에서 1cm)가 여기 오도록 anchor를 다시 잡았다.
+_PEG_LOCAL_OFFSET = np.array([-0.0259, 0, -0.1804])
 
 _JAC_DAMPING = 1e-4
 _IK_MAX_ITERS = 200
@@ -358,6 +379,14 @@ class BimanualPegInHoleOpenArmSim:
         }
         self._gripper_actuator_id = self.model.actuator("right_finger1_ctrl").id
         self._right_finger_qposadr = self.model.joint("openarm_right_finger_joint1").qposadr[0]
+        # joint2는 자체 액추에이터가 없고 mimic equality(openarm_right_ee_finger_joint_mimic)로
+        # joint1을 따라가지만, 그건 mj_step의 제약 solve 중에만 적용된다 --
+        # reset()은 mj_forward만 쓰므로(이 프로젝트에서 반복 확인한 패턴,
+        # "mj_forward만으로는 weld/equality로 연결된 자유도가 안 움직인다")
+        # qpos를 직접 맞춰줘야 한다(안 그러면 reset 직후 첫 프레임에서
+        # 손가락 두 개가 비대칭으로 보인다 -- joint1은 grasp 각도인데
+        # joint2는 mj_resetData의 기본값 0에 그대로 남음).
+        self._right_finger2_qposadr = self.model.joint("openarm_right_finger_joint2").qposadr[0]
 
         self._left_arm_qposadr = {
             name: self.model.joint(name).qposadr[0] for name in _LEFT_ARM_HOME_QPOS
@@ -603,8 +632,9 @@ class BimanualPegInHoleOpenArmSim:
         # 값에서 이어간다(위 __init__의 self._virtual_qpos 주석 참고).
         self._virtual_qpos = {name: float(self.data.qpos[self._arm_qposadr[name]]) for name in _ARM_JOINTS}
 
-        self.data.qpos[self._right_finger_qposadr] = _GRIPPER_CLOSED_CTRL
-        self.data.ctrl[self._gripper_actuator_id] = _GRIPPER_CLOSED_CTRL
+        self.data.qpos[self._right_finger_qposadr] = _RIGHT_GRIPPER_GRASP_CTRL
+        self.data.qpos[self._right_finger2_qposadr] = _RIGHT_GRIPPER_GRASP_CTRL
+        self.data.ctrl[self._gripper_actuator_id] = _RIGHT_GRIPPER_GRASP_CTRL
 
         mujoco.mj_forward(self.model, self.data)
         return outer_half
