@@ -250,19 +250,29 @@ _LEFT_ARM_HOME_QPOS = {
     "openarm_left_joint6": -0.21247894792122013,
     "openarm_left_joint7": -0.4267928774062192,
 }
-_GRIPPER_CLOSED_CTRL = 0.0  # 열어둔다 -- grasp은 weld가 담당하고 peg/hole은 contact exclude로
-# 손가락과 실제로 접촉하지 않는다(assets/peg_in_hole_bimanual_openarm.xml의
-# <contact><exclude> 참고). 처음엔 0.35(닫힘)로 뒀다가 실측에서 발견한 버그:
-# 두 죠(inner/outer finger) 사이에 아무것도 없는 채로 닫히면 그 둘끼리
-# 최대 1.5cm 파고드는 자기 충돌이 생기고, 그 반발력이 매 스텝 팔 전체를
-# 흔들어서(오른팔 관절이 커맨드와 무관하게 요동, 왼팔이 쥔 hole도 같이
-# 크게 드리프트) 삽입 자체가 실패했다 -- 열어두면(0) 죠끼리 안 닿아서
-# 이 문제가 없다(실측 확인, 아래 __main__ 결과 참고).
+_GRIPPER_CLOSED_CTRL = 0.0  # 실제로 닫힘 값이 맞다 -- 오른팔 finger_joint1/2
+# range가 [-0.7854, 0]이라 0이 열림이 아니라 "닫힘" 끝이다(양팔 다 range
+# 부호가 반대라 처음엔 반대로 착각했었음). mj_geomDistance로 직접 재보니
+# 이 각도에서 손끝 패드끼리 거의 닿기만 하고(파고듦 3μm 수준, 무시 가능)
+# 예전에 기록했던 "1.5cm 자기충돌" 관찰은 바디 world position을 잘못
+# 재던(조인트를 바꿔도 바디 원점 자체는 안 움직이는 걸 못 알아챈) 스크립트
+# 버그였던 것으로 보인다 -- 실제로는 자기충돌 문제가 없고, grasp이 이상해
+# 보였던 진짜 원인은 peg의 anchor 위치였다(아래 _PEG_LOCAL_OFFSET 참고).
 
 # peg free body를 오른팔 ee 프레임으로부터 직접 FK로 세팅할 때 쓰는 로컬
 # 오프셋 -- assets/peg_in_hole_bimanual_openarm.xml의 weld relpose와 동일한 값
 # (relpose_quat이 항등원이라 orientation은 그냥 ee_quat를 그대로 씀).
-_PEG_LOCAL_OFFSET = np.array([-0.00143, 0, -0.133])
+#
+# 렌더링 영상에서 "그리퍼로 집은게 아니라 들려있다"는 관찰 후 재조정:
+# 손가락을 _GRIPPER_CLOSED_CTRL(닫힘)로 뒀을 때 손끝 패드가 실제로
+# 맞닿는 지점을 mj_geomDistance로 측정하니 ee_base_link 로컬
+# (-0.0259,0,-0.1689)였다 -- 기존 anchor(-0.00143,0,-0.133)는 이 지점보다
+# 훨씬 위/옆이라(peg의 shaft 중심이 아니라 tip 끝 쪽이 겨우 그 근방)
+# 시각적으로 패드 사이에 물린 게 아니라 그 아래 매달린 것처럼 보였다.
+# 새 anchor는 그 접촉점이 shaft 중심에서 1.5cm 아래(로컬 z=-0.015)에
+# 오도록 잡아서 패드가 shaft를 실제로 쥐고, tip(로컬 z=-0.04)이 패드
+# 밑으로 2.5cm 튀어나오게 했다.
+_PEG_LOCAL_OFFSET = np.array([-0.0259, 0, -0.1539])
 
 _JAC_DAMPING = 1e-4
 _IK_MAX_ITERS = 200

@@ -190,8 +190,20 @@
 
     <!-- Peg: 오른팔(Actuator)이 쥐는 자유 바디. 초기 pos/quat은 weld가
          유지할 값과 이미 일치하도록 미리 FK로 계산해뒀다(위 docstring
-         "home 자세" 참고) -- mj_forward 첫 호출부터 바로 제자리. -->
-    <body name="peg" pos="0.18530863 -0.05537071 0.63932089"
+         "home 자세" 참고) -- mj_forward 첫 호출부터 바로 제자리.
+
+         anchor 재조정 (렌더링 영상에서 "그리퍼로 집은게 아니라 들려있다"는
+         관찰 이후): 기존 anchor(-0.00143,0,-0.133)는 손가락을 완전히 닫은
+         각도(finger_joint=0 -- 이게 바로 그 관절의 실제 "닫힘" 끝, 오른팔
+         쪽 range가 [-0.7854,0]이라 0이 열림이 아니라 닫힘이다, 처음에 반대로
+         착각했었음)에서 손끝 패드가 맞닿는 지점(mj_geomDistance로 직접
+         측정: ee_base_link 로컬 (-0.0259,0,-0.1689))보다 훨씬 아래(peg의
+         맨 끝)에 있어서, 시각적으로 peg가 패드 사이에 물린 게 아니라 그
+         아래에 매달린 것처럼 보였다. 새 anchor는 그 접촉점이 샤프트
+         중심에서 아래로 1.5cm 지점(peg 로컬 z=-0.015)에 오도록 잡아서,
+         패드가 샤프트를 실제로 쥐고 tip(로컬 z=-0.04)이 패드 밑으로
+         2.5cm 정도 튀어나오게 했다. -->
+    <body name="peg" pos="0.20974525 -0.05664839 0.61842089"
           quat="0.0261160787 0.0000000535 -0.0000000167 0.9996589170" gravcomp="1">
       <freejoint name="peg_free"/>
       <geom class="peg_contact" name="peg_shaft" type="box" size="0.01 0.01 0.03" mass="0.04" rgba="0.95 0.35 0.05 1"/>
@@ -208,7 +220,7 @@
          그리퍼 로컬 좌표계를 그대로 따라간다(hole처럼 월드 기준으로
          눕는 게 아님, 위 docstring 참고). -->
     <weld name="peg_grasp" body1="openarm_right_ee_base_link" body2="peg"
-          relpose="-0.00143 0 -0.133 1 0 0 0"
+          relpose="-0.0259 0 -0.1539 1 0 0 0"
           solref="0.002 1" solimp="0.95 0.99 0.0001 0.5 2"
           active="true"/>
     <!-- 왼팔이 hole_socket을 쥔다: relpose는 "왼팔이 위 home 자세에 있을
