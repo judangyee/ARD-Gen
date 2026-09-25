@@ -132,14 +132,50 @@ CMA-ES에 아무 방향 정보도 못 줬다 -- 지금은 "xy가 가장 잘 맞�
 시키기 어려워 보인다**(이 2차 결과는 파일에 반영 안 하고 버렸다 --
 그래서 위 "1차 탐색" 값이 지금 파일의 상태다).
 
-다음에 이어서 할 사람에게: 이 타이밍 불일치를 알았으니, (a) **Z_RATE를
-고정값이 아니라 "지금 xy가 얼마나 잘 맞았는지"에 따라 가변으로 만드는
-게** 가장 직접적인 다음 시도로 보인다(xy가 잘 맞을 때만 빠르게 내려가고,
-안 맞을 때는 느리게/멈추게) -- 지금 컨트롤러는 z 하강이 xy 정렬 상태와
-완전히 무관하게 일정한 속도라서, 정렬되는 순간을 그냥 흘려보낸다.
-(b) 아니면 관절별(6개 클래스가 아니라 14개 전부 따로) 게인을 CMA-ES로
-찾아서 xy/z를 동시에 만족하는 더 넓은 탐색 공간을 시도. (c) 아예 완전한
-역동역학 제어로 바꾸는 것도 여전히 유효한 다음 단계다.
+## 3차 시도: adaptive_z_rate (xy 정렬 상태에 따라 하강 속도를 가변으로) -- 역시 실패, 그리고 새로 발견한 문제
+
+위 타이밍 불일치 가설대로 `adaptive_z_rate()`를 구현했다(xy 오차가
+작을수록 Z_RATE에 가깝게, hole 반경의 `_Z_GATE_RADIUS_MULT`배 이상
+벗어나면 `_Z_GATE_MIN_FRACTION`(기본 0.15)까지 선형으로 낮춤 -- 완전히
+0으로는 안 낮춘다, 영원히 재정렬을 못 하면 그대로 멈춰버리는 걸 막기
+위해). `_run_episode_with_sim`과 render_peg_in_hole_bimanual_openarm.py
+양쪽 다 반영.
+
+**실측 결과: 도움이 안 됐고, 오히려 새로운 문제를 발견했다.**
+1. 게이트를 켠 상태로 1200스텝을 보면 스텝 280 근처에서 dx=6.4mm,
+   dy=1.5mm까지 잘 맞는데(z_rate가 그 순간 0.000566까지 올라감, 최대
+   Z_RATE=0.0006에 근접), 그 시점 z_gap은 여전히 0.059m -- 목표까지
+   필요한 하강량(0.10m) 중 절반도 못 왔다. 정렬 구간(대략 200스텝)
+   동안 번 z 진행량 자체가 필요량에 비해 너무 적어서, 게이트를 아무리
+   잘 조절해도 "그 구간 안에" 다 못 내려간다.
+2. `_Z_GATE_MIN_FRACTION`을 0.3/0.5/0.7/1.0(=사실상 게이트 없음, 원래
+   고정 Z_RATE와 동일)까지 다 실측해봤는데 **1200스텝 안에 전부
+   best_depth=0으로 실패**했다 -- 게이트를 아예 꺼도(1.0) 실패한다는
+   건, 이 게인 조합 자체가 (게이팅 여부와 무관하게) 1200스텝 예산
+   안에서는 원래 안 풀린다는 뜻이다(2차 탐색 검증 때 1200스텝을 본 건
+   이번이 처음이었다 -- 그 전엔 700~800스텝만 봤음).
+3. 더 심각한 발견: 게이트를 켠 채로 4000스텝까지 늘려봤더니, dy가
+   **경계진동이 아니라 계속 커지기만 했다**(step 400: 24mm -> step
+   4000: 89mm, 계속 우상향). 이전 절("1차/2차 탐색")에서 "한계 진동
+   (bounded oscillation)"이라고 적은 건 1000~1200스텝까지만 본 것에
+   근거한 결론이었는데, 더 길게 보면 사실은 아주 느리게 발산하고
+   있었을 가능성이 크다 -- **"진동"이라는 진단 자체가 관찰 구간이
+   짧아서 나온 착시였을 수 있다.**
+
+이 세 가지를 종합하면: 문제는 "xy 정렬 구간과 z 하강 속도의 타이밍이
+안 맞는다"는 표면적 증상보다 더 근본적이다 -- 지금의 (게인, Z_RATE,
+resolved-rate 방식) 조합 자체가 이 태스크(7-DOF, 무거운 팔, 좁은 hole
+공차)에서 장시간 안정적으로 수렴하는 궤적을 못 만든다. adaptive_z_rate
+자체는 코드에 남겨뒀다(방향은 맞다고 보임, 최소한 해는 안 됨 -- 다음
+사람이 더 나은 게인/제어 방식과 조합해서 다시 시도해볼 수 있게).
+
+다음에 이어서 할 사람에게: (a) 관절별(6개 클래스가 아니라 14개 전부
+따로) 게인을 CMA-ES로 찾되, **평가 길이를 최소 2000~4000스텝으로
+늘려서**(위 발견 때문에 700~1200스텝 평가는 "성공처럼 보이는" 거짓
+양성을 낼 수 있음) 장시간 안정성까지 같이 보는 것. (b) 아예 완전한
+역동역학(computed-torque) 제어로 바꾸는 것. (c) 혹은 애초에 hole
+공차(clearance)를 넓히거나 hover 간격을 줄여서 필요 이동거리 자체를
+줄이는 태스크 난이도 조정도 고려할 만하다.
 """
 from __future__ import annotations
 
@@ -154,8 +190,29 @@ _DEFAULT_XML = os.path.join(os.path.dirname(__file__), "..", "assets", "peg_in_h
 N_SUBSTEPS = 5  # mj_step 호출당 substep 수 (timestep=0.002 -> 제어 주기 dt=0.01s)
 DT = N_SUBSTEPS * 0.002
 
-Z_RATE = 0.0006  # m / control step, 삽입 방향 일정 속도 (VX300s와 동일)
+Z_RATE = 0.0006  # m / control step, xy 정렬 상태에 따라 게이팅되는 "최대" 하강 속도
 MAX_STEPS = 400
+
+# xy 정렬 상태에 따라 Z_RATE를 가변으로 만드는 게이트. 고정 Z_RATE로는
+# xy가 잘 맞는 짧은 구간(sim/peg_in_hole_bimanual_openarm_sim.py 모듈
+# docstring "2차 탐색" 절 참고 -- 스텝 200 근처에서 dx=2mm,dy=5mm까지
+# 맞았는데 z_gap은 아직 0.065m나 남아있었음)을 z가 못 따라잡고 지나쳐서
+# 실패했다. xy가 잘 맞을 때만 빠르게 내려가고 안 맞을 때는 느리게 만들면
+# (정렬되는 순간을 "기다렸다가" 그때 내려가는 효과) 이 타이밍 불일치를
+# 줄일 수 있을 것으로 보고 추가했다 -- __main__ 결과가 최초 실측.
+_Z_GATE_MIN_FRACTION = 0.15  # xy가 아무리 안 맞아도 완전히 안 멈추고 이 비율로는 계속 내려감(영원히 못 만나는 상황 방지)
+_Z_GATE_RADIUS_MULT = 2.0  # 이 배수*outer_half 밖이면 최소 속도로 클립
+
+
+def adaptive_z_rate(dx: float, dy: float, outer_half: float) -> float:
+    """현재 xy 정렬 오차(dx,dy)와 hole 반경(outer_half)으로 이번 스텝의
+    하강 속도를 정한다. xy_err=0이면 Z_RATE(최대), xy_err가
+    _Z_GATE_RADIUS_MULT*outer_half 이상이면 Z_RATE*_Z_GATE_MIN_FRACTION
+    (최소)로 선형 보간."""
+    xy_err = (dx**2 + dy**2) ** 0.5
+    align_quality = max(0.0, 1.0 - xy_err / (outer_half * _Z_GATE_RADIUS_MULT))
+    scale = _Z_GATE_MIN_FRACTION + (1.0 - _Z_GATE_MIN_FRACTION) * align_quality
+    return Z_RATE * scale
 
 TARGET_INSERTION_DEPTH = 0.04  # m (scene_config로 덮어쓸 수 있음)
 
@@ -589,7 +646,15 @@ def _run_episode_with_sim(
         prev_force_error_xy = force_error_xy
 
         delta_xy = -kp_xy * force_error_xy - kd_xy * d_force_error_xy
-        delta = np.array([delta_xy[0], delta_xy[1], -Z_RATE])
+
+        # 이번 스텝 시작 시점(직전 스텝 결과)의 정렬 상태로 이번 스텝의
+        # 하강 속도를 정한다 -- adaptive_z_rate 정의부 주석 참고.
+        cur_peg_tip = sim.get_peg_tip_pos()
+        cur_hole_center = sim.get_hole_center_pos()
+        cur_dx = float(cur_hole_center[0] - cur_peg_tip[0])
+        cur_dy = float(cur_hole_center[1] - cur_peg_tip[1])
+        z_rate = adaptive_z_rate(cur_dx, cur_dy, outer_half)
+        delta = np.array([delta_xy[0], delta_xy[1], -z_rate])
 
         sim.step(delta)
 

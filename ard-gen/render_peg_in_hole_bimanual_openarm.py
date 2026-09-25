@@ -22,9 +22,9 @@ import numpy as np
 from sim.peg_in_hole_bimanual_openarm_sim import (
     DT,
     MAX_STEPS,
-    Z_RATE,
     BimanualPegInHoleOpenArmSim,
     _default_scene_config,
+    adaptive_z_rate,
 )
 
 
@@ -80,7 +80,13 @@ def main() -> None:
         d_force_error_xy = (force_error_xy - prev_force_error_xy) / DT
         prev_force_error_xy = force_error_xy
         delta_xy = -kp_xy * force_error_xy - kd_xy * d_force_error_xy
-        delta = np.array([delta_xy[0], delta_xy[1], -Z_RATE])
+
+        cur_peg_tip = sim.get_peg_tip_pos()
+        cur_hole_center = sim.get_hole_center_pos()
+        cur_dx = float(cur_hole_center[0] - cur_peg_tip[0])
+        cur_dy = float(cur_hole_center[1] - cur_peg_tip[1])
+        z_rate = adaptive_z_rate(cur_dx, cur_dy, outer_half)
+        delta = np.array([delta_xy[0], delta_xy[1], -z_rate])
 
         sim.step(delta)
         capture()
