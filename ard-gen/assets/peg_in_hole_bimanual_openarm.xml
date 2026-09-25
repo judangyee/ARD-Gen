@@ -233,20 +233,20 @@
        -- kp/kv 근거는 위 docstring "3. 왼팔도 능동 제어가 필요해서..."
        참고. -->
   <actuator>
-    <position name="pos_right_j1" joint="openarm_right_joint1" kp="2000" kv="200" ctrlrange="-1.3963 3.4907"/>
-    <position name="pos_right_j2" joint="openarm_right_joint2" kp="2000" kv="200" ctrlrange="-0.17453 3.3161"/>
-    <position name="pos_right_j3" joint="openarm_right_joint3" kp="1500" kv="150" ctrlrange="-1.5708 1.5708"/>
-    <position name="pos_right_j4" joint="openarm_right_joint4" kp="1500" kv="150" ctrlrange="0 2.4435"/>
-    <position name="pos_right_j5" joint="openarm_right_joint5" kp="600" kv="60" ctrlrange="-1.5708 1.5708"/>
-    <position name="pos_right_j6" joint="openarm_right_joint6" kp="600" kv="60" ctrlrange="-0.7854 0.7854"/>
-    <position name="pos_right_j7" joint="openarm_right_joint7" kp="600" kv="60" ctrlrange="-1.5708 1.5708"/>
-    <position name="pos_left_j1" joint="openarm_left_joint1" kp="2000" kv="200" ctrlrange="-3.4907 1.3963"/>
-    <position name="pos_left_j2" joint="openarm_left_joint2" kp="2000" kv="200" ctrlrange="-3.3161 0.17453"/>
-    <position name="pos_left_j3" joint="openarm_left_joint3" kp="1500" kv="150" ctrlrange="-1.5708 1.5708"/>
-    <position name="pos_left_j4" joint="openarm_left_joint4" kp="1500" kv="150" ctrlrange="0 2.4435"/>
-    <position name="pos_left_j5" joint="openarm_left_joint5" kp="600" kv="60" ctrlrange="-1.5708 1.5708"/>
-    <position name="pos_left_j6" joint="openarm_left_joint6" kp="600" kv="60" ctrlrange="-0.7854 0.7854"/>
-    <position name="pos_left_j7" joint="openarm_left_joint7" kp="600" kv="60" ctrlrange="-1.5708 1.5708"/>
+    <position name="pos_right_j1" joint="openarm_right_joint1" kp="2081.80" kv="1565.01" ctrlrange="-1.3963 3.4907"/>
+    <position name="pos_right_j2" joint="openarm_right_joint2" kp="2081.80" kv="1565.01" ctrlrange="-0.17453 3.3161"/>
+    <position name="pos_right_j3" joint="openarm_right_joint3" kp="145.00" kv="1052.43" ctrlrange="-1.5708 1.5708"/>
+    <position name="pos_right_j4" joint="openarm_right_joint4" kp="145.00" kv="1052.43" ctrlrange="0 2.4435"/>
+    <position name="pos_right_j5" joint="openarm_right_joint5" kp="358.48" kv="569.50" ctrlrange="-1.5708 1.5708"/>
+    <position name="pos_right_j6" joint="openarm_right_joint6" kp="358.48" kv="569.50" ctrlrange="-0.7854 0.7854"/>
+    <position name="pos_right_j7" joint="openarm_right_joint7" kp="358.48" kv="569.50" ctrlrange="-1.5708 1.5708"/>
+    <position name="pos_left_j1" joint="openarm_left_joint1" kp="2081.80" kv="1565.01" ctrlrange="-3.4907 1.3963"/>
+    <position name="pos_left_j2" joint="openarm_left_joint2" kp="2081.80" kv="1565.01" ctrlrange="-3.3161 0.17453"/>
+    <position name="pos_left_j3" joint="openarm_left_joint3" kp="145.00" kv="1052.43" ctrlrange="-1.5708 1.5708"/>
+    <position name="pos_left_j4" joint="openarm_left_joint4" kp="145.00" kv="1052.43" ctrlrange="0 2.4435"/>
+    <position name="pos_left_j5" joint="openarm_left_joint5" kp="358.48" kv="569.50" ctrlrange="-1.5708 1.5708"/>
+    <position name="pos_left_j6" joint="openarm_left_joint6" kp="358.48" kv="569.50" ctrlrange="-0.7854 0.7854"/>
+    <position name="pos_left_j7" joint="openarm_left_joint7" kp="358.48" kv="569.50" ctrlrange="-1.5708 1.5708"/>
   </actuator>
 
   <keyframe>
