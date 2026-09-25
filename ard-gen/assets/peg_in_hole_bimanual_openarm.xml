@@ -166,7 +166,7 @@
       <geom name="table_leg_4" type="box" pos="-0.22 -0.22 0.19" size="0.015 0.015 0.19" contype="0" conaffinity="0" rgba="0.35 0.25 0.18 1"/>
     </body>
 
-    <camera name="wide_cam" mode="targetbody" target="hole_socket" pos="-0.60479 -0.68597 0.9"/>
+    <camera name="wide_cam" mode="targetbody" target="hole_socket" pos="1.03597 0.54521 0.9"/>
     <!-- 실제 OpenArm 하드웨어 사진(사용자가 제공) 참고: 두 팔이 붙는
          지점 사이, 받침대 꼭대기(z=0.698)에 작은 헤드 카메라 박스가
          얹혀 있고, 작업 공간을 향해 아래를 보는 각도다. y=0(두 팔
