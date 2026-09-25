@@ -154,15 +154,14 @@
     <geom name="ground" type="plane" pos="0 0 0" size="0.8 0.8 0.01" contype="0" conaffinity="0" rgba="0.5 0.5 0.52 1"/>
 
     <camera name="wide_cam" mode="targetbody" target="hole_socket" pos="-0.4 0.75 0.9"/>
-    <!-- 로봇 몸통(받침대) 전방 끝, 팔이 붙는 높이(z=0.698, 정확히 그 값
-         -- openarm/pedestal/openarm_pedestal.xml 참고)에서 정면(+x, 팔이
-         뻗어나가는 방향)을 수평으로 바라보는 고정 카메라 -- 이제 "위에서
-         내려다보는" 게 아니라 로봇 눈높이에서 정면을 보는 뷰다. x=0.075는
-         받침대 몸체(openarm_body_link0) 충돌 지오메트리의 실측 전방
-         끝(center -0.0207 + half-width 0.095 ≈ 0.074, mj_geom_aabb로 확인).
-         xyaxes로 카메라 -z(시선)=world +x, +y(위)=world +z가 되도록 맞춤
-         (local_x = local_y × local_z = (0,-1,0)). -->
-    <camera name="top_cam" pos="0.075 0.0 0.698" xyaxes="0 -1 0 0 0 1" fovy="90"/>
+    <!-- 실제 OpenArm 하드웨어 사진(사용자가 제공) 참고: 두 팔이 붙는
+         지점 사이, 받침대 꼭대기(z=0.698)에 작은 헤드 카메라 박스가
+         얹혀 있고, 작업 공간을 향해 아래를 보는 각도다. y=0(두 팔
+         정중앙), x는 어깨 관절 바로 앞(0.05m), z는 받침대 꼭대기 바로
+         위(0.75) -- 그 사진 속 카메라 박스 위치와 같은 자리. 각도는
+         손으로 안 맞추고 mode="targetbody"로 hole_socket을 자동으로
+         보게 했다(수동 xyaxes 계산은 반복적으로 틀렸었다). -->
+    <camera name="top_cam" mode="targetbody" target="hole_socket" pos="0.05 0.0 0.75"/>
 
     <!-- Hole: 왼팔(Stabilizer)이 쥐는 자유 바디. 벽/바닥 치수는
          assets/peg_in_hole.xml과 동일(위 docstring 참고). -->
