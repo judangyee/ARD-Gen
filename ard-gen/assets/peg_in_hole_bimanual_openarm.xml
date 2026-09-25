@@ -153,6 +153,19 @@
 
     <geom name="ground" type="plane" pos="0 0 0" size="0.8 0.8 0.01" contype="0" conaffinity="0" rgba="0.5 0.5 0.52 1"/>
 
+    <!-- 로봇 앞에 놓는 테이블(순수 시각 요소, 충돌 없음 -- ground와 같은
+         방식). 너비(y)는 로봇 받침대 폭의 2배: 받침대 충돌 지오메트리
+         (openarm_body_link0_collision) half-width가 y=0.125라 폭
+         0.25m, 그 2배인 0.5m로 잡았다(mj_geom_aabb로 실측). 로봇 앞
+         (+x, 팔이 뻗는 방향)에 다리 4개 달린 책상 모양으로 뒀다. -->
+    <body name="table" pos="0.35 0 0">
+      <geom name="table_top" type="box" pos="0 0 0.38" size="0.25 0.25 0.015" contype="0" conaffinity="0" rgba="0.55 0.4 0.3 1"/>
+      <geom name="table_leg_1" type="box" pos="0.22 0.22 0.19" size="0.015 0.015 0.19" contype="0" conaffinity="0" rgba="0.35 0.25 0.18 1"/>
+      <geom name="table_leg_2" type="box" pos="-0.22 0.22 0.19" size="0.015 0.015 0.19" contype="0" conaffinity="0" rgba="0.35 0.25 0.18 1"/>
+      <geom name="table_leg_3" type="box" pos="0.22 -0.22 0.19" size="0.015 0.015 0.19" contype="0" conaffinity="0" rgba="0.35 0.25 0.18 1"/>
+      <geom name="table_leg_4" type="box" pos="-0.22 -0.22 0.19" size="0.015 0.015 0.19" contype="0" conaffinity="0" rgba="0.35 0.25 0.18 1"/>
+    </body>
+
     <camera name="wide_cam" mode="targetbody" target="hole_socket" pos="-0.4 0.75 0.9"/>
     <!-- 실제 OpenArm 하드웨어 사진(사용자가 제공) 참고: 두 팔이 붙는
          지점 사이, 받침대 꼭대기(z=0.698)에 작은 헤드 카메라 박스가
