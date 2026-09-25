@@ -9,3 +9,4 @@ data/bootstrap/*.npz
 data/bootstrap/*.pt
 data/episodes/*.npz
 screw_driving_*.mp4
+assets/_gain_search_tmp_*.xml
