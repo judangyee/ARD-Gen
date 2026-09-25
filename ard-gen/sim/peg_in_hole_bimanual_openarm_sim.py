@@ -1008,10 +1008,10 @@ def _run_episode_with_sim(
 
 
 if __name__ == "__main__":
-    # sim/peg_in_hole_sim.py의 README 대표 시나리오와 같은 오프셋(14mm/0mm)에
-    # VX300s가 찾은 기존 게인을 그대로 넣어서, 7-DOF OpenArm에서도 통하는지
-    # 처음 실측한다.
-    gains = {"Kp_xy": 0.000515, "Kd_xy": 2.4e-05}
+    # xy를 접촉힘이 아니라 hole 실제 위치로 직접 targeting하도록 바꾼 뒤
+    # (_run_episode_with_sim 주석 참고) optimize/peg_in_hole_openarm_admittance_gain_search.py로
+    # 다시 찾은 값 -- 1500스텝 평가에서 success_step~478로 안정적으로 성공.
+    gains = {"Kp_xy": 0.124630, "Kd_xy": 0.001125}
     cfg = _default_scene_config()
     cfg["peg_init_offset_xy"] = (0.014, 0.0)
     result = run_episode(gains, cfg)

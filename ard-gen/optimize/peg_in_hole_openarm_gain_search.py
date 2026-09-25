@@ -15,6 +15,19 @@ kp/kv 체계적 탐색" 절의 실측 결과를 낸 스크립트를 정식으로
 (이전 버전은 평균/최고 삽입 깊이만 봐서, "거의 맞을 뻔한" 시도와 "전혀
 안 맞은" 시도를 구분 못 했다).
 
+## (주의) xy 제어 스킴이 이후 바뀜 -- 이 스크립트는 안 고쳤음
+
+이 스크립트의 eval_gains()는 여전히 force 기반 admittance(delta_xy를
+접촉힘으로 계산)와 고정 Z_RATE를 쓴다. 이후 "지금 역기구학으로 한거
+아니야? 아직도 위치를 못잡는데?" 피드백으로 xy를 hole 실제 위치 직접
+targeting으로 바꿨고(sim 모듈의 _run_episode_with_sim,
+peg_in_hole_openarm_admittance_gain_search.py 참고) adaptive_z_rate에
+오버슈트 정지도 추가됐다 -- 이 스크립트만 그 변경을 안 반영했다. 여기서
+찾은 kp/kv/nullspace 값 자체(REFINE_FROM)는 관절 저수준 제어 문제라 xy
+스킴과 무관하게 여전히 유효하지만, 이 스크립트를 다시 돌리면 그 실행
+자체는 지금 실제로 쓰이는 동작과 다른 조건(force 기반 xy, 고정 Z_RATE)
+으로 평가하는 것이니 결과를 그대로 신뢰하면 안 된다.
+
 ## 성공 판정 버그(실측으로 발견, 고침)
 
 home 자세 재조정(peg_in_hole_openarm_home_pose_search.py) 직후 이
