@@ -154,12 +154,17 @@
     <geom name="ground" type="plane" pos="0 0 0" size="0.8 0.8 0.01" contype="0" conaffinity="0" rgba="0.5 0.5 0.52 1"/>
 
     <camera name="wide_cam" mode="targetbody" target="hole_socket" pos="-0.4 0.75 0.9"/>
-    <!-- 로봇 받침대(안 움직이는 고정 베이스) 정중앙 바로 위에서 수직으로
-         내려다보는 고정 카메라("로봇 머리에서 내려다보는" 뷰) --
-         mode="targetbody"처럼 하나 대상을 따라가며 각도를 트는 게 아니라
-         완전히 고정된 자세(quat 항등원 = 로컬 -z가 그대로 world -z,
-         즉 똑바로 아래). -->
-    <camera name="top_cam" pos="0.0 0.0 2.3" quat="1 0 0 0"/>
+    <!-- 로봇 몸(받침대, 안 움직이는 고정 베이스) 위에 얹힌 것처럼 보이는
+         고정 카메라("로봇 머리에서 내려다보는" 뷰) -- 받침대 꼭대기
+         (z=0.698, openarm/pedestal/openarm_pedestal.xml 참고)는 <attach>로
+         봉인된 바디라 실제로 그 바디의 자식으로 카메라를 못 붙이지만,
+         받침대 자체가 고정 베이스(절대 안 움직임)라 월드 기준으로
+         정확히 그 바로 위에 고정해두면 결과는 동일하다. 받침대 꼭대기에
+         바짝 붙이면(z<0.9 근처) 팔 베이스 메시에 카메라가 파묻혀서
+         어두워지고 안 보였다(실측 확인) -- 팔 베이스 높이(~10cm) 여유를
+         두고 z=1.0으로, 그래도 가까운 만큼 fovy를 기본 45도보다
+         넓혔다(90도). -->
+    <camera name="top_cam" pos="0.0 0.0 1.0" quat="1 0 0 0" fovy="90"/>
 
     <!-- Hole: 왼팔(Stabilizer)이 쥐는 자유 바디. 벽/바닥 치수는
          assets/peg_in_hole.xml과 동일(위 docstring 참고). -->
