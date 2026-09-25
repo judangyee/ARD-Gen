@@ -263,16 +263,21 @@ _GRIPPER_CLOSED_CTRL = 0.0  # 실제로 닫힘 값이 맞다 -- 오른팔 finger
 # 오프셋 -- assets/peg_in_hole_bimanual_openarm.xml의 weld relpose와 동일한 값
 # (relpose_quat이 항등원이라 orientation은 그냥 ee_quat를 그대로 씀).
 #
-# 렌더링 영상에서 "그리퍼로 집은게 아니라 들려있다"는 관찰 후 재조정:
-# 손가락을 _GRIPPER_CLOSED_CTRL(닫힘)로 뒀을 때 손끝 패드가 실제로
+# 재조정 1차 -- 렌더링 영상에서 "그리퍼로 집은게 아니라 들려있다"는 관찰
+# 후: 손가락을 _GRIPPER_CLOSED_CTRL(닫힘)로 뒀을 때 손끝 패드가 실제로
 # 맞닿는 지점을 mj_geomDistance로 측정하니 ee_base_link 로컬
 # (-0.0259,0,-0.1689)였다 -- 기존 anchor(-0.00143,0,-0.133)는 이 지점보다
 # 훨씬 위/옆이라(peg의 shaft 중심이 아니라 tip 끝 쪽이 겨우 그 근방)
 # 시각적으로 패드 사이에 물린 게 아니라 그 아래 매달린 것처럼 보였다.
-# 새 anchor는 그 접촉점이 shaft 중심에서 1.5cm 아래(로컬 z=-0.015)에
-# 오도록 잡아서 패드가 shaft를 실제로 쥐고, tip(로컬 z=-0.04)이 패드
-# 밑으로 2.5cm 튀어나오게 했다.
-_PEG_LOCAL_OFFSET = np.array([-0.0259, 0, -0.1539])
+#
+# 재조정 2차 -- "손끝으로 잡아야지 중간에 잡고있으니까 안되지" 피드백
+# 후: 1차 수정은 접촉점을 shaft "중심에서 1.5cm 아래"(로컬 z=-0.015)에
+# 둬서 shaft 길이 대부분(위로 4.5cm)이 손끝 안쪽에 걸쳐 있었다 -- 손가락
+# 끝이 아니라 중간을 쥔 것처럼 보인 원인. 지금은 접촉점이 peg shaft의
+# 맨 위 끝(로컬 z=+0.03)에서 1cm만 떨어진 지점(로컬 z=+0.02)에 오도록
+# 잡아서, peg 전체 길이 대부분(6cm, tip까지 7cm)이 손끝 아래로 늘어지고
+# 실제로 손끝 끄트머리만 peg를 살짝 물게 했다.
+_PEG_LOCAL_OFFSET = np.array([-0.0259, 0, -0.18891])
 
 _JAC_DAMPING = 1e-4
 _IK_MAX_ITERS = 200
