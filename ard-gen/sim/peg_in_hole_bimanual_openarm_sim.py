@@ -234,12 +234,30 @@ MAX_STEPS = 400
 _Z_GATE_MIN_FRACTION = 0.15  # xy가 아무리 안 맞아도 완전히 안 멈추고 이 비율로는 계속 내려감(영원히 못 만나는 상황 방지)
 _Z_GATE_RADIUS_MULT = 2.0  # 이 배수*outer_half 밖이면 최소 속도로 클립
 
+# "아까보다는 나아졌네 근데 구멍위치를 잘못파악하고있는거 같은데" 피드백으로
+# 조사해서 발견한 버그: _Z_GATE_MIN_FRACTION이 "절대 완전히 안 멈춘다"는
+# 뜻이라, xy가 한 번도 안 맞으면 z가 목표 깊이를 한참 지나서도 끝없이
+# 계속 내려갔다. 실측(400스텝 예산을 넘겨 4000스텝까지 봄): force 센서가
+# 그동안 거의 항상 0(접촉이 한 번도 없었다는 뜻)인데도 raw depth는
+# hole 자체 깊이(0.059m)의 2배 넘게 계속 커졌고, xy 드리프트도 같이
+# 계속 커졌다 -- 팔이 이미 지나친 깊이까지 계속 아래로 명령받으면서
+# Jacobian 의사역행렬 해가 (그 방향이 점점 더 도달하기 어려워지면서)
+# xy 쪽으로 새어나간 것으로 보인다. "정렬이 안 맞아도 끝까지 계속
+# 내려간다"는 원래 설계 의도(위 _Z_GATE_MIN_FRACTION 주석)는 유지하되,
+# 목표 깊이를 한참 지나고도(_OVERSHOOT_DEPTH_MULT배) 정렬이 안 됐으면
+# 그건 "곧 맞겠지"가 아니라 "이미 지나쳤다"는 신호로 보고 완전히 멈춘다.
+_OVERSHOOT_DEPTH_MULT = 1.5
 
-def adaptive_z_rate(dx: float, dy: float, outer_half: float) -> float:
+
+def adaptive_z_rate(dx: float, dy: float, outer_half: float, raw_depth: float, target_depth: float) -> float:
     """현재 xy 정렬 오차(dx,dy)와 hole 반경(outer_half)으로 이번 스텝의
     하강 속도를 정한다. xy_err=0이면 Z_RATE(최대), xy_err가
     _Z_GATE_RADIUS_MULT*outer_half 이상이면 Z_RATE*_Z_GATE_MIN_FRACTION
-    (최소)로 선형 보간."""
+    (최소)로 선형 보간. 단, raw_depth(정렬 여부와 무관한 원시 깊이)가
+    target_depth의 _OVERSHOOT_DEPTH_MULT배를 넘으면(이미 hole을 지나쳤다는
+    뜻) 더 내려가지 않는다(0 반환)."""
+    if raw_depth >= _OVERSHOOT_DEPTH_MULT * target_depth:
+        return 0.0
     xy_err = (dx**2 + dy**2) ** 0.5
     align_quality = max(0.0, 1.0 - xy_err / (outer_half * _Z_GATE_RADIUS_MULT))
     scale = _Z_GATE_MIN_FRACTION + (1.0 - _Z_GATE_MIN_FRACTION) * align_quality
@@ -394,7 +412,7 @@ _JAC_DAMPING = 1e-4
 _IK_MAX_ITERS = 200
 _IK_STEP_SCALE = 0.5
 _NULLSPACE_GAIN = 0.03  # 근거: _advance_virtual docstring 참고 (CMA-ES 게인 탐색으로 재조정)
-_LIMIT_AVOID_MARGIN = 0.08  # 근거: _advance_virtual docstring "관절 한계 회피" 참고
+_LIMIT_FREEZE_MARGIN = 0.08  # 근거: _advance_virtual docstring "관절 한계 회피" 참고
 
 # 오른팔 역동역학(computed-torque) 제어용 -- "2번(완전한 역동역학 제어로
 # 바꾸기)" 결정 이후 추가(모듈 최상단 docstring "grasp anchor 재조정 이후"
@@ -656,44 +674,73 @@ class BimanualPegInHoleOpenArmSim:
         보조 속도를 더한다. _NULLSPACE_GAIN=0.05로 실측 확인(그 이상은
         딱히 개선 없었고 낮추면 표류가 다시 나타남, __main__ 결과 참고).
 
-        관절 한계 회피 -- computed-torque 전환(_TORQUE_OMEGA_N 주석 참고)
-        후에도 admittance 루프를 4000스텝 돌리면 이전과 거의 똑같은
-        패턴(2000스텝까지 34~48mm, 그 뒤 4000스텝에 273mm)으로 발산했다.
-        관절 fraction을 스텝별로 찍어보니 원인은 저수준 제어가 아니라
-        여기였다: openarm_right_joint1이 step~2000 근처에서 하한(range
-        0%)에 완전히 눌어붙고("<-- LIMIT"), 그 뒤로 계속 그 상태로
-        남았다 -- 정확히 발산이 시작된 시점과 일치한다. null-space의
-        "home으로" 항만으로는 이 관절을 한계에서 못 떼어냈다(task 성분이
-        그 방향으로 계속 밀거나, null-space 투영이 이 관절 성분을 상당히
-        줄여버린 것으로 보임). 그래서 최종 dq에 한계 근접 시 그 방향
-        스텝을 줄이는 항을 직접 추가했다(_LIMIT_AVOID_MARGIN 이내에서
-        한계 쪽으로 가는 성분만 선형으로 0까지 줄임, 반대 방향 이동은
-        그대로 둠 -- null-space 투영과 무관하게 항상 적용되도록 dq_task/
-        dq_null을 합친 뒤 마지막에 적용)."""
+        관절 한계 회피 -- 1차 시도(폐기): computed-torque 전환
+        (_TORQUE_OMEGA_N 주석 참고) 후에도 admittance 루프를 4000스텝
+        돌리면 이전과 거의 똑같은 패턴(2000스텝까지 34~48mm, 그 뒤
+        4000스텝에 273mm)으로 발산했다. 관절 fraction을 스텝별로
+        찍어보니 openarm_right_joint1이 하한(range 0%)에 눌어붙고 그대로
+        있었다. 처음엔 최종 dq에 "한계 근접 시 그 방향 성분을 선형으로
+        줄이는" 항을 사후 적용했는데, xy 명령 없이 순수 -Z 명령만 줘서
+        격리 테스트해보니(admittance 없이도 같은 발산이 재현됨을 먼저
+        확인) 이 사후 조정 자체가 누출의 원인이었다: null-space를
+        꺼봐도(_NULLSPACE_GAIN=0) 발산이 그대로였고, 반대로 이 사후
+        조정만 꺼보니(관절이 진짜 하드 리밋에 부딪힐 때까지는) 누출이
+        거의 사라졌다 -- 즉 "한계 근처에서 dq를 사후에 줄이는" 접근
+        자체가 J@dq_actual != delta_pos_world를 만들어서 그 차이가
+        그대로 peg tip의 원치 않는 xy 속도로 새는 것이었다(하드 클립도
+        같은 종류의 사후 조정이라 똑같이 샌다).
+
+        2차 시도(현재 채택): 사후에 dq를 자르는 대신, 한계에 아주
+        가깝고(_LIMIT_FREEZE_MARGIN 이내) **이번 스텝의 미정정
+        (unconstrained) 풀이가 그 방향으로 더 미는** 관절만 Jacobian에서
+        그 열을 아예 0으로 만들고 다시 풀어서(그 관절은 "이번 스텝엔
+        없는 자유도"로 취급) 나머지 관절들이 J^+ 재계산을 통해 자연스럽게
+        그 몫을 대신 맡게 한다 -- 이러면 (수정된) J@dq=delta_pos_world
+        관계가 계속 성립해서 사후 clip류의 누출이 구조적으로 없다.
+        한계에서 멀어지는 방향(그 관절을 다시 살릴 수 있는 방향)은
+        얼리지 않는다."""
         _, jacp = self._virtual_peg_tip_and_jac()
-        jjt = jacp @ jacp.T + _JAC_DAMPING * np.eye(3)
-        jacp_pinv = jacp.T @ np.linalg.inv(jjt)
+
+        def _solve(J: np.ndarray) -> np.ndarray:
+            jjt = J @ J.T + _JAC_DAMPING * np.eye(3)
+            return J.T @ np.linalg.inv(jjt)
+
+        # 1단계: 미정정(unconstrained) 풀이로 "이번 스텝에 한계 쪽으로 더
+        # 밀릴" 관절을 찾는다.
+        jacp_pinv0 = _solve(jacp)
+        dq_task0 = jacp_pinv0 @ delta_pos_world
+        jacp_frozen = jacp.copy()
+        frozen_dofs = []
+        for name in _ARM_JOINTS:
+            dof = self._arm_dofadr[name]
+            lo, hi = self.model.jnt_range[self.model.joint(name).id]
+            frac = (self._virtual_qpos[name] - lo) / (hi - lo)
+            if (frac < _LIMIT_FREEZE_MARGIN and dq_task0[dof] < 0.0) or (
+                frac > 1.0 - _LIMIT_FREEZE_MARGIN and dq_task0[dof] > 0.0
+            ):
+                jacp_frozen[:, dof] = 0.0
+                frozen_dofs.append(dof)
+
+        # 2단계: 얼린 관절을 뺀 Jacobian으로 다시 풀어서 나머지 관절이
+        # 대신하게 한다 -- 이러면 (수정된) J@dq=delta_pos_world 관계가
+        # 계속 성립해서 사후 clip류의 xy 누출이 구조적으로 없다.
+        jacp_pinv = _solve(jacp_frozen)
         dq_task = jacp_pinv @ delta_pos_world
 
         nv = self.model.nv
-        null_proj = np.eye(nv) - jacp_pinv @ jacp
+        null_proj = np.eye(nv) - jacp_pinv @ jacp_frozen
         dq_null = np.zeros(nv)
         for name in _ARM_JOINTS:
             dof = self._arm_dofadr[name]
             dq_null[dof] = _NULLSPACE_GAIN * (_HOME_QPOS[name] - self._virtual_qpos[name])
         dq = dq_task + null_proj @ dq_null
+        for dof in frozen_dofs:
+            dq[dof] = 0.0
 
         for name in _ARM_JOINTS:
             dof = self._arm_dofadr[name]
             lo, hi = self.model.jnt_range[self.model.joint(name).id]
-            span = hi - lo
-            frac = (self._virtual_qpos[name] - lo) / span
-            delta = dq[dof]
-            if delta < 0.0 and frac < _LIMIT_AVOID_MARGIN:
-                delta *= max(0.0, frac / _LIMIT_AVOID_MARGIN)
-            elif delta > 0.0 and frac > 1.0 - _LIMIT_AVOID_MARGIN:
-                delta *= max(0.0, (1.0 - frac) / _LIMIT_AVOID_MARGIN)
-            self._virtual_qpos[name] = float(np.clip(self._virtual_qpos[name] + delta, lo, hi))
+            self._virtual_qpos[name] = float(np.clip(self._virtual_qpos[name] + dq[dof], lo, hi))
 
     def _sync_peg_to_arm_fk(self) -> None:
         """peg free body의 qpos를 지금 오른팔 ee pose로부터 FK로 직접
@@ -892,7 +939,8 @@ def _run_episode_with_sim(
         cur_hole_center = sim.get_hole_center_pos()
         cur_dx = float(cur_hole_center[0] - cur_peg_tip[0])
         cur_dy = float(cur_hole_center[1] - cur_peg_tip[1])
-        z_rate = adaptive_z_rate(cur_dx, cur_dy, outer_half)
+        cur_raw_depth = max(0.0, float(cur_hole_center[2] - cur_peg_tip[2]))
+        z_rate = adaptive_z_rate(cur_dx, cur_dy, outer_half, cur_raw_depth, target_depth)
         delta = np.array([delta_xy[0], delta_xy[1], -z_rate])
 
         sim.step(delta)

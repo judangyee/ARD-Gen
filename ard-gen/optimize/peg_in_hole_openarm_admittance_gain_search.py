@@ -83,7 +83,8 @@ def eval_gains(sim: BimanualPegInHoleOpenArmSim, kp_xy: float, kd_xy: float) -> 
         cur_hole = sim.get_hole_center_pos()
         cur_dx = float(cur_hole[0] - cur_tip[0])
         cur_dy = float(cur_hole[1] - cur_tip[1])
-        z_rate = adaptive_z_rate(cur_dx, cur_dy, outer_half)
+        cur_raw_depth = max(0.0, float(cur_hole[2] - cur_tip[2]))
+        z_rate = adaptive_z_rate(cur_dx, cur_dy, outer_half, cur_raw_depth, target_depth)
         delta = np.array([delta_xy[0], delta_xy[1], -z_rate])
         try:
             sim.step(delta)

@@ -88,7 +88,8 @@ def main() -> None:
         cur_hole_center = sim.get_hole_center_pos()
         cur_dx = float(cur_hole_center[0] - cur_peg_tip[0])
         cur_dy = float(cur_hole_center[1] - cur_peg_tip[1])
-        z_rate = adaptive_z_rate(cur_dx, cur_dy, outer_half)
+        cur_raw_depth = max(0.0, float(cur_hole_center[2] - cur_peg_tip[2]))
+        z_rate = adaptive_z_rate(cur_dx, cur_dy, outer_half, cur_raw_depth, target_depth)
         delta = np.array([delta_xy[0], delta_xy[1], -z_rate])
 
         sim.step(delta)
