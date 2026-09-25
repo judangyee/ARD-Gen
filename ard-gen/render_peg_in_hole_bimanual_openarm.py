@@ -25,6 +25,8 @@ from sim.peg_in_hole_bimanual_openarm_sim import (
     BimanualPegInHoleOpenArmSim,
     _default_scene_config,
     adaptive_z_rate,
+    _MAX_SANE_DEPTH_M,
+    _SUCCESS_HOLD_STEPS,
 )
 
 
@@ -73,6 +75,7 @@ def main() -> None:
     insertion_depth = 0.0
     max_force = 0.0
     max_xy_drift = 0.0
+    hold_count = 0
 
     for step in range(1, MAX_STEPS + 1):
         force, _torque = sim.get_force_torque()
@@ -99,9 +102,10 @@ def main() -> None:
         dy = float(hole_center[1] - peg_tip[1])
         max_xy_drift = max(max_xy_drift, (dx**2 + dy**2) ** 0.5)
         xy_ok = abs(dx) < outer_half and abs(dy) < outer_half
-        raw_depth = max(0.0, float(hole_center[2] - peg_tip[2]))
+        raw_depth = min(_MAX_SANE_DEPTH_M, max(0.0, float(hole_center[2] - peg_tip[2])))
         insertion_depth = raw_depth if xy_ok else 0.0
-        if insertion_depth >= target_depth:
+        hold_count = hold_count + 1 if insertion_depth >= target_depth else 0
+        if hold_count >= _SUCCESS_HOLD_STEPS:
             success = True
             break
 

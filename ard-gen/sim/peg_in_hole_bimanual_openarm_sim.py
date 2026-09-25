@@ -247,6 +247,16 @@ def adaptive_z_rate(dx: float, dy: float, outer_half: float) -> float:
 
 TARGET_INSERTION_DEPTH = 0.04  # m (scene_config로 덮어쓸 수 있음)
 
+# 성공 판정 버그(실측으로 발견, optimize/peg_in_hole_openarm_gain_search.py의
+# "성공 판정 버그" 절 참고): xy가 안 맞은 채로 hole을 완전히 지나쳐
+# 허공에서 raw_depth가 물리적으로 불가능한 값(hole 실측 깊이 0.059m보다
+# 훨씬 큼)까지 커진 뒤, 어쩌다 한 스텝 xy가 우연히 허용치 안으로 들어오면
+# "성공"으로 잘못 판정됐다(정렬을 유지하며 꽂은 게 아니라 뚫고 지나가다
+# 스친 것). raw_depth를 hole 실측 깊이보다 살짝 큰 값으로 clip하고,
+# 목표 깊이 이상을 이만큼 연속으로 유지해야만 성공으로 인정한다.
+_MAX_SANE_DEPTH_M = 0.065
+_SUCCESS_HOLD_STEPS = 20
+
 # reset()에서 IK 목표의 z를 잡는 값 -- peg anchor 재조정 3차(위
 # _PEG_LOCAL_OFFSET 참고) 전에는 "home 팔 자세에서 peg tip이 자연히
 # 가 있는 z"(home_tip_z)를 그대로 썼는데, anchor가 손목에서 멀어지면서
@@ -759,6 +769,7 @@ def _run_episode_with_sim(
     insertion_depth = 0.0
     success = False
     step_count = 0
+    hold_count = 0
 
     for step_count in range(1, MAX_STEPS + 1):
         force, torque = sim.get_force_torque()
@@ -792,10 +803,11 @@ def _run_episode_with_sim(
         dx = float(hole_center[0] - peg_tip[0])
         dy = float(hole_center[1] - peg_tip[1])
         xy_within_hole_footprint = abs(dx) < outer_half and abs(dy) < outer_half
-        raw_depth = max(0.0, float(hole_center[2] - peg_tip[2]))
+        raw_depth = min(_MAX_SANE_DEPTH_M, max(0.0, float(hole_center[2] - peg_tip[2])))
         insertion_depth = raw_depth if xy_within_hole_footprint else 0.0
 
-        if insertion_depth >= target_depth:
+        hold_count = hold_count + 1 if insertion_depth >= target_depth else 0
+        if hold_count >= _SUCCESS_HOLD_STEPS:
             success = True
             break
 

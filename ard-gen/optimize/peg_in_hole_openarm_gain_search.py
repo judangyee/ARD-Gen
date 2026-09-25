@@ -15,6 +15,24 @@ kp/kv 체계적 탐색" 절의 실측 결과를 낸 스크립트를 정식으로
 (이전 버전은 평균/최고 삽입 깊이만 봐서, "거의 맞을 뻔한" 시도와 "전혀
 안 맞은" 시도를 구분 못 했다).
 
+## 성공 판정 버그(실측으로 발견, 고침)
+
+home 자세 재조정(peg_in_hole_openarm_home_pose_search.py) 직후 이
+스크립트를 처음 돌렸을 때 cost=-187.78(성공)이 나온 값을 실제로
+render 스크립트와 똑같은 admittance 루프로 재생해보니(gain_search가 쓰는
+고정 Z_RATE, adaptive_z_rate 아님 -- 둘 다 확인함), peg가 xy 정렬이
+안 된 채로 raw_depth 122mm(hole 실제 깊이 ~59mm의 2배 이상, 즉 hole을
+완전히 지나쳐 허공에서 계속 가라앉은 것)까지 내려간 뒤에야 어쩌다
+한 스텝 xy가 우연히 허용치 안으로 들어와서 "성공"으로 판정됐다 --
+연속적으로 정렬을 유지하며 꽂은 게 아니라, 정렬 안 된 채 뚫고 지나가다
+운 좋게 한순간 스쳐 지나간 것. 원인은 두 가지: (1) `depth`가 unbounded
+`raw_depth`를 그대로 쓰다 보니 물리적으로 불가능한 값(hole 자체 깊이보다
+훨씬 큼)도 "삽입 깊이"로 인정됐고, (2) 성공 판정이 "그 순간 한 스텝만"
+`depth >= target_depth`면 바로 통과였다(연속 유지 여부를 안 봄). 둘 다
+고쳤다: raw_depth를 `_MAX_SANE_DEPTH_M`(hole 실측 깊이보다 살짝 큰 값)로
+clip하고, `depth >= target_depth`가 `_SUCCESS_HOLD_STEPS` 연속 스텝
+동안 유지돼야 성공으로 인정한다.
+
 사용법:
     python optimize/peg_in_hole_openarm_gain_search.py
 """
@@ -37,6 +55,8 @@ from sim.peg_in_hole_bimanual_openarm_sim import (
     _default_scene_config,
     DT,
     Z_RATE,
+    _MAX_SANE_DEPTH_M,
+    _SUCCESS_HOLD_STEPS,
 )
 
 _TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "..", "assets", "peg_in_hole_bimanual_openarm.xml")
@@ -92,6 +112,7 @@ def eval_gains(params: np.ndarray, tag: str = "a") -> float:
     min_xy_err_tail = 1e9
     raw_depth_at_min_xy = 0.0
     success_step = None
+    hold_count = 0
     for step in range(1, N_STEPS + 1):
         force, torque = sim.get_force_torque()
         fe = force[:2]
@@ -111,7 +132,7 @@ def eval_gains(params: np.ndarray, tag: str = "a") -> float:
         dy = float(hole_center[1] - peg_tip[1])
         xy_err = (dx**2 + dy**2) ** 0.5
         xy_ok = abs(dx) < outer_half and abs(dy) < outer_half
-        raw_depth = max(0.0, float(hole_center[2] - peg_tip[2]))
+        raw_depth = min(_MAX_SANE_DEPTH_M, max(0.0, float(hole_center[2] - peg_tip[2])))
         depth = raw_depth if xy_ok else 0.0
         best_depth = max(best_depth, depth)
         if step > N_STEPS - TAIL_WINDOW:
@@ -125,7 +146,8 @@ def eval_gains(params: np.ndarray, tag: str = "a") -> float:
             if xy_err < min_xy_err_tail:
                 min_xy_err_tail = xy_err
                 raw_depth_at_min_xy = raw_depth
-        if depth >= target_depth:
+        hold_count = hold_count + 1 if depth >= target_depth else 0
+        if hold_count >= _SUCCESS_HOLD_STEPS:
             success_step = step
             break
 
