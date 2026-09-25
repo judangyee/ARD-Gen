@@ -176,6 +176,37 @@ resolved-rate 방식) 조합 자체가 이 태스크(7-DOF, 무거운 팔, 좁�
 역동역학(computed-torque) 제어로 바꾸는 것. (c) 혹은 애초에 hole
 공차(clearance)를 넓히거나 hover 간격을 줄여서 필요 이동거리 자체를
 줄이는 태스크 난이도 조정도 고려할 만하다.
+
+## grasp anchor 재조정(1~6차) 이후: home 자세를 다시 풀어야 했던 이유
+
+peg/hole grasp을 "진짜 손끝으로 잡는 것처럼" 보이게 재조정하는 과정
+(assets/peg_in_hole_bimanual_openarm.xml의 peg/hole_socket 바디 주석,
+_PEG_LOCAL_OFFSET/_RIGHT_GRIPPER_GRASP_CTRL/_LEFT_GRIPPER_GRASP_CTRL
+주석 참고)에서 peg tip과 hole 목표점의 ee-로컬 위치 자체가 여러 번
+바뀌었는데, home 자세(_HOME_QPOS/_LEFT_ARM_HOME_QPOS, 고정된 14개
+관절각)는 그대로 뒀다. 그 결과("어떻게 해결할거야" 질문으로 조사) 오른팔
+joint4가 range의 90%, joint7이 94.3%까지 붙어 있었다는 걸 발견했다 --
+**이 파일 위쪽에서 이미 겪은 "관절 한계 페널티 없이 찾은 첫 home 자세"와
+똑같은 실패 패턴**이고, 실측(1500스텝)으로도 xy 드리프트가 108mm까지
+벌어지는 걸로 확인했다.
+
+optimize/peg_in_hole_openarm_home_pose_search.py로 같은 비용 함수(방향/
+xy/z/손 간격/작업공간/관절 한계 여유, assets 파일 docstring "2. home
+자세" 참고)를 새 로컬 오프셋 기준으로 현재 값 근방에서(완전히 새로
+찾지 않고 x0=현재 home 자세) 다시 풀었다 -- 양팔 14관절 전부 margin
+15% 이내로 들어왔다(가장 타이트한 것도 joint1 18.1%, joint6 19.4%).
+재검증(1500스텝): 관절이 더 이상 한계 근처가 아니고, xy 드리프트가
+더 이상 단조 발산하지 않는다(step 300: 62mm -> step 1500: 46mm, 오히려
+줄어듦). 4000스텝까지 늘려 재확인(위 "3. 더 심각한 발견"의 교훈 그대로
+적용)해도 45~75mm 범위에서 진짜로 진동만 하고 발산하지 않는다 -- 이번엔
+"진동"이라는 진단이 착시가 아니라는 뜻이다.
+
+다만 이 진동 범위(45~75mm)가 목표 정렬 허용치(outer_half ≈ 19.5mm)보다
+아직 2.5~4배 넓어서, 관절 한계 문제는 해결됐어도 삽입 자체는 여전히
+성공 못 한다 -- kp/kv/nullspace 게인(optimize/peg_in_hole_openarm_gain_search.py)과
+admittance 게인(Kp_xy, Kd_xy -- 이 파일 맨 위 "아직 검증 안 된 것" 절
+참고, 처음부터 VX300s 값을 그대로 썼을 뿐 이 팔 기구학에 맞게 재탐색한
+적이 아직 없음)이 새 home 자세/anchor 기준으로는 다시 검증돼야 한다.
 """
 from __future__ import annotations
 
@@ -239,26 +270,34 @@ _ARM_JOINTS = [f"openarm_right_joint{i}" for i in range(1, 8)]
 
 # assets/peg_in_hole_bimanual_openarm.xml 상단 docstring에서 CMA-ES로 구한
 # home 자세(오른팔 peg tip이 hole 목표점 6cm 위에서 수직 아래를 향함,
-# 관절 한계 여유 페널티까지 넣어 재탐색한 최종 값).
+# 관절 한계 여유 페널티까지 넣어 재탐색한 최종 값) -- 였는데, grasp anchor
+# 재조정(1~5차, _PEG_LOCAL_OFFSET/hole_grasp relpose 참고)으로 peg tip과
+# hole 목표점의 ee-로컬 위치 자체가 바뀌면서 이 home 자세로는 오른팔
+# joint4가 range의 90%, joint7이 94.3%까지 붙어버렸다 -- "관절 한계
+# 페널티 없이 찾은 첫 home 자세"와 똑같은 패턴(1500스텝 실측: xy 드리프트가
+# 108mm까지 벌어짐, 게인 문제가 아니라 관절이 한계에 눌어붙어 힘을 못 냄).
+# optimize/peg_in_hole_openarm_home_pose_search.py로 새 peg tip/hole 목표점
+# 로컬 오프셋 기준 같은 비용 함수(방향/xy/z/손 간격/작업공간/관절 한계
+# 여유)를 현재 값 근방에서 다시 풀었다.
 _HOME_QPOS = {
-    "openarm_right_joint1": -0.5411875802971471,
-    "openarm_right_joint2": 2.7924997676975534,
-    "openarm_right_joint3": 0.8872059218636356,
-    "openarm_right_joint4": 2.0769419294810914,
-    "openarm_right_joint5": 0.6623070799784057,
-    "openarm_right_joint6": -0.32133604736193516,
-    "openarm_right_joint7": 1.0449693330001646,
+    "openarm_right_joint1": -0.4932859043730308,
+    "openarm_right_joint2": 2.7728121142883237,
+    "openarm_right_joint3": 0.7779694449047385,
+    "openarm_right_joint4": 2.068501962471789,
+    "openarm_right_joint5": 0.5568966487876724,
+    "openarm_right_joint6": -0.5030469209189363,
+    "openarm_right_joint7": 0.973709272141154,
 }
 
-# 왼팔(Stabilizer)은 이 태스크 내내 고정 -- 같은 파일 docstring의 "왼팔" 값.
+# 왼팔(Stabilizer)은 이 태스크 내내 고정 -- 위와 같은 재탐색으로 나온 값.
 _LEFT_ARM_HOME_QPOS = {
-    "openarm_left_joint1": -0.4267221597526506,
-    "openarm_left_joint2": -0.3919886178510243,
-    "openarm_left_joint3": 1.0769076736156407,
-    "openarm_left_joint4": 1.8060941903052827,
-    "openarm_left_joint5": -1.0000323780918128,
-    "openarm_left_joint6": -0.21247894792122013,
-    "openarm_left_joint7": -0.4267928774062192,
+    "openarm_left_joint1": -0.33119160341930914,
+    "openarm_left_joint2": -0.6927695819191171,
+    "openarm_left_joint3": 1.0264533366778317,
+    "openarm_left_joint4": 1.8918419565784326,
+    "openarm_left_joint5": -0.9724271650596741,
+    "openarm_left_joint6": -0.11753742523671289,
+    "openarm_left_joint7": -0.306424166993611,
 }
 # 오른팔/왼팔 finger_joint1/2 range 부호가 서로 반대다: 오른팔은
 # [-0.7854, 0](0이 닫힘 끝), 왼팔은 [0, 0.7854](0이 역시 닫힘 끝 --
