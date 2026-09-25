@@ -269,23 +269,24 @@ _LEFT_ARM_HOME_QPOS = {
 # 잘못 재던(조인트를 바꿔도 바디 원점 자체는 안 움직이는 걸 못 알아챈)
 # 스크립트 버그였던 것으로 보인다.
 
-_RIGHT_GRIPPER_GRASP_CTRL = -0.115  # 오른팔(peg를 쥠). peg 재조정 1~3차
-# (아래 _PEG_LOCAL_OFFSET 참고)는 매번 anchor 위치만 옮겼을 뿐 손가락은
-# 계속 완전히 닫힘(패드 간격 0에 가까움)으로 둔 채였다 -- peg 단면이
-# 2cm인데 손가락 사이 간격이 0이면 애초에 peg가 들어갈 공간이 없으니
-# anchor를 아무리 옮겨도 "그리퍼로 잡는 것처럼" 보일 수가 없었다("지금
-# 물건을 잡는방식이 그리퍼로 잡는게 아닌거 같은데" 피드백으로 이 근본
-# 원인을 알아챔). mj_geomDistance(finger_inner_right_00,
-# finger_outer_right_00 -- 실측으로 확인한 실제 손끝 접촉쌍)로 각도별
-# 간격을 재서, peg 폭(2cm)보다 살짝 넉넉한 ~21mm 간격이 나오는 -0.115로
-# 정했다.
+_RIGHT_GRIPPER_GRASP_CTRL = -0.030  # 오른팔(peg를 쥠). 재조정 1~3차(아래
+# _PEG_LOCAL_OFFSET 참고)는 anchor 위치만 옮겼을 뿐 손가락은 완전히
+# 닫힘(패드 간격 0에 가까움)이었고, 4차에서 mj_geomDistance로 "표면이
+# 실제로 가장 가까운 지점"의 간격이 peg 폭만큼(~21mm) 벌어지는 각도
+# (-0.115)를 찾아 열었다. 그런데 그 "표면이 가장 가까운 지점"은 진짜
+# 손끝(finger 끝 corner)이 아니라 그보다 안쪽(힌지 쪽)이었다 -- geom_aabb로
+# 진짜 손끝 corner의 간격을 각도별로 다시 재보니, 완전히 닫힌 각도(0)에서도
+# 이미 13.96mm 벌어져 있고(패드가 곡면이라 표면끼리는 닿아도 끝 corner는
+# 안 닿음), 4차에서 쓴 -0.115는 손끝 corner 간격이 42.5mm까지 벌어져
+# 있었다(peg 폭 2cm의 두 배 넘게 과하게 벌어짐 -- "그리퍼의 끝으로
+# 잡으라고" 피드백은 이걸 가리킨 것). geom_aabb 손끝 corner 간격이 peg
+# 폭+살짝 여유(~21mm)가 되는, 훨씬 덜 벌린 각도(-0.030)로 다시 정했다.
 
-_LEFT_GRIPPER_GRASP_CTRL = 0.335  # 왼팔(hole_socket을 쥠). "왜 peg만
-# 그렇게 잡아? Hole도 그렇게 잡아야지" 피드백 이후 오른팔과 같은 방식으로
-# 재조정 -- hole_socket 벽 바깥쪽 폭이 39mm(0.0155+0.004을 양쪽)인데
-# 이전에는 이쪽도 완전히 닫힘(0)이었다. mj_geomDistance(finger_inner/
-# outer_left_00)로 hole 폭+2mm 여유(~41mm) 간격이 나오는 각도(0.335)를
-# 구했다.
+_LEFT_GRIPPER_GRASP_CTRL = 0.110  # 왼팔(hole_socket을 쥠). 오른팔과 같은
+# 이유로 재조정: geom_aabb 손끝 corner 간격이 hole 폭+여유(~41mm)가 되는
+# 각도. mj_geomDistance 표면-최근접점 기준으로 잡았던 이전 각도(0.335,
+# 그 기준 간격도 ~41mm였지만 손끝 corner 기준으로는 훨씬 더 벌어져 있었음)
+# 보다 훨씬 덜 벌어진다.
 
 # peg free body를 오른팔 ee 프레임으로부터 직접 FK로 세팅할 때 쓰는 로컬
 # 오프셋 -- assets/peg_in_hole_bimanual_openarm.xml의 weld relpose와 동일한 값
@@ -318,16 +319,27 @@ _LEFT_GRIPPER_GRASP_CTRL = 0.335  # 왼팔(hole_socket을 쥠). "왜 peg만
 # 무관하게 만들었다.
 #
 # 재조정 4차 -- "지금 물건을 잡는방식이 그리퍼로 잡는게 아닌거 같은데"
-# 피드백 이후 근본 원인 발견: 1~3차 내내 손가락은 _GRIPPER_CLOSED_CTRL(완전
-# 닫힘, 패드 간격 ~0)이었다 -- anchor를 아무리 옮겨도 peg가 들어갈 틈 자체가
-# 없었으니 "펜치로 집은 것"이 아니라 "닫힌 손가락 끝에 아무렇게나 붙어있는
-# 것"처럼 보일 수밖에 없었다. 오른손을 _RIGHT_GRIPPER_GRASP_CTRL(위, 패드
-# 간격 ~21mm)로 벌려서 재측정: 실제 손끝 접촉쌍(finger_inner_right_00 /
-# finger_outer_right_00 -- 3차에서 쓴 "01" corner-extreme이 아니라, 이번엔
-# mj_geomDistance로 두 표면이 실제로 마주보고 가장 가까워지는 쌍을 다시
-# 확인했다)의 간격 중점이 ee_base_link 로컬 (-0.0259,0,-0.1604). peg 로컬
-# z=+0.02(샤프트 맨 위에서 1cm)가 여기 오도록 anchor를 다시 잡았다.
-_PEG_LOCAL_OFFSET = np.array([-0.0259, 0, -0.1804])
+# 피드백 이후 근본 원인 발견: 1~3차 내내 손가락은 완전히 닫힘(패드 간격
+# ~0)이었다 -- anchor를 아무리 옮겨도 peg가 들어갈 틈 자체가 없었으니
+# "펜치로 집은 것"이 아니라 "닫힌 손가락 끝에 아무렇게나 붙어있는 것"처럼
+# 보일 수밖에 없었다. 손가락을 벌려서(패드 표면 간격 ~21mm) 재측정: 실제
+# 손끝 접촉쌍(finger_inner_right_00 / finger_outer_right_00 -- 3차에서 쓴
+# "01" corner-extreme이 아니라, mj_geomDistance로 두 표면이 실제로 마주보고
+# 가장 가까워지는 쌍)의 간격 중점이 ee_base_link 로컬 (-0.0259,0,-0.1604).
+# peg 로컬 z=+0.02(샤프트 맨 위에서 1cm)가 여기 오도록 anchor를 다시 잡았다.
+#
+# 재조정 5차 -- "그리퍼의 끝으로 잡아야지" 피드백 이후 재확인: 4차에서 쓴
+# "표면 최근접점"은 진짜 손끝(finger 끝 corner)이 아니었다 -- 패드가
+# 곡면이라 닫을 때 먼저 닿는 지점(표면 최근접점)과 실제 finger 끝 corner는
+# 다른 위치다. geom_aabb로 진짜 끝 corner를 각도별로 재보니 z가 각도에
+# 거의 안 바뀌고(-0.192 부근에 고정, 힌지 축 반경 방향과 거의 나란해서),
+# 4차에서 쓴 -0.115는 이 진짜 끝 corner 기준 간격이 42.5mm(peg 폭의 2배
+# 이상)까지 벌어져 있었다 -- "표면"은 peg 폭만큼 좁았지만 "끝"은 그보다
+# 훨씬 넓게 벌어진 채였다는 뜻. 진짜 끝 corner 간격이 peg 폭+여유가 되는
+# 훨씬 덜 벌린 각도(-0.030, 위 _RIGHT_GRIPPER_GRASP_CTRL)에서 그 corner
+# 중점(ee_base_link 로컬 (-0.02222,0,-0.19214))을 다시 재서 anchor로 썼다
+# (peg 로컬 z=+0.02 마진은 그대로).
+_PEG_LOCAL_OFFSET = np.array([-0.02222, 0, -0.21214])
 
 _JAC_DAMPING = 1e-4
 _IK_MAX_ITERS = 200
