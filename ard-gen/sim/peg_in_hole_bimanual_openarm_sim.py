@@ -270,12 +270,28 @@ def adaptive_z_rate(dx: float, dy: float, outer_half: float, raw_depth: float, t
 
 # "어느정도 들어가면 그만 눌러도 될 것 같은데, hole 길이의 절반이 되는
 # 지점을 (peg_tip 기준) 목표로 잡아서 해봐" 피드백으로 0.04 -> hole
-# 길이의 절반으로 낮췄다. hole 길이(assets/peg_in_hole_bimanual_openarm.xml
-# 의 hole_wall_* geom: size z=0.0275(반높이), pos z=-0.0275, 즉 벽이
-# hole_center_site(로컬 z=0, 입구)에서 바닥 상단(z=-0.055, hole_floor
-# geom과 맞닿는 지점)까지 뻗어 있음)은 0.055m -- 그 절반은 0.0275m.
+# 길이의 절반(0.0275m)으로 낮췄었다. hole 길이(assets/
+# peg_in_hole_bimanual_openarm.xml의 hole_wall_* geom: size z=0.0275
+# (반높이), pos z=-0.0275, 즉 벽이 hole_center_site(로컬 z=0, 입구)에서
+# 바닥 상단(z=-0.055, hole_floor geom과 맞닿는 지점)까지 뻗어 있음)은
+# 0.055m.
+#
+# 실측해보니(절반 기준 실행 트레이스) 목표 깊이를 낮춰도 167mm 킥
+# 자체는 안 줄었다 -- 킥은 raw_depth가 목표에 도달하기 훨씬 전, hole
+# 입구에서 벽에 걸렸다 풀리는 접촉 이벤트라 목표 깊이와 무관하게
+# 일어났기 때문(같은 스텝 483, 같은 167mm로 재현됨).
+#
+# "그럼 아예 더 얕은 지점에서 멈추자, 기준은 hole 길이의 1/3"이라는
+# 후속 피드백으로 다시 낮췄다(0.055/3). 이번엔 다른 이유로 실측이 다르게
+# 나온다: 같은 트레이스를 보면 peg는 킥이 나기 훨씬 전인 스텝 300 근방
+# 부터 이미 raw_depth가 22mm대(1/3 임계값 18.3mm보다 큼)이고 xy도 정렬돼
+# 있어서, `_SUCCESS_HOLD_STEPS`(20스텝 연속 유지) 조건이 킥(스텝 439~448)
+# 이 일어나기 전에 이미 만족돼 버린다 -- 즉 깊이를 낮추는 게 킥을
+# "막는" 게 아니라, 킥이 일어나기 전에 에피소드 자체를 끝내버려서
+# 결과적으로 킥을 안 보게 된다(사용자의 "일정량 들어갔으면 놔도 된다"는
+# 의도와 정확히 맞음).
 # (scene_config로 덮어쓸 수 있음)
-TARGET_INSERTION_DEPTH = 0.0275  # m
+TARGET_INSERTION_DEPTH = 0.055 / 3  # m, hole 길이(0.055m)의 1/3
 
 # 성공 판정 버그(실측으로 발견, optimize/peg_in_hole_openarm_gain_search.py의
 # "성공 판정 버그" 절 참고): xy가 안 맞은 채로 hole을 완전히 지나쳐
