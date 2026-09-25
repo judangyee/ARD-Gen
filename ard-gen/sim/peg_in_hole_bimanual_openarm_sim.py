@@ -216,6 +216,16 @@ def adaptive_z_rate(dx: float, dy: float, outer_half: float) -> float:
 
 TARGET_INSERTION_DEPTH = 0.04  # m (scene_config로 덮어쓸 수 있음)
 
+# reset()에서 IK 목표의 z를 잡는 값 -- peg anchor 재조정 3차(위
+# _PEG_LOCAL_OFFSET 참고) 전에는 "home 팔 자세에서 peg tip이 자연히
+# 가 있는 z"(home_tip_z)를 그대로 썼는데, anchor가 손목에서 멀어지면서
+# (peg가 손끝 쪽으로 더 길게 뻗으면서) 같은 home 자세에서 그 z가
+# hole 중심 쪽으로 계속 딸려 들어와 호버 간격이 0을 지나 음수가 될
+# 뻔했다. grasp 위치가 어떻게 바뀌든 호버 간격은 독립적으로 유지되도록
+# 명시적 상수로 뺐다(값은 재조정 1차 직후 실측했던 자연스러운 호버
+# ~39mm에 맞춘 것).
+_HOVER_GAP_M = 0.039
+
 # hole 벽 nominal 치수 (assets/peg_in_hole.xml과 동일)
 _PEG_HALF_WIDTH = 0.010
 _WALL_HALF_THICKNESS = 0.004
@@ -273,11 +283,22 @@ _GRIPPER_CLOSED_CTRL = 0.0  # 실제로 닫힘 값이 맞다 -- 오른팔 finger
 # 재조정 2차 -- "손끝으로 잡아야지 중간에 잡고있으니까 안되지" 피드백
 # 후: 1차 수정은 접촉점을 shaft "중심에서 1.5cm 아래"(로컬 z=-0.015)에
 # 둬서 shaft 길이 대부분(위로 4.5cm)이 손끝 안쪽에 걸쳐 있었다 -- 손가락
-# 끝이 아니라 중간을 쥔 것처럼 보인 원인. 지금은 접촉점이 peg shaft의
-# 맨 위 끝(로컬 z=+0.03)에서 1cm만 떨어진 지점(로컬 z=+0.02)에 오도록
-# 잡아서, peg 전체 길이 대부분(6cm, tip까지 7cm)이 손끝 아래로 늘어지고
-# 실제로 손끝 끄트머리만 peg를 살짝 물게 했다.
-_PEG_LOCAL_OFFSET = np.array([-0.0259, 0, -0.18891])
+# 끝이 아니라 중간을 쥔 것처럼 보인 원인. 접촉점을 peg shaft의 맨 위 끝
+# (로컬 z=+0.03)에서 1cm만 떨어진 지점(로컬 z=+0.02)으로 옮겼는데, 그때
+# 쓴 "접촉점"이 충돌 메시(mj_geomDistance)가 닿는 지점이었을 뿐, 렌더링에
+# 보이는 비주얼 메시(pale_silver 손끝 패드)는 그보다 2.3cm 더 끝까지
+# 뻗어 있었다 -- 그래서 여전히 손가락 끝이 아니라 그 조금 안쪽으로 보였다
+# ("그리퍼의 끝부분으로 잡으라고" 피드백).
+#
+# 재조정 3차 -- geom_aabb로 비주얼 메시(finger_inner/outer_right_01)의
+# 로컬 경계 코너를 world로 변환해 진짜 손끝 끝점을 다시 쟀다: ee_base_link
+# 로컬 (-0.02222,0,-0.19186)(inner/outer 평균). 이 지점에서 peg 로컬
+# z=+0.02가 오도록 anchor를 다시 잡았다. anchor가 손목에서 멀어질수록
+# (peg가 더 길게 뻗을수록) 같은 home 팔 자세에서 자연히 나오던 호버
+# 간격이 줄어들다 못해 음수가 될 뻔했는데, 그건 reset()에서
+# home_tip_z 대신 _HOVER_GAP_M을 직접 쓰도록 고쳐서(아래) grasp 위치와
+# 무관하게 만들었다.
+_PEG_LOCAL_OFFSET = np.array([-0.02222, 0, -0.21186])
 
 _JAC_DAMPING = 1e-4
 _IK_MAX_ITERS = 200
@@ -565,21 +586,16 @@ class BimanualPegInHoleOpenArmSim:
 
         hole_center = self.data.site_xpos[self._hole_site_id].copy()
 
-        # 오른팔 home 자세에서 peg tip의 z(호버 높이)를 구한 뒤, xy만
-        # hole 중심 + scene_config 오프셋으로 바꿔서 IK 목표로 쓴다
-        # (VX300s와 동일한 방식).
-        for name, value in _HOME_QPOS.items():
-            self.data.qpos[self._arm_qposadr[name]] = value
-        mujoco.mj_forward(self.model, self.data)
-        self._sync_peg_to_arm_fk()
-        mujoco.mj_forward(self.model, self.data)
-        home_tip_z = self.data.site_xpos[self._peg_tip_site_id][2]
-
+        # xy는 hole 중심 + scene_config 오프셋, z는 hole 중심 + 고정
+        # 호버 간격(_HOVER_GAP_M)으로 IK 목표를 잡는다. VX300s 쪽은 여전히
+        # "home 자세에서 peg tip이 자연히 가 있는 z"를 쓰지만(sim/peg_in_hole_sim.py
+        # 참고), 여기서는 못 쓴다 -- peg anchor가 손목에서 멀어질 때마다
+        # 그 자연스러운 z가 같이 딸려 들어오기 때문(_HOVER_GAP_M 정의 참고).
         target_pos = np.array(
             [
                 hole_center[0] + scene_config["peg_init_offset_xy"][0],
                 hole_center[1] + scene_config["peg_init_offset_xy"][1],
-                home_tip_z,
+                hole_center[2] + _HOVER_GAP_M,
             ]
         )
         self._solve_initial_pose(target_pos)
