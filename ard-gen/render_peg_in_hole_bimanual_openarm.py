@@ -70,7 +70,7 @@ def main() -> None:
     capture()
 
     kp_xy, kd_xy = gains["Kp_xy"], gains["Kd_xy"]
-    prev_force_error_xy = np.zeros(2)
+    prev_dx, prev_dy = 0.0, 0.0
     success = False
     insertion_depth = 0.0
     max_force = 0.0
@@ -79,15 +79,21 @@ def main() -> None:
 
     for step in range(1, MAX_STEPS + 1):
         force, _torque = sim.get_force_torque()
-        force_error_xy = force[:2]
-        d_force_error_xy = (force_error_xy - prev_force_error_xy) / DT
-        prev_force_error_xy = force_error_xy
-        delta_xy = -kp_xy * force_error_xy - kd_xy * d_force_error_xy
 
+        # xy는 접촉힘이 아니라 hole 실제 위치를 직접 목표로 삼는다 --
+        # sim/peg_in_hole_bimanual_openarm_sim.py의 _run_episode_with_sim
+        # 주석 참고(force 기반 admittance는 접촉이 거의 없어서 xy 보정
+        # 신호 자체가 없었다). Kp_xy/Kd_xy는 이제 위치 오차(dx,dy)에
+        # 곱하는 게인.
         cur_peg_tip = sim.get_peg_tip_pos()
         cur_hole_center = sim.get_hole_center_pos()
         cur_dx = float(cur_hole_center[0] - cur_peg_tip[0])
         cur_dy = float(cur_hole_center[1] - cur_peg_tip[1])
+        d_dx = (cur_dx - prev_dx) / DT
+        d_dy = (cur_dy - prev_dy) / DT
+        prev_dx, prev_dy = cur_dx, cur_dy
+        delta_xy = np.array([kp_xy * cur_dx + kd_xy * d_dx, kp_xy * cur_dy + kd_xy * d_dy])
+
         cur_raw_depth = max(0.0, float(cur_hole_center[2] - cur_peg_tip[2]))
         z_rate = adaptive_z_rate(cur_dx, cur_dy, outer_half, cur_raw_depth, target_depth)
         delta = np.array([delta_xy[0], delta_xy[1], -z_rate])

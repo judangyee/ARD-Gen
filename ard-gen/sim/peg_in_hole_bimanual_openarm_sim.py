@@ -222,7 +222,12 @@ N_SUBSTEPS = 5  # mj_step 호출당 substep 수 (timestep=0.002 -> 제어 주기
 DT = N_SUBSTEPS * 0.002
 
 Z_RATE = 0.0006  # m / control step, xy 정렬 상태에 따라 게이팅되는 "최대" 하강 속도
-MAX_STEPS = 400
+# xy를 접촉힘이 아니라 hole 실제 위치로 직접 targeting하도록 바꾼 뒤
+# (_run_episode_with_sim 주석 참고) 실측해보니, 이 위치 게인 스케일에서
+# 실제 성공은 대략 500~800스텝 사이에 일어난다 -- 예전 400은 admittance
+# 시절 VX300s 기본값을 그대로 물려받은 것이라 이 태스크엔 처음부터
+# 너무 짧았다. 여유를 두고 늘렸다.
+MAX_STEPS = 1000
 
 # xy 정렬 상태에 따라 Z_RATE를 가변으로 만드는 게이트. 고정 Z_RATE로는
 # xy가 잘 맞는 짧은 구간(sim/peg_in_hole_bimanual_openarm_sim.py 모듈
@@ -915,7 +920,7 @@ def _run_episode_with_sim(
     forces = []
     torques = []
 
-    prev_force_error_xy = np.zeros(2)
+    prev_dx, prev_dy = 0.0, 0.0
     max_force_mag = 0.0
     insertion_depth = 0.0
     success = False
@@ -927,18 +932,25 @@ def _run_episode_with_sim(
         force_mag = float(np.linalg.norm(force))
         max_force_mag = max(max_force_mag, force_mag)
 
-        force_error_xy = force[:2]
-        d_force_error_xy = (force_error_xy - prev_force_error_xy) / DT
-        prev_force_error_xy = force_error_xy
-
-        delta_xy = -kp_xy * force_error_xy - kd_xy * d_force_error_xy
-
-        # 이번 스텝 시작 시점(직전 스텝 결과)의 정렬 상태로 이번 스텝의
-        # 하강 속도를 정한다 -- adaptive_z_rate 정의부 주석 참고.
+        # xy는 접촉힘이 아니라 hole의 실제 위치를 직접 목표로 삼는다 --
+        # "어짜피 성공하는 데이터를 모아서 학습에 쓰는 게 목적이니 실제
+        # 좌표를 써도 된다"는 결정 이후(위 admittance 설계였을 때는 접촉힘이
+        # 거의 항상 0이라 xy 보정 신호 자체가 없었다, adaptive_z_rate
+        # 주석의 "성공 판정 버그" 조사 때 실측 확인). Kp_xy/Kd_xy는 이제
+        # force가 아니라 **위치 오차(dx,dy)**에 곱하는 게인이다(이름은
+        # 그대로 두지만 단위/의미가 다르다 -- force 기반 값(0.000515 등)을
+        # 그대로 재사용하면 안 되고 다시 탐색해야 함).
         cur_peg_tip = sim.get_peg_tip_pos()
         cur_hole_center = sim.get_hole_center_pos()
         cur_dx = float(cur_hole_center[0] - cur_peg_tip[0])
         cur_dy = float(cur_hole_center[1] - cur_peg_tip[1])
+        d_dx = (cur_dx - prev_dx) / DT
+        d_dy = (cur_dy - prev_dy) / DT
+        prev_dx, prev_dy = cur_dx, cur_dy
+        delta_xy = np.array([kp_xy * cur_dx + kd_xy * d_dx, kp_xy * cur_dy + kd_xy * d_dy])
+
+        # 이번 스텝 시작 시점(직전 스텝 결과)의 정렬 상태로 이번 스텝의
+        # 하강 속도를 정한다 -- adaptive_z_rate 정의부 주석 참고.
         cur_raw_depth = max(0.0, float(cur_hole_center[2] - cur_peg_tip[2]))
         z_rate = adaptive_z_rate(cur_dx, cur_dy, outer_half, cur_raw_depth, target_depth)
         delta = np.array([delta_xy[0], delta_xy[1], -z_rate])

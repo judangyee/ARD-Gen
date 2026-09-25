@@ -1,26 +1,25 @@
-"""OpenArm peg-in-hole 오른팔 admittance 게인(Kp_xy, Kd_xy) CMA-ES 탐색.
+"""OpenArm peg-in-hole 오른팔 xy 위치 제어 게인(Kp_xy, Kd_xy) CMA-ES 탐색.
 
-sim/peg_in_hole_bimanual_openarm_sim.py 모듈 최상단 docstring의 "아직
-검증 안 된 것" 절 -- Kp_xy=0.000515, Kd_xy=2.4e-05는 VX300s 단일팔
-버전(sim/peg_in_hole_sim.py)에서 그대로 가져온 값이고, 이 팔(7-DOF,
-관절별로 강화된 kp/kv, 훨씬 무거운 팔)에 맞게 재탐색한 적이 한 번도
-없었다. peg_in_hole_openarm_gain_search.py(관절 kp/kv + 널스페이스)와
-peg_in_hole_openarm_home_pose_search.py(home 자세)로 관절 한계 문제는
-해결했지만, xy 드리프트 자체는 여전히 목표 허용치(~19.5mm)보다 2~4배
-넓게 진동한다("2번으로 해보자" -- grasp anchor를 손끝/힌지 사이로 옮기는
-대신 이 admittance 게인 쪽을 파보기로 함).
+이전 버전(admittance/접촉힘 기반)은 폐기했다 -- "지금 역기구학으로 한거
+아니야? 아직도 위치를 못잡는데?" 질문으로 드러난 근본 문제: xy 보정이
+peg tip에 걸리는 접촉힘을 상쇄하는 방식(admittance)이었는데, 실측해보니
+힘이 거의 항상 0(peg가 hole에 닿은 적이 없음)이라 xy를 어느 쪽으로
+움직여야 할지 알려주는 신호 자체가 없었다. "어짜피 성공하는 데이터를
+모아서 학습에 쓰는 게 목적이니 (시뮬레이션이 알고 있는) hole 실제 위치를
+그냥 써도 되지 않냐"는 결정 이후, xy 제어를 접촉힘이 아니라 hole 실제
+위치와 peg tip 사이의 **직접적인 위치 오차(dx,dy)**에 대한 PD로 바꿨다
+(sim/peg_in_hole_bimanual_openarm_sim.py의 _run_episode_with_sim 주석
+참고). 그래서 Kp_xy/Kd_xy의 단위/스케일이 완전히 달라졌다 -- 예전
+admittance 값(0.000515, 2.4e-05, force 단위 기준)은 이제 아무 의미가
+없고, 이 스크립트가 그 새 스케일을 처음부터 다시 찾는다.
 
-관절 kp/kv/nullspace는 지금 XML/모듈에 반영된 값으로 고정해두고(그래서
-XML을 다시 빌드할 필요 없이 BimanualPegInHoleOpenArmSim()을 그대로
-재사용한다 -- VX300s의 optimize/cma_search.py와 같은 방식), Kp_xy/Kd_xy
-2개만 찾는다. 평가는 render 스크립트와 똑같이 adaptive_z_rate를 쓴다
-(이전 kp/kv 탐색은 고정 Z_RATE를 썼는데, 실제로 렌더링/에피소드에 쓰이는
-건 adaptive_z_rate라 그것과 다르게 평가하면 결과가 실제 동작과 어긋날
-수 있다). 평가 길이는 1500스텝(짧은 구간에서 "진동처럼 보이지만 사실은
-서서히 발산" 착시를 겪은 적이 있어 sim 모듈 docstring 참고 -- 2000~4000이
-이상적이지만 세대당 평가 수 x 스텝 수 예산을 고려해 1500으로 절충) --
-성공 판정은 sim 모듈에 이미 고친 버그(raw_depth clip + 연속 유지) 그대로
-가져다 쓴다.
+관절 kp/kv/nullspace, home 자세는 지금 XML/모듈에 반영된 값으로 고정해두고
+(peg_in_hole_openarm_gain_search.py / peg_in_hole_openarm_home_pose_search.py
+참고), Kp_xy/Kd_xy 2개만 찾는다. 평가는 render 스크립트와 동일하게
+adaptive_z_rate(오버슈트 정지 포함)와 위치 기반 xy PD를 그대로 재현한다.
+평가 길이는 1500스텝(sim 모듈 docstring의 "짧은 구간 착시" 교훈 참고 --
+너무 짧으면 실제로는 발산하는 걸 놓칠 수 있음), 성공 판정은 sim 모듈에
+있는 raw_depth clip + 연속 유지 기준을 그대로 가져다 쓴다.
 
 사용법:
     python optimize/peg_in_hole_openarm_admittance_gain_search.py
@@ -51,8 +50,12 @@ N_STEPS = 1500
 TAIL_WINDOW = 600
 OFFSET_XY = (0.014, 0.0)
 
-KP_BOUNDS = (0.00002, 0.003)
-KD_BOUNDS = (0.0, 0.0008)
+# dx,dy는 m 단위(대개 0.01~0.05 범위)이고 delta_xy는 Z_RATE(0.0006m/스텝)와
+# 비슷한 스케일이어야 하니(너무 크면 한 스텝에 과하게 튀고, 너무 작으면
+# 못 따라감) Kp_xy는 대략 0.01~0.1 자리, Kd_xy(속도 항, dx의 변화율에
+# 곱함)는 그보다 한두 자릿수 작게 잡는다.
+KP_BOUNDS = (0.001, 0.5)
+KD_BOUNDS = (0.0, 0.05)
 
 
 def eval_gains(sim: BimanualPegInHoleOpenArmSim, kp_xy: float, kd_xy: float) -> float:
@@ -64,7 +67,7 @@ def eval_gains(sim: BimanualPegInHoleOpenArmSim, kp_xy: float, kd_xy: float) -> 
         return 1000.0
 
     target_depth = cfg["target_insertion_depth"]
-    prev_fe = np.zeros(2)
+    prev_dx, prev_dy = 0.0, 0.0
     best_depth = 0.0
     xy_err_tail_sum = 0.0
     tail_count = 0
@@ -73,16 +76,15 @@ def eval_gains(sim: BimanualPegInHoleOpenArmSim, kp_xy: float, kd_xy: float) -> 
     success_step = None
     hold_count = 0
     for step in range(1, N_STEPS + 1):
-        force, _torque = sim.get_force_torque()
-        fe = force[:2]
-        dfe = (fe - prev_fe) / DT
-        prev_fe = fe
-        delta_xy = -kp_xy * fe - kd_xy * dfe
-
         cur_tip = sim.get_peg_tip_pos()
         cur_hole = sim.get_hole_center_pos()
         cur_dx = float(cur_hole[0] - cur_tip[0])
         cur_dy = float(cur_hole[1] - cur_tip[1])
+        d_dx = (cur_dx - prev_dx) / DT
+        d_dy = (cur_dy - prev_dy) / DT
+        prev_dx, prev_dy = cur_dx, cur_dy
+        delta_xy = np.array([kp_xy * cur_dx + kd_xy * d_dx, kp_xy * cur_dy + kd_xy * d_dy])
+
         cur_raw_depth = max(0.0, float(cur_hole[2] - cur_tip[2]))
         z_rate = adaptive_z_rate(cur_dx, cur_dy, outer_half, cur_raw_depth, target_depth)
         delta = np.array([delta_xy[0], delta_xy[1], -z_rate])
@@ -124,11 +126,11 @@ def eval_gains(sim: BimanualPegInHoleOpenArmSim, kp_xy: float, kd_xy: float) -> 
 def main() -> None:
     sims = [BimanualPegInHoleOpenArmSim() for _ in range(8)]
 
-    x0 = [0.000515, 2.4e-05]
+    x0 = [0.05, 0.01]
     sigma0 = 1.0
     opts = {
         "bounds": [[KP_BOUNDS[0], KD_BOUNDS[0]], [KP_BOUNDS[1], KD_BOUNDS[1]]],
-        "CMA_stds": [0.0004, 0.00015],
+        "CMA_stds": [0.05, 0.01],
         "popsize": 8,
         "maxiter": 15,
         "seed": 5,
