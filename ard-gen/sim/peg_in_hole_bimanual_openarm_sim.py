@@ -394,6 +394,39 @@ _JAC_DAMPING = 1e-4
 _IK_MAX_ITERS = 200
 _IK_STEP_SCALE = 0.5
 _NULLSPACE_GAIN = 0.03  # 근거: _advance_virtual docstring 참고 (CMA-ES 게인 탐색으로 재조정)
+_LIMIT_AVOID_MARGIN = 0.08  # 근거: _advance_virtual docstring "관절 한계 회피" 참고
+
+# 오른팔 역동역학(computed-torque) 제어용 -- "2번(완전한 역동역학 제어로
+# 바꾸기)" 결정 이후 추가(모듈 최상단 docstring "grasp anchor 재조정 이후"
+# 절 참고). 관절 kp/kv/nullspace, admittance 게인(Kp_xy/Kd_xy) 재탐색
+# 둘 다 cost가 거의 안 움직이는 평평한 landscape였다 -- 게인을 아무리
+# 바꿔도 한계가 있다는 뜻이라, 관절별 독립 PD 자체를(그 게인이 뭐든)
+# 바꾸기로 했다.
+#
+# 1차 시도(실패로 폐기): home 자세에서 mj_fullM의 대각 성분(M_ii)만 한
+# 번 재서 관절별 고정 Kp_i=M_ii*omega_n^2, Kd_i=2*zeta*omega_n*M_ii를
+# __init__에서 미리 계산해뒀었다. 정적 홀드 테스트는 잘 됐지만(500스텝,
+# 최대 오차 0.3도) 실제 admittance 루프로 4000스텝 돌려보니 처음
+# 2000스텝은 34~47mm로 이전과 비슷했다가 그 뒤로 계속 벌어져
+# step 4000에 272mm까지 갔다 -- 팔이 home 자세에서 멀어질수록 실제
+# 유효 관성이 그 한 번 잰 M_ii에서 벗어나서, 그 배열에 맞춰 놓은
+# 임계감쇠가 다른 자세에서는 과소감쇠가 됐던 것으로 보인다(관절 하나만
+# 보는 M_ii는 다른 관절 결합에 의한 관성 변화도 못 잡는다).
+#
+# 2차 시도(현재 채택): 관절별 Kp/Kd를 미리 계산해두는 대신, "가속도
+# 공간"에서 목표를 정하고(qacc_cmd_i = omega_n^2*(q_des_i-q_i) -
+# 2*zeta*omega_n*qvel_i -- 관절마다 같은 omega_n/zeta) step()이 매 스텝
+# **그 순간의** mj_fullM 7x7 부분행렬을 곱해서 토크로 바꾼다
+# (tau = M(q)_rr @ qacc_cmd + qfrc_bias_r - qfrc_passive_r). 이러면
+# 관성이 자세에 따라 달라져도(그리고 관절 간 결합도) 매 스텝 다시
+# 반영되므로 1차 시도의 문제가 구조적으로 없다 -- 표준 computed-torque
+# 정의(가속도 feedforward 없이 PD만 있는 버전)에 더 가깝다.
+#
+# omega_n=40은 timestep=0.002s 대비 여유 있게 안정적이면서
+# (omega_n*timestep=0.08) 500ms 이내에 정착하는 값으로 골랐다(실측 전
+# 첫 추정치 -- 아래 __main__/render 결과로 검증).
+_TORQUE_OMEGA_N = 40.0
+_TORQUE_ZETA = 1.0
 
 
 def _default_scene_config() -> dict[str, Any]:
@@ -487,6 +520,19 @@ class BimanualPegInHoleOpenArmSim:
                 act_id = self.model.actuator(f"{prefix}_joint{i}_ctrl").id
                 self.model.actuator_gainprm[act_id] = 0.0
                 self.model.actuator_biasprm[act_id] = 0.0
+
+        # 오른팔은 이제 pos_right_j*(<position>, 관절별 독립 PD)가 아니라
+        # torque_right_j*(<motor>, step()이 매 스텝 계산하는 역동역학
+        # 토크)로 구동한다 -- pos_right_j*는 vendor 액추에이터와 같은
+        # 이유(위)로 무력화한다. 왼팔은 안 움직이는 "고정" 역할이라 그대로
+        # pos_left_j*를 쓴다.
+        for act_id in self._arm_actuator_ids.values():
+            self.model.actuator_gainprm[act_id] = 0.0
+            self.model.actuator_biasprm[act_id] = 0.0
+        self._torque_actuator_ids = {
+            name: self.model.actuator(f"torque_right_j{i}").id for i, name in enumerate(_ARM_JOINTS, start=1)
+        }
+        self._arm_dofs = [self._arm_dofadr[name] for name in _ARM_JOINTS]
 
         # vendor(assets/openarm/openarm_bimanual.xml)에는 gravcomp가 어디에도
         # 없다(VX300s는 이 프로젝트가 모든 팔 바디에 gravcomp="1"을 직접
@@ -608,7 +654,22 @@ class BimanualPegInHoleOpenArmSim:
         실측 확인했다). 표준적인 해법(2차 목표를 널스페이스에 투영)을
         썼다: N = I - J^+J로 널스페이스에 투영한 "home 자세로 되돌아가려는"
         보조 속도를 더한다. _NULLSPACE_GAIN=0.05로 실측 확인(그 이상은
-        딱히 개선 없었고 낮추면 표류가 다시 나타남, __main__ 결과 참고)."""
+        딱히 개선 없었고 낮추면 표류가 다시 나타남, __main__ 결과 참고).
+
+        관절 한계 회피 -- computed-torque 전환(_TORQUE_OMEGA_N 주석 참고)
+        후에도 admittance 루프를 4000스텝 돌리면 이전과 거의 똑같은
+        패턴(2000스텝까지 34~48mm, 그 뒤 4000스텝에 273mm)으로 발산했다.
+        관절 fraction을 스텝별로 찍어보니 원인은 저수준 제어가 아니라
+        여기였다: openarm_right_joint1이 step~2000 근처에서 하한(range
+        0%)에 완전히 눌어붙고("<-- LIMIT"), 그 뒤로 계속 그 상태로
+        남았다 -- 정확히 발산이 시작된 시점과 일치한다. null-space의
+        "home으로" 항만으로는 이 관절을 한계에서 못 떼어냈다(task 성분이
+        그 방향으로 계속 밀거나, null-space 투영이 이 관절 성분을 상당히
+        줄여버린 것으로 보임). 그래서 최종 dq에 한계 근접 시 그 방향
+        스텝을 줄이는 항을 직접 추가했다(_LIMIT_AVOID_MARGIN 이내에서
+        한계 쪽으로 가는 성분만 선형으로 0까지 줄임, 반대 방향 이동은
+        그대로 둠 -- null-space 투영과 무관하게 항상 적용되도록 dq_task/
+        dq_null을 합친 뒤 마지막에 적용)."""
         _, jacp = self._virtual_peg_tip_and_jac()
         jjt = jacp @ jacp.T + _JAC_DAMPING * np.eye(3)
         jacp_pinv = jacp.T @ np.linalg.inv(jjt)
@@ -625,7 +686,14 @@ class BimanualPegInHoleOpenArmSim:
         for name in _ARM_JOINTS:
             dof = self._arm_dofadr[name]
             lo, hi = self.model.jnt_range[self.model.joint(name).id]
-            self._virtual_qpos[name] = float(np.clip(self._virtual_qpos[name] + dq[dof], lo, hi))
+            span = hi - lo
+            frac = (self._virtual_qpos[name] - lo) / span
+            delta = dq[dof]
+            if delta < 0.0 and frac < _LIMIT_AVOID_MARGIN:
+                delta *= max(0.0, frac / _LIMIT_AVOID_MARGIN)
+            elif delta > 0.0 and frac > 1.0 - _LIMIT_AVOID_MARGIN:
+                delta *= max(0.0, (1.0 - frac) / _LIMIT_AVOID_MARGIN)
+            self._virtual_qpos[name] = float(np.clip(self._virtual_qpos[name] + delta, lo, hi))
 
     def _sync_peg_to_arm_fk(self) -> None:
         """peg free body의 qpos를 지금 오른팔 ee pose로부터 FK로 직접
@@ -663,9 +731,9 @@ class BimanualPegInHoleOpenArmSim:
             mujoco.mj_forward(self.model, self.data)
             self._sync_peg_to_arm_fk()
             mujoco.mj_forward(self.model, self.data)
-
-        for name in _ARM_JOINTS:
-            self.data.ctrl[self._arm_actuator_ids[name]] = self.data.qpos[self._arm_qposadr[name]]
+        # pos_right_j*(무력화됨)에 ctrl을 맞출 필요가 없다 -- 오른팔은
+        # torque_right_j*로 구동되고, 그 토크는 step()이 매 스텝 새로
+        # 계산한다(reset() 직후 첫 step() 호출에서 바로 올바른 값이 들어감).
 
     def reset(self, scene_config: dict[str, Any]) -> float:
         mujoco.mj_resetData(self.model, self.data)
@@ -731,14 +799,50 @@ class BimanualPegInHoleOpenArmSim:
 
     def step(self, delta_pos_world: np.ndarray) -> None:
         """가상(순수 기구학) 상태를 delta_pos_world만큼 전진시키고, 그 결과를
-        ctrl 목표값으로 그대로 밀어넣는다 -- 실제 팔은 그 목표를 쫓아가기만
-        한다(위 __init__/​_advance_virtual 주석 참고, 실제 상태를 다시 읽어
-        다음 계획에 반영하지 않는다 -- 그게 드리프트의 원인이었다)."""
+        목표(q_des)로 삼아 오른팔에 역동역학(computed-torque) 토크를 넣는다
+        (위 __init__/​_advance_virtual 주석 참고, 실제 상태를 다시 읽어 다음
+        계획에 반영하지 않는다 -- 그게 드리프트의 원인이었다).
+
+        관절별 독립 PD(pos_right_j*)에서 이 방식으로 바꾼 이유는
+        _TORQUE_OMEGA_N 주석 참고 -- 관절 kp/kv와 admittance 게인 둘 다
+        재탐색해도 cost가 거의 안 움직이는 평평한 landscape였어서, 게인이
+        아니라 "관절이 서로 결합된 채로 독립 PD를 쓰는" 구조 자체가
+        한계였다고 보고 바꿨다. (1차 시도 -- home 자세에서 한 번만 잰
+        관절별 고정 Kp/Kd -- 는 실측으로 폐기했다: 처음 2000스텝은
+        괜찮다가 팔이 home에서 멀어지면서 그 자세의 실제 관성이 한 번
+        잰 값과 달라져 과소감쇠로 발산했다, _TORQUE_OMEGA_N 주석 참고.)
+
+        가속도 공간에서 목표를 정하고(qacc_cmd, 관절마다 같은 omega_n/
+        zeta) 그 순간의 mj_fullM 7x7 부분행렬을 곱해 토크로 바꾼다:
+            qacc_cmd_i = omega_n^2*(q_des_i - q_i) - 2*zeta*omega_n*qvel_i
+            tau = M(q)_rr @ qacc_cmd + (qfrc_bias_r - qfrc_passive_r)
+
+        qfrc_bias - qfrc_passive는 Coriolis/원심력 항만 남긴다 -- 중력은
+        이미 body_gravcomp(위 __init__ 참고)가 qfrc_passive로 상쇄하고
+        있어서, qfrc_bias(중력+Coriolis+원심력을 전부 포함)를 그대로 더하면
+        중력을 두 번 상쇄하게 된다(실측으로 확인: qvel=0일 때 qfrc_bias와
+        qfrc_passive가 정확히 같았다 -- 즉 그 차이는 항상 속도 항뿐).
+        가속도 feedforward(목표 궤적 자체의 q̈_des)는 안 넣는다 --
+        resolved-rate 계획이 가속도 궤적을 안 주기 때문에, 이건 완전한
+        computed-torque가 아니라 "매 스텝 새로 잰 M(q)로 결합/관성을
+        상쇄한 뒤의 PD"에 가깝다."""
         self._advance_virtual(delta_pos_world)
-        for name in _ARM_JOINTS:
-            act_id = self._arm_actuator_ids[name]
-            lo, hi = self.model.actuator_ctrlrange[act_id]
-            self.data.ctrl[act_id] = np.clip(self._virtual_qpos[name], lo, hi)
+        mujoco.mj_forward(self.model, self.data)  # 이번 스텝 시작 상태로 M(q)/qfrc_bias/qfrc_passive 갱신
+        M = np.zeros((self.model.nv, self.model.nv))
+        mujoco.mj_fullM(self.model, self.data, M)
+        M_rr = M[np.ix_(self._arm_dofs, self._arm_dofs)]
+        qacc_cmd = np.empty(len(_ARM_JOINTS))
+        bias = np.empty(len(_ARM_JOINTS))
+        for i, name in enumerate(_ARM_JOINTS):
+            dof = self._arm_dofadr[name]
+            qpos = self.data.qpos[self._arm_qposadr[name]]
+            qvel = self.data.qvel[dof]
+            q_des = self._virtual_qpos[name]
+            qacc_cmd[i] = _TORQUE_OMEGA_N**2 * (q_des - qpos) - 2.0 * _TORQUE_ZETA * _TORQUE_OMEGA_N * qvel
+            bias[i] = self.data.qfrc_bias[dof] - self.data.qfrc_passive[dof]
+        tau = M_rr @ qacc_cmd + bias
+        for i, name in enumerate(_ARM_JOINTS):
+            self.data.ctrl[self._torque_actuator_ids[name]] = tau[i]
         mujoco.mj_step(self.model, self.data, nstep=N_SUBSTEPS)
 
 

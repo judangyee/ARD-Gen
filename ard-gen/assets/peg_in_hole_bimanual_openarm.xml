@@ -365,6 +365,24 @@
     <position name="pos_left_j5" joint="openarm_left_joint5" kp="411.75" kv="663.96" ctrlrange="-1.5708 1.5708"/>
     <position name="pos_left_j6" joint="openarm_left_joint6" kp="411.75" kv="663.96" ctrlrange="-0.7854 0.7854"/>
     <position name="pos_left_j7" joint="openarm_left_joint7" kp="411.75" kv="663.96" ctrlrange="-1.5708 1.5708"/>
+
+    <!-- 오른팔 전용 토크(motor) 액추에이터 -- "2번(완전한 역동역학 제어로
+         바꾸기)" 결정 이후 추가. pos_right_j1..7(위)은 __init__에서
+         gainprm/biasprm을 0으로 무력화해서 더 이상 힘을 안 낸다(vendor
+         액추에이터를 무력화하던 것과 같은 방식) -- 이제 오른팔은 이
+         motor 액추에이터로만 구동되고, sim.py의 step()이 매 스텝
+         M(q)/qfrc_bias/qfrc_passive로 직접 토크를 계산해서 넣는다(관절별
+         독립 PD가 아니라 결합 동역학을 상쇄한 뒤의 PD). ctrlrange는 각
+         관절의 actuatorfrcrange(위 assets/openarm/openarm_bimanual.xml)와
+         동일 -- 어차피 그쪽에서도 클램프되지만 액추에이터 자체에도
+         명시해서 이중으로 안전하게 뒀다. -->
+    <motor name="torque_right_j1" joint="openarm_right_joint1" ctrlrange="-40 40"/>
+    <motor name="torque_right_j2" joint="openarm_right_joint2" ctrlrange="-40 40"/>
+    <motor name="torque_right_j3" joint="openarm_right_joint3" ctrlrange="-27 27"/>
+    <motor name="torque_right_j4" joint="openarm_right_joint4" ctrlrange="-27 27"/>
+    <motor name="torque_right_j5" joint="openarm_right_joint5" ctrlrange="-7 7"/>
+    <motor name="torque_right_j6" joint="openarm_right_joint6" ctrlrange="-7 7"/>
+    <motor name="torque_right_j7" joint="openarm_right_joint7" ctrlrange="-7 7"/>
   </actuator>
 
   <keyframe>
@@ -385,7 +403,8 @@
       ctrl="-0.4932859043730308 2.7728121142883237 0.7779694449047385 2.068501962471789 0.5568966487876724 -0.5030469209189363 0.973709272141154
             -0.33119160341930914 -0.6927695819191171 1.0264533366778317 1.8918419565784326 -0.9724271650596741 -0.11753742523671289 -0.306424166993611
             0 0 0 0 0 0 0 0.110
-            0 0 0 0 0 0 0 -0.030"/>
+            0 0 0 0 0 0 0 -0.030
+            0 0 0 0 0 0 0"/>
     <!-- 왼팔 finger_joint1/2 qpos와 left_finger1_ctrl을 0.110으로, hole_socket
          qpos(위치만, quat은 그대로)를 재조정한 이유: sim 모듈의
          _LEFT_GRIPPER_GRASP_CTRL 참고 -- 오른팔 쪽과 같은 이유(완전히
