@@ -268,7 +268,14 @@ def adaptive_z_rate(dx: float, dy: float, outer_half: float, raw_depth: float, t
     scale = _Z_GATE_MIN_FRACTION + (1.0 - _Z_GATE_MIN_FRACTION) * align_quality
     return Z_RATE * scale
 
-TARGET_INSERTION_DEPTH = 0.04  # m (scene_config로 덮어쓸 수 있음)
+# "어느정도 들어가면 그만 눌러도 될 것 같은데, hole 길이의 절반이 되는
+# 지점을 (peg_tip 기준) 목표로 잡아서 해봐" 피드백으로 0.04 -> hole
+# 길이의 절반으로 낮췄다. hole 길이(assets/peg_in_hole_bimanual_openarm.xml
+# 의 hole_wall_* geom: size z=0.0275(반높이), pos z=-0.0275, 즉 벽이
+# hole_center_site(로컬 z=0, 입구)에서 바닥 상단(z=-0.055, hole_floor
+# geom과 맞닿는 지점)까지 뻗어 있음)은 0.055m -- 그 절반은 0.0275m.
+# (scene_config로 덮어쓸 수 있음)
+TARGET_INSERTION_DEPTH = 0.0275  # m
 
 # 성공 판정 버그(실측으로 발견, optimize/peg_in_hole_openarm_gain_search.py의
 # "성공 판정 버그" 절 참고): xy가 안 맞은 채로 hole을 완전히 지나쳐
