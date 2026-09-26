@@ -6,14 +6,35 @@ screw_driving_sim.py의 가상 나사산 커플링 + 토크 리미터 회전 제
 합쳤다. 자산/설계 배경은 assets/screw_driving_bimanual_openarm.xml 상단
 docstring 참고.
 
-## joint7을 xyz 유지 과제에서 완전히(항상) 제외하는 이유
+## joint7을 "그냥 돌리면" 안 되는 이유, 그리고 "위치 3 + 롤 1" 통합 과제로 바꾼 과정
 
-screw_driving_sim.py는 wrist_rotate를 z-추종 Jacobian 과제(_ARM_FOLLOW_JOINTS)
-에서 아예 뺐다 -- 회전축과 삽입축이 같은 축이라 뒤섞이면 안 되기 때문
-(회전은 토크 리미터가, tip-head 오프셋 유지는 xyz 추종이 각자 독립적으로
-맡아야 함). 여기서도 똑같이: joint7의 Jacobian 열을 (한계 근처에서만이
-아니라) 항상 0으로 고정해서 xyz 추종 dq가 joint7에 전혀 배분되지 않게
-하고, joint7의 _virtual_qpos는 turn/rewind 사이클이 직접 갱신한다.
+처음엔 screw_driving_sim.py의 wrist_rotate 처리를 그대로 본떠서 joint7을
+xyz 유지 Jacobian 과제에서 완전히 제외하고(joint7의 Jacobian 열을 항상
+0으로 고정), joint7의 _virtual_qpos만 turn/rewind 사이클이 직접
+갱신했었다. VX300s의 wrist_rotate는 그리퍼가 향하는 방향(로컬 -x, 도구
+축과 나란함)을 축으로 도는 순수 롤 관절이라 이게 안전했다.
+
+**실측으로 발견한 문제**: assets/openarm/openarm_bimanual.xml을 직접
+확인해보니 openarm_right_joint7의 회전축은 axis="1 0 0"(그 앞 관절
+프레임의 로컬 x)이지, 도구가 향하는 방향(ee_base_link 로컬 z, driver가
+매달리는 방향)이 아니었다 -- VX300s의 wrist_rotate와 근본적으로 다른
+축이다. 이 축으로 joint7만 돌리면 driver_tip(joint7 회전축에서 ~25cm
+떨어짐)이 큰 호를 그리며 같이 움직인다. 처음 버전(joint7 제외 + 나머지
+6관절이 사후에 보정)을 9925스텝 전체 궤적으로 실측해보니, 이 호가 한
+틱에 6mm 안팎씩 생겨서 6관절 보정(당시 상한 3mm/스텝)이 못 따라잡고
+tip-head 오프셋 오차가 최대 250mm까지 벌어졌다 -- 심지어 한 번은(스텝
+7000대) 관절이 통째로 튕겨나가는 실제 발산까지 관찰됐고, 그 여파로
+bolt_hinge_drive 커플링도 망가진 joint7 값을 따라가며 목표 깊이를 훨씬
+넘는 값(40mm, 목표 34mm)까지 순간이동한 것 같은 거짓 성공을 만들어냈다
+(peg-in-hole의 "성공 판정 버그"와 같은 종류).
+
+**고친 방법**: "joint7만 돌리고 나머지가 사후 보정" 대신, "driver tip
+위치 3개 + ee_base_link 로컬 z축(도구 방향) 기준 롤 회전 1개"를 하나의
+4행 Jacobian 과제로 묶어서 7관절 전부(joint7 포함)로 동시에 푼다(아래
+_advance_virtual_combined). 회전량은 이제 joint7의 실제 qpos가 아니라
+독립적인 계획 변수 self._virtual_roll(다른 관절들의 _virtual_qpos와
+같은 성격 -- "우리가 명령한 목표값")로 추적하고, bolt_hinge_drive
+커플링도 이 값을 기준으로 계산한다.
 
 ## bolt 위치를 매 reset()마다 block 위치에 맞춰 procedural로 재배치하는 이유
 
@@ -71,8 +92,6 @@ NOMINAL_RATE = 2.5  # rad/s -- screw_driving_sim.py에서 실측 검증된 값 �
 MAX_CONTROL_STEPS = 30000
 
 _ARM_JOINTS = [f"openarm_right_joint{i}" for i in range(1, 8)]
-_JOINT7_NAME = "openarm_right_joint7"
-_XYZ_JOINTS = _ARM_JOINTS[:6]  # joint7 제외 (위 docstring 참고)
 
 _LEFT_ARM_HOME_QPOS = {
     "openarm_left_joint1": -0.33119160341930914,
@@ -138,6 +157,22 @@ _JAC_DAMPING = 1e-4
 _NULLSPACE_GAIN = 0.03
 _LIMIT_FREEZE_MARGIN = 0.08
 _TRACK_GAIN = 0.8  # screw_driving_sim.py의 _z_track_step "error*0.8"과 동일.
+# screw_driving_sim.py의 _z_track_step은 매 스텝 error*0.8을 그대로
+# Jacobian에 넣지만, 거긴 error가 몇 mm 수준으로 항상 작다는 전제가
+# 있었다(단일팔, wrist_rotate가 진짜 position 액추에이터라 지연이 거의
+# 없음). 여기서는 torque_limit에 걸려 멈췄다 풀리는 순간이나 turn/rewind
+# 전환 시 error가 수십 mm까지 커질 수 있는데, 그걸 그대로 한 스텝
+# resolved-rate에 넣으면(클립 없이) 관절이 한 스텝에 과도하게 큰 각도로
+# 튀어서(실측: 스텝 7000~7274 사이 joint2가 2.85->-0.08까지 폭주, offset
+# 오차가 25mm->342mm로 발산) 팔이 통째로 망가진 자세로 튕겨나갔다. 그
+# 자리에서 bolt_hinge_drive/bolt_slide_drive 커플링도 같이 망가진 joint7
+# 값을 따라가면서 target_depth를 훨씬 넘는 값(40mm, 목표 34mm)까지 순간
+# 삽입된 것처럼 보이는 거짓 성공까지 만들어냈다(peg-in-hole의 "성공 판정
+# 버그"와 본질적으로 같은 종류의 문제). peg-in-hole이 Z_RATE를 고정
+# 상한으로 뒀던 것과 같은 이유로, 한 스텝에 허용하는 최대 이동량에
+# 상한을 둔다.
+_MAX_XYZ_STEP_M = 0.003
+_MAX_DQ_PER_STEP = 0.05  # rad, 관절당 한 스텝 최대 변화량 (위 _advance_virtual_combined 참고)
 
 _TORQUE_OMEGA_N = 40.0
 _TORQUE_ZETA = 1.0
@@ -166,7 +201,6 @@ class ScrewDrivingBimanualOpenArmSim:
         self._arm_qposadr = {name: self.model.joint(name).qposadr[0] for name in _ARM_JOINTS}
         self._arm_dofadr = {name: self.model.joint(name).dofadr[0] for name in _ARM_JOINTS}
         self._arm_dofs = [self._arm_dofadr[name] for name in _ARM_JOINTS]
-        self._joint7_qposadr = self._arm_qposadr[_JOINT7_NAME]
 
         self._left_arm_qposadr = {name: self.model.joint(name).qposadr[0] for name in _LEFT_ARM_HOME_QPOS}
         self._left_arm_actuator_ids = {
@@ -226,7 +260,8 @@ class ScrewDrivingBimanualOpenArmSim:
 
         self._target_offset = np.zeros(3)
         self._phase = "turn"
-        self._engage_wrist_ref = 0.0
+        self._virtual_roll = 0.0
+        self._engage_roll_ref = 0.0
         self._engage_hinge_ref = 0.0
         self._frozen_hinge_ctrl = 0.0
 
@@ -245,10 +280,14 @@ class ScrewDrivingBimanualOpenArmSim:
         self.data.qpos[qadr : qadr + 3] = driver_pos
         self.data.qpos[qadr + 3 : qadr + 7] = driver_quat
 
-    def _virtual_driver_tip_and_jac(self) -> tuple[np.ndarray, np.ndarray]:
-        """self._virtual_qpos에서의 driver tip 위치와, openarm_right_ee_base_link에
-        강체로 붙어있다고 가정한 Jacobian (peg_in_hole의
-        _virtual_peg_tip_and_jac와 동일한 이유/기법, 파일 상단 docstring 참고)."""
+    def _advance_virtual_combined(self, delta_pos_world: np.ndarray, delta_roll: float) -> None:
+        """7관절 전부로 "driver tip 위치 3개 + ee_base_link 로컬 z축(도구
+        방향) 기준 롤 회전 1개"를 동시에 만족시키는 resolved-rate 해를
+        구한다 -- joint7의 회전축이 도구 방향과 안 맞아서(파일 상단
+        docstring 참고) joint7을 별도로 돌리고 나머지가 사후 보정하는
+        방식은 실측으로 폐기했다. 관절 한계 회피(Jacobian-column-freezing)
+        + 널스페이스는 peg_in_hole의 _advance_virtual과 동일 기법이되,
+        4행(3 위치 + 1 롤) Jacobian에 대해 적용한다."""
         sd = self._shadow_data
         for name, value in self._virtual_qpos.items():
             sd.qpos[self._arm_qposadr[name]] = value
@@ -256,52 +295,52 @@ class ScrewDrivingBimanualOpenArmSim:
         ee_pos = sd.xpos[self._right_ee_body_id]
         R = sd.xmat[self._right_ee_body_id].reshape(3, 3)
         driver_tip = ee_pos + R @ _DRIVER_TIP_OFFSET_IN_EE
+        tool_axis_world = R[:, 2]  # ee_base_link 로컬 z축 (도구가 향하는 방향과 나란함)
+
         mujoco.mj_jac(self.model, sd, self._jacp, self._jacr, driver_tip, self._right_ee_body_id)
-        return driver_tip, self._jacp
+        J = np.vstack([self._jacp, tool_axis_world @ self._jacr])  # 4 x nv
+        target = np.concatenate([delta_pos_world, [delta_roll]])
 
-    def _advance_virtual_xyz(self, delta_pos_world: np.ndarray) -> None:
-        """joint7을 제외한 6개 관절로 driver tip을 delta_pos_world만큼
-        전진시킨다(resolved-rate, 관절 한계 회피용 Jacobian-column-freezing +
-        널스페이스는 peg_in_hole의 _advance_virtual과 동일 기법). joint7의
-        Jacobian 열은 (한계와 무관하게) 항상 고정한다 -- 회전은 별도로
-        turn/rewind 사이클이 담당하므로(파일 상단 docstring 참고)."""
-        _, jacp0 = self._virtual_driver_tip_and_jac()
-        joint7_dof = self._arm_dofadr[_JOINT7_NAME]
-        jacp = jacp0.copy()
-        jacp[:, joint7_dof] = 0.0
+        def _solve(Jm: np.ndarray) -> np.ndarray:
+            jjt = Jm @ Jm.T + _JAC_DAMPING * np.eye(Jm.shape[0])
+            return Jm.T @ np.linalg.inv(jjt)
 
-        def _solve(J: np.ndarray) -> np.ndarray:
-            jjt = J @ J.T + _JAC_DAMPING * np.eye(3)
-            return J.T @ np.linalg.inv(jjt)
-
-        jacp_pinv0 = _solve(jacp)
-        dq_task0 = jacp_pinv0 @ delta_pos_world
-        jacp_frozen = jacp.copy()
-        frozen_dofs = [joint7_dof]
-        for name in _XYZ_JOINTS:
+        pinv0 = _solve(J)
+        dq_task0 = pinv0 @ target
+        J_frozen = J.copy()
+        frozen_dofs = []
+        for name in _ARM_JOINTS:
             dof = self._arm_dofadr[name]
             lo, hi = self.model.jnt_range[self.model.joint(name).id]
             frac = (self._virtual_qpos[name] - lo) / (hi - lo)
             if (frac < _LIMIT_FREEZE_MARGIN and dq_task0[dof] < 0.0) or (
                 frac > 1.0 - _LIMIT_FREEZE_MARGIN and dq_task0[dof] > 0.0
             ):
-                jacp_frozen[:, dof] = 0.0
+                J_frozen[:, dof] = 0.0
                 frozen_dofs.append(dof)
 
-        jacp_pinv = _solve(jacp_frozen)
-        dq_task = jacp_pinv @ delta_pos_world
+        pinv = _solve(J_frozen)
+        dq_task = pinv @ target
+        # 4행(3 위치+1 롤) 과제가 특정 자세에서 거의 특이(singular)해지면
+        # 감쇠(_JAC_DAMPING)만으로 못 막을 만큼 dq_task가 한 스텝에 크게
+        # 튈 수 있다(실측: roll이 TURN_HIGH 근처를 지날 때 offset 오차가
+        # 몇 mm에서 90mm대로, bolt_slide가 몇 스텝 만에 3mm->35mm로
+        # 튀는 걸 확인). 관절 하나당 한 스텝 최대 변화량에 안전 상한을 둔다.
+        dq_task_norm = float(np.max(np.abs(dq_task))) if dq_task.size else 0.0
+        if dq_task_norm > _MAX_DQ_PER_STEP:
+            dq_task = dq_task * (_MAX_DQ_PER_STEP / dq_task_norm)
 
         nv = self.model.nv
-        null_proj = np.eye(nv) - jacp_pinv @ jacp_frozen
+        null_proj = np.eye(nv) - pinv @ J_frozen
         dq_null = np.zeros(nv)
-        for name in _XYZ_JOINTS:
+        for name in _ARM_JOINTS:
             dof = self._arm_dofadr[name]
             dq_null[dof] = _NULLSPACE_GAIN * (_HOME_QPOS[name] - self._virtual_qpos[name])
         dq = dq_task + null_proj @ dq_null
         for dof in frozen_dofs:
             dq[dof] = 0.0
 
-        for name in _XYZ_JOINTS:
+        for name in _ARM_JOINTS:
             dof = self._arm_dofadr[name]
             lo, hi = self.model.jnt_range[self.model.joint(name).id]
             self._virtual_qpos[name] = float(np.clip(self._virtual_qpos[name] + dq[dof], lo, hi))
@@ -351,7 +390,8 @@ class ScrewDrivingBimanualOpenArmSim:
         ).copy()
 
         self._phase = "turn"
-        self._engage_wrist_ref = float(self.data.qpos[self._joint7_qposadr])
+        self._virtual_roll = 0.0
+        self._engage_roll_ref = 0.0
         self._engage_hinge_ref = float(self.data.qpos[self._bolt_hinge_qposadr])
         self._frozen_hinge_ctrl = 0.0
         self.data.ctrl[self._bolt_hinge_drive_id] = 0.0
@@ -372,49 +412,56 @@ class ScrewDrivingBimanualOpenArmSim:
     # ------------------------------------------------------------------
     def step(self, gains: dict[str, float]) -> dict[str, Any]:
         """제어 틱 하나를 진행한다. torque_limiter 회전 제어(screw_driving_sim.py
-        와 동일 설계, joint7로 이식) + xyz 유지 computed-torque(peg_in_hole과
-        동일 설계, joint7 제외) + 나사산 가상 커플링(screw_driving.xml과 동일).
+        와 동일 설계, "롤" 변수로 이식) + xyz+롤 통합 computed-torque
+        (_advance_virtual_combined, 파일 상단 docstring 참고) + 나사산 가상
+        커플링(screw_driving.xml과 동일).
 
         gains: {"torque_limit": float}
         반환: {"torque", "rate", "phase", "limited"} -- screw_driving_sim.py와 동일.
         """
         torque_limit = float(gains.get("torque_limit", np.inf))
-        current_ctrl = self._virtual_qpos[_JOINT7_NAME]
         torque = self.get_torque()
         limited = False
+        actual_delta_roll = 0.0
 
         if self._phase == "turn":
             if abs(torque) >= torque_limit:
                 limited = True
                 self._phase = "rewind"
                 self._frozen_hinge_ctrl = float(self.data.ctrl[self._bolt_hinge_drive_id])
-                new_ctrl = current_ctrl
             else:
-                new_ctrl = min(current_ctrl + NOMINAL_RATE * DT, TURN_HIGH)
-                self._virtual_qpos[_JOINT7_NAME] = new_ctrl
+                new_roll = min(self._virtual_roll + NOMINAL_RATE * DT, TURN_HIGH)
+                actual_delta_roll = new_roll - self._virtual_roll
+                self._virtual_roll = new_roll
                 self.data.ctrl[self._bolt_hinge_drive_id] = (
-                    self._engage_hinge_ref
-                    + (float(self.data.qpos[self._joint7_qposadr]) - self._engage_wrist_ref)
+                    self._engage_hinge_ref + (self._virtual_roll - self._engage_roll_ref)
                 )
-                if new_ctrl >= TURN_HIGH:
+                if new_roll >= TURN_HIGH:
                     self._phase = "rewind"
                     self._frozen_hinge_ctrl = float(self.data.ctrl[self._bolt_hinge_drive_id])
             rate = NOMINAL_RATE if not limited else 0.0
         else:  # rewind: disengaged, 저항 없이 항상 nominal rate로 되감는다
             rate = NOMINAL_RATE
-            new_ctrl = max(current_ctrl - rate * DT, TURN_LOW)
-            self._virtual_qpos[_JOINT7_NAME] = new_ctrl
+            new_roll = max(self._virtual_roll - rate * DT, TURN_LOW)
+            actual_delta_roll = new_roll - self._virtual_roll
+            self._virtual_roll = new_roll
             self.data.ctrl[self._bolt_hinge_drive_id] = self._frozen_hinge_ctrl
-            if new_ctrl <= TURN_LOW:
+            if new_roll <= TURN_LOW:
                 self._phase = "turn"
-                self._engage_wrist_ref = float(self.data.qpos[self._joint7_qposadr])
+                self._engage_roll_ref = self._virtual_roll
                 self._engage_hinge_ref = float(self.data.qpos[self._bolt_hinge_qposadr])
 
-        # xyz 유지 (joint7 제외 6관절) -- 실제 물리 상태 기준 오차를 목표
-        # 오프셋으로 되돌리는 P 제어(screw_driving_sim.py의 error*0.8과 동일 게인).
+        # xyz 유지 + 롤 -- 실제 물리 상태 기준 위치 오차를 목표 오프셋으로
+        # 되돌리는 P 제어(screw_driving_sim.py의 error*0.8과 동일 게인, 한
+        # 스텝 최대 이동량은 _MAX_XYZ_STEP_M으로 제한)와 이번 틱의 롤
+        # 증분을 함께 7관절에 배분한다(_advance_virtual_combined).
         current_offset = self.get_driver_tip_pos() - self.get_bolt_head_pos()
         error = self._target_offset - current_offset
-        self._advance_virtual_xyz(error * _TRACK_GAIN)
+        delta_pos = error * _TRACK_GAIN
+        delta_norm = float(np.linalg.norm(delta_pos))
+        if delta_norm > _MAX_XYZ_STEP_M:
+            delta_pos = delta_pos * (_MAX_XYZ_STEP_M / delta_norm)
+        self._advance_virtual_combined(delta_pos, actual_delta_roll)
 
         # 나사산 가상 커플링 (screw_driving.xml/screw_driving_sim.py와 동일).
         self.data.ctrl[self._bolt_slide_drive_id] = (
