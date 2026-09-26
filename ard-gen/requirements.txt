@@ -1,6 +1,7 @@
 mujoco>=3.1.0
 numpy>=1.24.0
 cma>=3.3.0
+pyyaml>=6.0  # tasks/*.yaml 태스크 설정 (sim/task_registry.py)
 matplotlib>=3.7.0
 imageio>=2.31.0
 imageio-ffmpeg>=0.4.9

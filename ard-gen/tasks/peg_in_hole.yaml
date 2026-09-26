@@ -1,0 +1,54 @@
+# peg-in-hole 태스크 설정. sim/peg_in_hole_env.py:PegInHoleEnv가 실제
+# 구현이고(TASK_REGISTRY 매핑), 이 파일은 리팩토링 전 optimize/cma_search.py
+# + pipeline/*.py 여기저기 흩어져 있던 게인 이름/탐색 범위/씬 무작위화
+# 범위/성공 판정/언어 라벨링 어휘를 한 곳으로 모은 것이다 -- 값 자체는
+# 전부 기존 코드에서 그대로 옮겨왔다(회귀 테스트로 동일성 확인, tests/
+# test_regression_peg_in_hole.py 참고).
+name: peg_in_hole
+
+gains:
+  names: [Kp_xy, Kd_xy]
+  bounds:
+    Kp_xy: [0.00002, 0.003]
+    Kd_xy: [0.0, 0.0005]
+  # CMA-ES 시작점 -- 일부러 나쁜 초기 추정값(옛 optimize/cma_search.py 주석
+  # 참고: Kp가 거의 0 -> 대표 시나리오 전부 실패)에서 시작해서 CMA-ES가
+  # 스텝 크기를 키워가며 좋은 게인을 찾아가는 과정을 보여준다.
+  x0: [0.00003, 0.000001]
+  # CMA_stds(좌표별 초기 스텝 크기) -- cma_search.py가 sigma0=1.0과 함께 씀.
+  sigma0: [0.00008, 0.000008]
+
+# CMA-ES 평가용 대표 시나리오 3개. sim/peg_in_hole_sim.py(VX300s 팔,
+# base-hole 거리 10cm 자세)에서 실측으로 확인한 "게인이 있어야만 성공하는"
+# 난이도의 오프셋들. eval_scenarios[0]이 seed_trajectory.npz에 저장할
+# "메인"(가장 어려운) 시나리오.
+eval_scenarios:
+  - peg_init_offset_xy: [0.014, 0.0]
+  - peg_init_offset_xy: [0.0099, 0.0099]
+  - peg_init_offset_xy: [0.0099, -0.0099]
+
+success:
+  reward_threshold: 49.3
+
+# pipeline/diffusion_gains.py의 조건 벡터(scene_config를 펼쳐서 만드는
+# 입력)에 쓸 필드 이름과 순서. pipeline.scene_sampler(공유 씬) 스키마의
+# hole_pose(3)+friction(1)+clearance_m(1)+peg_init_offset(2) = 7차원과
+# 정확히 같다 -- 이제 이 리스트 길이로 조건 차원이 자동 계산된다(코드에
+# _COND_DIM=7으로 하드코딩하지 않음).
+condition_fields: [hole_pose, friction, clearance_m, peg_init_offset]
+
+# 5단계(언어 라벨링)용 어휘. peg-in-hole은 "삽입 강도"만 표현하므로
+# direction_words/quantity_words는 비어 있다 -- 회전 태스크(예: cap_twist)
+# 는 이 두 필드로 "토크 부호 -> 회전 방향", "회전수 -> 수량어"를 채운다
+# (sim/cap_twist_env.py 주석, tasks/cap_twist.yaml 참고).
+language:
+  templates:
+    - "오른손으로 peg를 구멍에 {intensity} 삽입하라."
+    - "오른팔을 이용해 페그를 구멍 안으로 {intensity} 밀어 넣어라."
+    - "오른손으로 핀을 구멍 위치에 맞춰 {intensity} 꽂아라."
+  intensity_words:
+    gentle: 살짝
+    normal: 적당한 힘으로
+    firm: 힘있게
+  direction_words: {}
+  quantity_words: {}

@@ -36,6 +36,7 @@ def _run(cmd: list[str]) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--task", type=str, default="peg_in_hole", help="sim/task_registry.py의 TASK_REGISTRY 키")
     parser.add_argument("--seed-path", type=str, default="./seed_trajectory.npz")
     parser.add_argument("--bootstrap-path", type=str, default="./data/bootstrap/bootstrap_dataset.npz")
     parser.add_argument("--diffusion-path", type=str, default="./data/bootstrap/diffusion_gains.pt")
@@ -57,7 +58,7 @@ def main() -> None:
     print("0단계 -- Seed 확보 (CMA-ES)")
     print("=" * 70)
     if args.force_seed or not os.path.exists(args.seed_path):
-        _run([sys.executable, "optimize/cma_search.py", "--out-path", args.seed_path])
+        _run([sys.executable, "optimize/cma_search.py", "--task", args.task, "--out-path", args.seed_path])
     else:
         print(f"[run_pipeline] 이미 있음, 재사용: {args.seed_path}")
 
@@ -76,6 +77,8 @@ def main() -> None:
             [
                 sys.executable,
                 "pipeline/bootstrap.py",
+                "--task",
+                args.task,
                 "--seed-path",
                 args.seed_path,
                 "--out-path",
@@ -94,6 +97,8 @@ def main() -> None:
             [
                 sys.executable,
                 "pipeline/diffusion_gains.py",
+                "--task",
+                args.task,
                 "--dataset-path",
                 args.bootstrap_path,
                 "--out-path",
@@ -111,6 +116,8 @@ def main() -> None:
         [
             sys.executable,
             "pipeline/filter_episodes.py",
+            "--task",
+            args.task,
             "--n-scenes",
             str(args.n_scenes),
             "--scene-seed",
@@ -128,7 +135,7 @@ def main() -> None:
     print("=" * 70)
     print("5단계 -- 언어 라벨링")
     print("=" * 70)
-    _run([sys.executable, "pipeline/language_labeling.py", "--episodes-dir", args.episodes_dir])
+    _run([sys.executable, "pipeline/language_labeling.py", "--task", args.task, "--episodes-dir", args.episodes_dir])
 
     print()
     print("=" * 70)

@@ -1,0 +1,41 @@
+# cap_twist: 리팩토링된 태스크 플러그인 구조를 보여주기 위한 더미 태스크
+# (sim/cap_twist_env.py 상단 docstring 참고) -- MuJoCo 없이 순수 숫자
+# 모델이다. 이 파일 + sim/cap_twist_env.py 두 개, 그리고
+# sim/task_registry.py의 TASK_REGISTRY 한 줄이 새 태스크를 추가하는 데
+# 필요한 전부다.
+name: cap_twist
+
+gains:
+  names: [Kp]
+  bounds:
+    Kp: [0.01, 1.9]  # 이 1차 모델은 |1-Kp|<1(즉 0<Kp<2)이어야 발산하지 않는다
+  x0: [0.05]
+  sigma0: [0.05]
+
+eval_scenarios:
+  - {}  # default_scene_config() 그대로 (target_angle=pi, friction=0.01)
+  - friction: 0.03
+
+success:
+  reward_threshold: 45.0
+
+# 1단계(공유 씬) 스키마의 필드 이름 -- sim/cap_twist_env.py의
+# sample_scene_config()가 반환하는 target_turns(스칼라)+friction(스칼라).
+condition_fields: [target_turns, friction]
+
+# direction_words/quantity_words가 채워진 예시(peg_in_hole.yaml은 이 둘이
+# 비어 있었다) -- sim/cap_twist_env.py의 run_episode()가 채우는
+# "direction"("cw"/"ccw")과 "quantity"(반바퀴 단위) 필드에 대응한다.
+# 이 더미 태스크는 force/torque가 없어서(sim/cap_twist_env.py에 물리가
+# 없음) intensity_words는 비워둔다 -- peg_in_hole.yaml이 이미 그 경로를
+# 보여주므로, 여기서는 새로 추가된 direction_words/quantity_words만
+# 시연한다.
+language:
+  templates:
+    - "뚜껑을 {direction} {quantity}바퀴 돌려라."
+    - "오른손으로 뚜껑을 잡고 {direction} {quantity}바퀴만큼 돌려라."
+  intensity_words: {}
+  direction_words:
+    cw: 시계방향으로
+    ccw: 반시계방향으로
+  quantity_words: {}  # 숫자를 그대로 쓴다(예: "1.5") -- 매핑이 없으면 str(값) 그대로 채워짐

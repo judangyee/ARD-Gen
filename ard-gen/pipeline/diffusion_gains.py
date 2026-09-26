@@ -1,41 +1,30 @@
-"""ARD-Gen 2-B단계: conditional diffusion으로 씬 조건에 맞는 게인을 생성한다.
+"""ARD-Gen 2-B단계: conditional diffusion으로 씬 조건에 맞는 게인을 생성한다 (태스크 무관).
 
 2-A단계(pipeline/bootstrap.py)가 모은 bootstrap_dataset.npz(seed 게인 주변
-무작위 노이즈로 1000회 실행한 기록)를 학습 데이터로 써서, "씬 조건이
-주어지면 성공 확률 높은 (Kp_xy, Kd_xy)를 생성하는" conditional diffusion
-모델을 학습한다. 학습 후에는 새로운 무작위 씬 100개에 대해 실제로
-시뮬레이션을 돌려서, 2-A단계의 무작위 노이즈 방식(성공률 76%)보다
-diffusion이 뽑은 게인이 더 잘 통하는지 직접 검증한다.
+무작위 노이즈로 실행한 기록)를 학습 데이터로 써서, "씬 조건이 주어지면
+성공 확률 높은 게인을 생성하는" conditional diffusion 모델을 학습한다.
+학습 후에는 새로운 무작위 씬에 대해 실제로 시뮬레이션을 돌려서, 2-A단계의
+무작위 노이즈 방식보다 diffusion이 뽑은 게인이 더 잘 통하는지 직접
+검증한다.
+
+--task로 태스크를 고른다(sim/task_registry.py). 조건 벡터 차원/게인 차원은
+태스크 설정(tasks/{task}.yaml의 condition_fields, gains.names)에서 자동
+계산되므로 _COND_DIM=7 같은 하드코딩이 없다 -- 모델(GainDiffusionNet)은
+차원 수만 받으면 되므로 그대로 재사용된다.
 
 ## 학습 데이터: 성공 샘플만 쓴다 (실패 샘플은 조건 정규화 통계에만 씀)
 
-이유:
-1. 우리가 실제로 원하는 건 "주어진 씬에서 성공하는 게인의 분포"를 모델링해서
-   거기서 샘플링하는 것이다. Diffusion은 학습 데이터의 분포를 그대로
-   재현하도록 배우므로, 성공/실패가 섞인 데이터로 학습하면 모델이 "실패하는
-   게인"도 똑같이 그럴듯하게 생성하게 된다 — 우리가 원하는 게 아니다.
-2. Classifier guidance(실패도 학습해서 그쪽을 피하도록 유도)는 별도의
-   성공/실패 분류기 + guidance 가중치 튜닝이 필요해서, 저차원(조건 7차원,
-   출력 2차원) 문제에 비해 과한 복잡도다. 이 스케일에서는 "성공 사례만
-   보고 그 분포를 재현"하는 게 더 간단하고 안정적이다.
-3. 표본 크기 문제도 크지 않다 — bootstrap_dataset.npz의 성공률이 76%라
-   1000개 중 약 760개가 성공 샘플로 남는데, 조건 7차원/출력 2차원짜리
-   저차원 회귀형 생성 문제에는 충분한 양이다.
-4. 다만 조건(scene_config) 자체의 정규화 통계(평균/표준편차)는 성공 여부와
-   무관하게 **전체 1000개**로 계산한다 — 성공 샘플만으로 계산하면 애초에
-   "쉬운 씬"쪽으로 치우친 통계가 나와서, 실전에서 마주칠 어려운 씬(좁은
-   clearance, 큰 오프셋)의 조건 벡터가 정규화 공간에서 이상한 위치로
-   밀려날 수 있다.
-
-## 모델
-
-조건(7차원: hole_pose 3 + friction 1 + clearance_m 1 + peg_init_offset 2)과
-diffusion timestep을 함께 받아 노이즈(eps)를 예측하는 작은 MLP
-(GainDiffusionNet) + 표준 DDPM 스케줄(GaussianDiffusion). 게인이 2차원뿐이라
-대형 U-Net 등은 불필요하다.
+이유는 리팩토링 전과 동일(peg-in-hole 검증 때 확인한 그대로):
+1. 우리가 원하는 건 "주어진 씬에서 성공하는 게인의 분포"를 모델링해서
+   거기서 샘플링하는 것 -- 실패/성공이 섞인 데이터로 학습하면 모델이
+   "실패하는 게인"도 그럴듯하게 생성하게 된다.
+2. Classifier guidance는 저차원 문제에 비해 과한 복잡도다.
+3. 조건(scene_config) 정규화 통계(평균/표준편차)는 성공 여부와 무관하게
+   **전체 표본**으로 계산한다 -- 성공 샘플만으로 계산하면 "쉬운 씬" 쪽으로
+   치우친 통계가 나온다.
 
 사용 예:
-    python pipeline/diffusion_gains.py \
+    python pipeline/diffusion_gains.py --task peg_in_hole \
         --dataset-path ./data/bootstrap/bootstrap_dataset.npz \
         --out-path ./data/bootstrap/diffusion_gains.pt \
         --epochs 500 --n-eval 100 --eval-seed 999
@@ -43,6 +32,7 @@ diffusion timestep을 함께 받아 노이즈(eps)를 예측하는 작은 MLP
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
@@ -52,40 +42,24 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from pipeline.scene_sampler import sample_scene_config, to_sim_scene_config
-from sim.peg_in_hole_sim import run_episode
-
-_COND_DIM = 7  # hole_pose(3) + friction(1) + clearance_m(1) + peg_init_offset(2)
-_GAIN_DIM = 2  # Kp_xy, Kd_xy
-
-# optimize/cma_search.py의 CMA-ES 탐색 범위와 동일 -- diffusion이 뽑은
-# 샘플이 물리적으로 말이 안 되는 값(음수 게인 등)으로 튀는 걸 막기 위한 clip.
-_KP_BOUNDS = (0.00002, 0.003)
-_KD_BOUNDS = (0.0, 0.0005)
+from sim.task_registry import TaskConfig, list_tasks, load_task_config
 
 
 # ---------------------------------------------------------------------------
 # 조건 벡터 조립
 # ---------------------------------------------------------------------------
-def _condition_from_arrays(
-    hole_pose: np.ndarray, friction: np.ndarray, clearance_m: np.ndarray, peg_init_offset: np.ndarray
-) -> np.ndarray:
-    """bootstrap_dataset.npz의 컬럼들(N,...)을 (N, 7) 조건 행렬로 합친다."""
-    return np.concatenate(
-        [hole_pose, friction[:, None], clearance_m[:, None], peg_init_offset], axis=1
-    ).astype(np.float32)
-
-
-def _condition_from_scene_config(cfg: dict) -> np.ndarray:
-    """pipeline.scene_sampler.sample_scene_config()가 반환하는 dict 하나를
-    (7,) 조건 벡터로 변환한다 (추론 시 사용)."""
-    hole_pose = np.array(cfg["hole_pose"], dtype=np.float32)
-    peg_offset = np.array(cfg["peg_init_offset"], dtype=np.float32)
-    return np.concatenate([hole_pose, [cfg["friction"]], [cfg["clearance_m"]], peg_offset]).astype(np.float32)
+def _condition_from_columns(task: TaskConfig, scene_columns: dict[str, np.ndarray]) -> np.ndarray:
+    """bootstrap_dataset.npz의 씬 필드 컬럼들((N,) 또는 (N,k))을
+    task.condition_fields 순서로 이어붙인 (N, cond_dim) 조건 행렬로 만든다."""
+    parts = []
+    for name in task.condition_fields:
+        col = scene_columns[name]
+        parts.append(col if col.ndim > 1 else col[:, None])
+    return np.concatenate(parts, axis=1).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
-# 모델
+# 모델 (차원 수는 태스크마다 다르지만, 구조 자체는 태스크 무관)
 # ---------------------------------------------------------------------------
 def sinusoidal_time_embedding(timesteps: torch.Tensor, dim: int) -> torch.Tensor:
     half = dim // 2
@@ -101,8 +75,10 @@ def sinusoidal_time_embedding(timesteps: torch.Tensor, dim: int) -> torch.Tensor
 class GainDiffusionNet(nn.Module):
     """(noisy_gains, condition, t) -> 예측 노이즈(eps). 조건부 score network."""
 
-    def __init__(self, cond_dim: int = _COND_DIM, gain_dim: int = _GAIN_DIM, hidden: int = 128, time_dim: int = 32):
+    def __init__(self, cond_dim: int, gain_dim: int, hidden: int = 128, time_dim: int = 32):
         super().__init__()
+        self.cond_dim = cond_dim
+        self.gain_dim = gain_dim
         self.time_dim = time_dim
         self.time_mlp = nn.Sequential(nn.Linear(time_dim, time_dim), nn.Mish(), nn.Linear(time_dim, time_dim))
         self.net = nn.Sequential(
@@ -140,9 +116,9 @@ class GaussianDiffusion:
         return sqrt_ac * x0 + sqrt_1mac * noise
 
     @torch.no_grad()
-    def p_sample_loop(self, model: GainDiffusionNet, cond: torch.Tensor, gain_dim: int = _GAIN_DIM) -> torch.Tensor:
+    def p_sample_loop(self, model: GainDiffusionNet, cond: torch.Tensor) -> torch.Tensor:
         batch = cond.shape[0]
-        x = torch.randn(batch, gain_dim, device=self.device)
+        x = torch.randn(batch, model.gain_dim, device=self.device)
         for t_step in reversed(range(self.T)):
             t = torch.full((batch,), t_step, dtype=torch.long, device=self.device)
             eps_pred = model(x, cond, t)
@@ -161,15 +137,16 @@ class GaussianDiffusion:
 # ---------------------------------------------------------------------------
 # 학습
 # ---------------------------------------------------------------------------
-def train(args: argparse.Namespace) -> dict:
+def train(args: argparse.Namespace, task: TaskConfig) -> dict:
     torch.manual_seed(args.seed)
     data = np.load(args.dataset_path)
 
-    cond_all = _condition_from_arrays(data["hole_pose"], data["friction"], data["clearance_m"], data["peg_init_offset"])
-    gains_all = np.stack([data["kp_xy"], data["kd_xy"]], axis=1).astype(np.float32)
+    scene_columns = {name: data[name] for name in task.condition_fields}
+    cond_all = _condition_from_columns(task, scene_columns)
+    gains_all = data["gains"].astype(np.float32)
     success = data["success"]
 
-    print(f"[diffusion_gains] 데이터셋: {len(success)}건, 성공 {success.sum()}건 ({success.mean():.1%})")
+    print(f"[diffusion_gains] task={task.name} 데이터셋: {len(success)}건, 성공 {success.sum()}건 ({success.mean():.1%})")
 
     # 조건 정규화 통계는 전체(성공+실패)로 계산 -- docstring 참고.
     cond_mean = cond_all.mean(axis=0)
@@ -187,7 +164,7 @@ def train(args: argparse.Namespace) -> dict:
     cond_t = torch.from_numpy(cond_norm.astype(np.float32))
     gains_t = torch.from_numpy(gains_norm.astype(np.float32))
 
-    model = GainDiffusionNet()
+    model = GainDiffusionNet(cond_dim=cond_all.shape[1], gain_dim=gains_all.shape[1])
     diffusion = GaussianDiffusion(timesteps=args.timesteps)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
@@ -225,10 +202,15 @@ def train(args: argparse.Namespace) -> dict:
     }
 
 
-def save_checkpoint(state: dict, out_path: str, timesteps: int) -> None:
+def save_checkpoint(state: dict, task: TaskConfig, out_path: str, timesteps: int) -> None:
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     torch.save(
         {
+            "task": task.name,
+            "gain_names": task.gain_names,
+            "condition_fields": task.condition_fields,
+            "cond_dim": task.condition_dim,
+            "gain_dim": len(task.gain_names),
             "state_dict": state["model"].state_dict(),
             "cond_mean": state["cond_mean"],
             "cond_std": state["cond_std"],
@@ -241,84 +223,74 @@ def save_checkpoint(state: dict, out_path: str, timesteps: int) -> None:
     print(f"[diffusion_gains] 저장: {out_path}")
 
 
-def load_checkpoint(path: str) -> tuple[GainDiffusionNet, GaussianDiffusion, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def load_checkpoint(path: str):
     ckpt = torch.load(path, weights_only=False)
-    model = GainDiffusionNet()
+    model = GainDiffusionNet(cond_dim=ckpt["cond_dim"], gain_dim=ckpt["gain_dim"])
     model.load_state_dict(ckpt["state_dict"])
     model.eval()
     diffusion = GaussianDiffusion(timesteps=ckpt["timesteps"])
-    return model, diffusion, ckpt["cond_mean"], ckpt["cond_std"], ckpt["gain_mean"], ckpt["gain_std"]
+    return {
+        "task": ckpt["task"],
+        "gain_names": ckpt["gain_names"],
+        "model": model,
+        "diffusion": diffusion,
+        "cond_mean": ckpt["cond_mean"],
+        "cond_std": ckpt["cond_std"],
+        "gain_mean": ckpt["gain_mean"],
+        "gain_std": ckpt["gain_std"],
+    }
 
 
-def sample_gains(
-    model: GainDiffusionNet,
-    diffusion: GaussianDiffusion,
-    cond_mean: np.ndarray,
-    cond_std: np.ndarray,
-    gain_mean: np.ndarray,
-    gain_std: np.ndarray,
-    scene_cfg: dict,
-) -> dict[str, float]:
+def sample_gains(ckpt: dict, task: TaskConfig, scene_cfg: dict) -> dict[str, float]:
     """씬 조건 하나에 대해 diffusion으로 게인 하나를 샘플링한다."""
-    cond = _condition_from_scene_config(scene_cfg)
-    cond_norm = (cond - cond_mean) / cond_std
+    cond = task.condition_from_scene_config(scene_cfg)
+    cond_norm = (cond - ckpt["cond_mean"]) / ckpt["cond_std"]
     cond_tensor = torch.from_numpy(cond_norm.astype(np.float32)).unsqueeze(0)
 
-    sample = diffusion.p_sample_loop(model, cond_tensor)
+    sample = ckpt["diffusion"].p_sample_loop(ckpt["model"], cond_tensor)
     gains_norm = sample.squeeze(0).numpy()
-    gains = gains_norm * gain_std + gain_mean
+    gains_vec = gains_norm * ckpt["gain_std"] + ckpt["gain_mean"]
 
-    kp = float(np.clip(gains[0], *_KP_BOUNDS))
-    kd = float(np.clip(gains[1], *_KD_BOUNDS))
-    return {"Kp_xy": kp, "Kd_xy": kd}
+    gains = {name: float(v) for name, v in zip(ckpt["gain_names"], gains_vec)}
+    return task.clip_gains(gains)
 
 
 # ---------------------------------------------------------------------------
 # 검증: 새 무작위 씬에서 실제로 시뮬레이션을 돌려 성공률을 잰다.
 # ---------------------------------------------------------------------------
-def evaluate(
-    model: GainDiffusionNet,
-    diffusion: GaussianDiffusion,
-    cond_mean: np.ndarray,
-    cond_std: np.ndarray,
-    gain_mean: np.ndarray,
-    gain_std: np.ndarray,
-    n_eval: int,
-    seed: int,
-) -> dict:
+def evaluate(ckpt: dict, task: TaskConfig, n_eval: int, seed: int) -> dict:
     rng = np.random.default_rng(seed)
+    env = task.make_env()
     successes = []
-    kp_samples = []
-    kd_samples = []
+    gain_samples: list[list[float]] = []
 
     for _ in range(n_eval):
-        scene_cfg = sample_scene_config(rng)
-        gains = sample_gains(model, diffusion, cond_mean, cond_std, gain_mean, gain_std, scene_cfg)
-        sim_cfg = to_sim_scene_config(scene_cfg)
-        result = run_episode(gains, sim_cfg)
+        scene_cfg = task.sample_scene_config(rng)
+        gains = sample_gains(ckpt, task, scene_cfg)
+        sim_cfg = task.to_sim_scene_config(scene_cfg)
+        result = env.run_episode(gains, sim_cfg)
 
         successes.append(result["success"])
-        kp_samples.append(gains["Kp_xy"])
-        kd_samples.append(gains["Kd_xy"])
+        gain_samples.append(task.gains_to_vector(gains))
 
     successes = np.array(successes)
-    kp_samples = np.array(kp_samples)
-    kd_samples = np.array(kd_samples)
+    gain_samples = np.array(gain_samples)
 
-    return {
+    stats = {
         "n_eval": n_eval,
         "success_rate": float(successes.mean()),
         "n_success": int(successes.sum()),
-        "kp_mean": float(kp_samples.mean()),
-        "kp_std": float(kp_samples.std()),
-        "kd_mean": float(kd_samples.mean()),
-        "kd_std": float(kd_samples.std()),
     }
+    for j, name in enumerate(task.gain_names):
+        stats[f"{name}_mean"] = float(gain_samples[:, j].mean())
+        stats[f"{name}_std"] = float(gain_samples[:, j].std())
+    return stats
 
 
 # ---------------------------------------------------------------------------
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--task", type=str, default="peg_in_hole", choices=list_tasks())
     parser.add_argument("--dataset-path", type=str, default="./data/bootstrap/bootstrap_dataset.npz")
     parser.add_argument("--out-path", type=str, default="./data/bootstrap/diffusion_gains.pt")
     parser.add_argument("--epochs", type=int, default=500)
@@ -333,22 +305,24 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    task = load_task_config(args.task)
 
-    state = train(args)
-    save_checkpoint(state, args.out_path, args.timesteps)
+    state = train(args, task)
+    save_checkpoint(state, task, args.out_path, args.timesteps)
 
     print()
     print(f"[diffusion_gains] 검증: 새 무작위 씬 {args.n_eval}개 (시드={args.eval_seed})에서 diffusion 게인으로 실제 실행")
-    eval_result = evaluate(
-        state["model"],
-        state["diffusion"],
-        state["cond_mean"],
-        state["cond_std"],
-        state["gain_mean"],
-        state["gain_std"],
-        args.n_eval,
-        args.eval_seed,
-    )
+    ckpt = {
+        "task": task.name,
+        "gain_names": task.gain_names,
+        "model": state["model"],
+        "diffusion": state["diffusion"],
+        "cond_mean": state["cond_mean"],
+        "cond_std": state["cond_std"],
+        "gain_mean": state["gain_mean"],
+        "gain_std": state["gain_std"],
+    }
+    eval_result = evaluate(ckpt, task, args.n_eval, args.eval_seed)
 
     print()
     print("=" * 60)
@@ -360,10 +334,10 @@ def main() -> None:
     delta = eval_result["success_rate"] - state["bootstrap_success_rate"]
     verdict = "개선됨" if delta > 0 else ("동일" if delta == 0 else "악화됨")
     print(f"차이: {delta:+.1%}p ({verdict})")
-    print(
-        f"diffusion이 생성한 게인 분포: Kp_xy={eval_result['kp_mean']:.6f}±{eval_result['kp_std']:.6f}  "
-        f"Kd_xy={eval_result['kd_mean']:.6e}±{eval_result['kd_std']:.6e}"
+    gain_str = "  ".join(
+        f"{name}={eval_result[f'{name}_mean']:.6g}±{eval_result[f'{name}_std']:.6g}" for name in task.gain_names
     )
+    print(f"diffusion이 생성한 게인 분포: {gain_str}")
     print("=" * 60)
 
 
