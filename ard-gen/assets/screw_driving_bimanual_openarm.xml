@@ -1,0 +1,217 @@
+<mujoco model="ard_gen_screw_driving_bimanual_openarm">
+  <!--
+    ARD-Gen 나사 조이기(screw driving) 태스크, OpenArm 양팔 버전.
+    peg_in_hole_bimanual_openarm.xml(양팔 rig, grasp weld 패턴, 강화 게인,
+    computed-torque 오른팔)과 assets/screw_driving.xml(VX300s 단일팔 --
+    가상 나사산 커플링, 드라이버-볼트 결합, 토크 리미터 설계가 이미
+    검증돼 있음)을 합친 것이다. "OpenArm으로 볼트 조이기 해보자" 논의에서
+    나온 결정 그대로: 양팔 유지(오른팔=드라이버, 왼팔=block), 나사산은
+    실제 지오메트리 없이 가상 커플링, 그리고 "이미 있는 걸로 그대로
+    쓰자"는 최종 결정에 따라 드라이버 팁-볼트 머리 사이 충돌은 (기존
+    검증된 VX300s 버전과 똑같이) 아예 없다 -- 실제 물리 충돌은 볼트
+    머리-block 벽(seat) 사이에만 있다.
+
+    ## driver 지오메트리: screw_driving.xml 그대로, 방향만 grasp weld에서 튼다
+
+    screw_driving.xml의 driver body는 로컬 +x가 긴 축(핸들 -> hex_tip ->
+    driver_tip_site)이었다(VX300s의 wrist_rotate가 로컬 +x 회전축이라
+    그것과 맞춘 설계). peg_in_hole_bimanual_openarm.xml의 peg는 반대로
+    로컬 -z가 긴 축이었다(OpenArm 오른손이 물체를 쥐는 방향 관례).
+    driver 지오메트리 자체(핸들 실린더, hex_tip 메쉬, tip site 위치)는
+    screw_driving.xml에서 숫자 하나 안 바꾸고 그대로 가져왔고, 대신
+    peg_grasp에는 없던 회전을 driver_grasp의 relpose quat에 추가했다:
+    "1 0 1 0"(y축 기준 90도 회전)은 로컬 +x를 로컬 -z로 보내는 회전이라
+    (hex_tip.obj 자체도 원래 로컬 z가 긴 축인 육각기둥을 이 같은 회전으로
+    +x에 맞춘 것 -- assets/hex_tip.obj 주석 "half-length=0.0145" 참고),
+    이 quat을 쓰면 driver의 +x축(=긴 축)이 정확히 peg가 쓰던 것과 같은
+    "오른팔 그리퍼가 쥐는 방향"(로컬 -z)을 향하게 된다. anchor 위치(xyz)는
+    peg_grasp와 정확히 같은 값(-0.02222 0 -0.21214, "진짜 손끝 corner")을
+    재사용했다 -- peg 샤프트(1x1cm 사각)와 driver 핸들(반지름 1cm 원통)이
+    비슷한 굵기라는 가정이다. 실측(mj_geomDistance)으로 검증 전 초기값 --
+    렌더로 확인 후 조정 가능성 있음.
+
+    ## block/bolt: screw_driving.xml 그대로 + hole_socket과 같은 "월드
+    기준 무회전으로 잡기" 트릭
+
+    screw_driving.xml에서는 block이 world에 고정돼 있어서 bolt의
+    slide/hinge 축(world "0 0 -1")이 자동으로 block 벽 방향과 일치했다.
+    여기서는 block도 hole_socket처럼 왼팔이 쥐는 자유 바디로 바꿔야
+    하는데, bolt는 block의 자식이 아니라 여전히 독립된 바디(joint 축이
+    world 고정)라서, block이 정확히 world 기준 무회전 자세로 들려있어야
+    bolt 축과 계속 맞는다. hole_socket과 완전히 같은 해법을 썼다:
+    block_grasp의 relpose quat을 "왼팔이 home 자세에 있을 때 block이
+    world 기준 무회전이 되도록" 계산한 값으로 둔다(peg_in_hole_bimanual_openarm.xml
+    의 hole_grasp quat을 초기값으로 재사용 -- 왼팔 home 자세를 나중에
+    다시 풀면 이 값도 다시 계산해야 함, 아래 block/bolt body 주석 참고).
+
+    block 벽 두께/친화도 계수(class="peg_contact")는 peg_in_hole의
+    hole_wall과 수치가 완전히 동일해서(둘 다 friction="0.5 0.01 0.001"
+    solref="0.002 1" solimp="0.9 0.95 0.001") 새 default 클래스를 안 만들고
+    그대로 재사용했다.
+
+    bolt_hinge_drive/bolt_slide_drive 액추에이터, 토크 센서는
+    screw_driving.xml과 완전히 동일(볼트 자체 스케일은 어느 팔이 쥐든
+    안 바뀌므로).
+
+    ## 아직 안 된 것 (다음 단계)
+
+    - driver/block grasp anchor 실측 재조정(peg/hole처럼 여러 차례 눈으로
+      보며 다듬어야 할 가능성 높음)
+    - 양팔 14관절 home 자세 재탐색(오른팔 driver tip이 bolt head 위
+      호버 위치에 오도록, CMA-ES, peg_in_hole_openarm_home_pose_search.py
+      패턴 재사용)
+    - sim/screw_driving_bimanual_openarm_sim.py: peg_in_hole의 오른팔
+      computed-torque 위치 제어 + screw_driving_sim.py의 가상 나사산
+      커플링/토크 리미터 회전 제어를 합친다. OpenArm 오른팔의 마지막
+      관절(openarm_right_joint7, range ±1.5708)이 VX300s wrist_rotate
+      (range ±3.14158)보다 훨씬 좁아서 TURN_LOW/TURN_HIGH 사이클 범위를
+      다시 잡아야 한다(사이클당 회전량이 줄어드는 대신 사이클 수가 늘어남).
+  -->
+  <compiler angle="radian"/>
+  <option cone="elliptic" impratio="10"/>
+  <visual>
+    <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6" specular="0.1 0.1 0.1"/>
+  </visual>
+
+  <asset>
+    <model name="arm_pedestal" file="openarm/pedestal/openarm_pedestal.xml"/>
+    <!-- 육각 드라이버 비트/볼트 소켓 메쉬 (screw_driving.xml과 동일 파일 재사용). -->
+    <mesh name="hex_tip" file="hex_tip.obj"/>
+    <mesh name="hex_socket" file="hex_tip.obj" scale="1.12 1.12 0.12"/>
+  </asset>
+
+  <default>
+    <default class="peg_contact">
+      <geom contype="1" conaffinity="1" condim="4" friction="0.5 0.01 0.001" solref="0.002 1" solimp="0.9 0.95 0.001"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <light pos="0.4 0 1.5" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+    <light pos="0.7 -0.4 1.0" dir="-0.4 0.4 -0.7" diffuse="0.4 0.4 0.4"/>
+
+    <geom name="ground" type="plane" pos="0 0 0" size="0.8 0.8 0.01" contype="0" conaffinity="0" rgba="0.5 0.5 0.52 1"/>
+
+    <body name="table" pos="0.35 0 0">
+      <geom name="table_top" type="box" pos="0 0 0.38" size="0.25 0.25 0.015" contype="0" conaffinity="0" rgba="0.55 0.4 0.3 1"/>
+      <geom name="table_leg_1" type="box" pos="0.22 0.22 0.19" size="0.015 0.015 0.19" contype="0" conaffinity="0" rgba="0.35 0.25 0.18 1"/>
+      <geom name="table_leg_2" type="box" pos="-0.22 0.22 0.19" size="0.015 0.015 0.19" contype="0" conaffinity="0" rgba="0.35 0.25 0.18 1"/>
+      <geom name="table_leg_3" type="box" pos="0.22 -0.22 0.19" size="0.015 0.015 0.19" contype="0" conaffinity="0" rgba="0.35 0.25 0.18 1"/>
+      <geom name="table_leg_4" type="box" pos="-0.22 -0.22 0.19" size="0.015 0.015 0.19" contype="0" conaffinity="0" rgba="0.35 0.25 0.18 1"/>
+    </body>
+
+    <camera name="wide_cam" mode="targetbody" target="block" pos="1.03597 0.54521 0.9"/>
+    <camera name="top_cam" mode="targetbody" target="block" pos="0.05 0.0 0.75"/>
+
+    <!-- block: 왼팔이 쥐는 자유 바디. 벽 치수는 screw_driving.xml의
+         block과 완전히 동일(안쪽 폭 8.5mm -- 샤프트 반지름 6mm는 통과,
+         머리 반지름 12mm는 seat에 걸림). pos/quat은 아직 실측 전
+         placeholder(hole_socket 자리를 그대로 재사용) -- home 자세를
+         다시 풀면 재계산 필요(위 docstring 참고). -->
+    <body name="block" pos="0.21559240 -0.07038191 0.48106862" gravcomp="1">
+      <freejoint name="block_free"/>
+      <geom class="peg_contact" name="block_wall_px" type="box" pos="0.0125 0 -0.015" size="0.004 0.0165 0.015" rgba="0.55 0.55 0.6 1"/>
+      <geom class="peg_contact" name="block_wall_nx" type="box" pos="-0.0125 0 -0.015" size="0.004 0.0165 0.015" rgba="0.55 0.55 0.6 1"/>
+      <geom class="peg_contact" name="block_wall_py" type="box" pos="0 0.0125 -0.015" size="0.0165 0.004 0.015" rgba="0.55 0.55 0.6 1"/>
+      <geom class="peg_contact" name="block_wall_ny" type="box" pos="0 -0.0125 -0.015" size="0.0165 0.004 0.015" rgba="0.55 0.55 0.6 1"/>
+      <site name="block_center_site" pos="0 0 0.004" size="0.002" rgba="1 0 0 0.5"/>
+    </body>
+
+    <!-- bolt: block의 자식이 아니라 독립된 바디(screw_driving.xml과 동일
+         구조) -- slide+hinge 축이 world "0 0 -1"로 고정돼 있어서, block이
+         world 기준 무회전으로 들려있어야 축이 맞는다(위 docstring 참고).
+         pos는 block placeholder 기준 (0,0,0.034) 위(screw_driving.xml의
+         block(0.04)-bolt(0.074) 오프셋과 동일한 34mm)로 뒀다 -- block
+         anchor를 다시 잡으면 같이 재계산 필요. -->
+    <body name="bolt" pos="0.21559240 -0.07038191 0.51506862">
+      <joint name="bolt_slide" type="slide" axis="0 0 -1" range="-0.002 0.034" damping="0.3"/>
+      <joint name="bolt_hinge" type="hinge" axis="0 0 -1" range="-31.416 31.416" frictionloss="0.015" damping="0.05"/>
+      <geom class="peg_contact" name="bolt_shaft" type="cylinder" pos="0 0 -0.012" size="0.006 0.012" rgba="0.75 0.65 0.2 1"/>
+      <geom class="peg_contact" name="bolt_head" type="cylinder" pos="0 0 0.004" size="0.012 0.004" rgba="0.75 0.65 0.2 1"/>
+      <geom type="mesh" mesh="hex_socket" pos="0 0 0.0063" rgba="0.15 0.13 0.1 1" contype="0" conaffinity="0"/>
+      <site name="bolt_head_site" pos="0 0 0.008" size="0.003" rgba="0 1 0 1"/>
+    </body>
+
+    <!-- driver: 오른팔이 쥐는 자유 바디. 지오메트리는 screw_driving.xml과
+         숫자 하나 안 바꾸고 동일(위 docstring "driver 지오메트리" 참고).
+         pos/quat은 peg 자리를 그대로 재사용한 placeholder. -->
+    <body name="driver" pos="0.21564624 -0.07035550 0.56015799"
+          quat="-0.0247387074 -0.0000234851 0.0001681527 0.9996939370" gravcomp="1">
+      <freejoint name="driver_free"/>
+      <geom type="cylinder" pos="0.011 0 0" size="0.010 0.007" quat="1 0 1 0" mass="0.02" rgba="0.75 0.15 0.1 1" contype="0" conaffinity="0"/>
+      <geom type="mesh" mesh="hex_tip" pos="0.0325 0 0" quat="1 0 1 0" mass="0.008" rgba="0.75 0.78 0.82 1" contype="0" conaffinity="0"/>
+      <site name="driver_tip_site" pos="0.044 0 0" size="0.003" rgba="0 1 0 1"/>
+    </body>
+
+    <attach model="arm_pedestal" prefix=""/>
+  </worldbody>
+
+  <equality>
+    <!-- 오른팔이 driver를 쥔다: relpose quat "1 0 1 0"(y축 90도)이
+         driver 로컬 +x(긴 축)를 peg가 쓰던 로컬 -z 방향으로 돌려보낸다
+         (위 docstring 참고). anchor 위치는 peg_grasp와 동일. -->
+    <weld name="driver_grasp" body1="openarm_right_ee_base_link" body2="driver"
+          relpose="-0.02222 0 -0.21214 1 0 1 0"
+          solref="0.002 1" solimp="0.95 0.99 0.0001 0.5 2"
+          active="true"/>
+    <!-- 왼팔이 block을 쥔다: relpose는 hole_grasp를 그대로 재사용한
+         placeholder(위 docstring 참고, block 실측 재조정 전). -->
+    <weld name="block_grasp" body1="openarm_left_ee_base_link" body2="block"
+          relpose="-0.01772 -0.00214 -0.19274 0.66481967 0.50297462 0.44306384 0.3297359"
+          solref="0.002 1" solimp="0.95 0.99 0.0001 0.5 2"
+          active="true"/>
+  </equality>
+
+  <sensor>
+    <!-- 나사 구동 토크 피드백 (screw_driving.xml과 동일). -->
+    <actuatorfrc name="bolt_drive_torque" actuator="bolt_hinge_drive"/>
+    <jointpos name="bolt_slide_pos" joint="bolt_slide"/>
+    <jointpos name="bolt_hinge_pos" joint="bolt_hinge"/>
+  </sensor>
+
+  <contact>
+    <!-- driver는 충돌 지오메트리가 아예 없어서(contype=0) exclude 불필요.
+         block/bolt는 peg/hole과 같은 이유로 자기 손과 제외. -->
+    <exclude body1="block" body2="openarm_left_ee_base_link"/>
+    <exclude body1="block" body2="openarm_left_ee_inner_finger"/>
+    <exclude body1="block" body2="openarm_left_ee_outer_finger"/>
+    <exclude body1="bolt" body2="openarm_left_ee_base_link"/>
+    <exclude body1="bolt" body2="openarm_left_ee_inner_finger"/>
+    <exclude body1="bolt" body2="openarm_left_ee_outer_finger"/>
+  </contact>
+
+  <!-- vendor 액추에이터(assets/openarm/openarm_bimanual.xml)는 그대로 두고
+       ctrl=0으로 안 건드린다(peg_in_hole_bimanual_openarm.xml과 동일 패턴).
+       pos_right_j*/pos_left_j*(강화 게인) + torque_right_j*(computed-torque)는
+       peg_in_hole_bimanual_openarm.xml에서 값 하나 안 바꾸고 그대로
+       가져왔다 -- 팔 자체 동역학은 안 바뀌므로. bolt_hinge_drive/
+       bolt_slide_drive는 screw_driving.xml과 동일. -->
+  <actuator>
+    <position name="pos_right_j1" joint="openarm_right_joint1" kp="2273.98" kv="1568.18" ctrlrange="-1.3963 3.4907"/>
+    <position name="pos_right_j2" joint="openarm_right_joint2" kp="2273.98" kv="1568.18" ctrlrange="-0.17453 3.3161"/>
+    <position name="pos_right_j3" joint="openarm_right_joint3" kp="87.90" kv="894.41" ctrlrange="-1.5708 1.5708"/>
+    <position name="pos_right_j4" joint="openarm_right_joint4" kp="87.90" kv="894.41" ctrlrange="0 2.4435"/>
+    <position name="pos_right_j5" joint="openarm_right_joint5" kp="411.75" kv="663.96" ctrlrange="-1.5708 1.5708"/>
+    <position name="pos_right_j6" joint="openarm_right_joint6" kp="411.75" kv="663.96" ctrlrange="-0.7854 0.7854"/>
+    <position name="pos_right_j7" joint="openarm_right_joint7" kp="411.75" kv="663.96" ctrlrange="-1.5708 1.5708"/>
+    <position name="pos_left_j1" joint="openarm_left_joint1" kp="2273.98" kv="1568.18" ctrlrange="-3.4907 1.3963"/>
+    <position name="pos_left_j2" joint="openarm_left_joint2" kp="2273.98" kv="1568.18" ctrlrange="-3.3161 0.17453"/>
+    <position name="pos_left_j3" joint="openarm_left_joint3" kp="87.90" kv="894.41" ctrlrange="-1.5708 1.5708"/>
+    <position name="pos_left_j4" joint="openarm_left_joint4" kp="87.90" kv="894.41" ctrlrange="0 2.4435"/>
+    <position name="pos_left_j5" joint="openarm_left_joint5" kp="411.75" kv="663.96" ctrlrange="-1.5708 1.5708"/>
+    <position name="pos_left_j6" joint="openarm_left_joint6" kp="411.75" kv="663.96" ctrlrange="-0.7854 0.7854"/>
+    <position name="pos_left_j7" joint="openarm_left_joint7" kp="411.75" kv="663.96" ctrlrange="-1.5708 1.5708"/>
+
+    <motor name="torque_right_j1" joint="openarm_right_joint1" ctrlrange="-40 40"/>
+    <motor name="torque_right_j2" joint="openarm_right_joint2" ctrlrange="-40 40"/>
+    <motor name="torque_right_j3" joint="openarm_right_joint3" ctrlrange="-27 27"/>
+    <motor name="torque_right_j4" joint="openarm_right_joint4" ctrlrange="-27 27"/>
+    <motor name="torque_right_j5" joint="openarm_right_joint5" ctrlrange="-7 7"/>
+    <motor name="torque_right_j6" joint="openarm_right_joint6" ctrlrange="-7 7"/>
+    <motor name="torque_right_j7" joint="openarm_right_joint7" ctrlrange="-7 7"/>
+
+    <!-- 나사산 가상 커플링 (screw_driving.xml과 동일). -->
+    <position name="bolt_hinge_drive" joint="bolt_hinge" kp="2" forcerange="-2 2"/>
+    <position name="bolt_slide_drive" joint="bolt_slide" kp="100" forcerange="-5 5"/>
+  </actuator>
+</mujoco>
