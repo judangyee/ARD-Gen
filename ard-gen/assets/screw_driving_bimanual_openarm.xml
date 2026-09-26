@@ -68,7 +68,18 @@
       다시 잡아야 한다(사이클당 회전량이 줄어드는 대신 사이클 수가 늘어남).
   -->
   <compiler angle="radian"/>
-  <option cone="elliptic" impratio="10"/>
+  <!-- integrator="implicitfast": peg_in_hole_bimanual_openarm.xml은 기본
+       (semi-implicit Euler) 적분기를 쓰는데, 그건 짧은 에피소드(수백
+       스텝)에서는 안 드러나지만 이 태스크처럼 수천~만 스텝짜리 긴
+       에피소드에서는 왼팔이 block을 쥔 채로 계속 느리게 처지는 문제가
+       있었다(실측: 4500스텝에 20cm 넘게, 게인을 5배 올려도 별로 안
+       줄어듦 -- peg_in_hole_bimanual_openarm.xml도 똑같이 실측해보니
+       같은 패턴이 있었는데 그쪽은 에피소드가 짧아서(수백 스텝) 드러나지
+       않았을 뿐이었다). implicitfast로 바꾸니 4500스텝에 ~28mm에서
+       빠르게 수렴하고 멈췄다(실측 확인) -- 뻣뻣한 position 액추에이터 +
+       weld 제약 조합에서 흔히 나타나는 explicit Euler의 에너지 누출을
+       암시적 적분이 잡아주는 것으로 보인다. -->
+  <option cone="elliptic" impratio="10" integrator="implicitfast"/>
   <visual>
     <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6" specular="0.1 0.1 0.1"/>
   </visual>
