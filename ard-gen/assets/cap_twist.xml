@@ -1,0 +1,83 @@
+<mujoco model="cap_twist">
+  <!-- 병뚜껑(cap) 돌리기 태스크용 최소 모델.
+
+  peg_in_hole.xml과 같은 단순화 전제: 오른팔 end-effector가 cap을 이미
+  강체로 그립하고 있다고 가정하고, 그립/팔 기구학 자체는 모델링하지
+  않는다(assets/peg_in_hole.xml이 팔 6조인트를 실제로 모델링하는 것과 달리,
+  이 태스크는 "손목 회전 = cap 회전"이 1:1이라 별도 팔이 필요 없다) -- 그래서
+  bottle을 world에 고정하고, cap을 z축 힌지 하나로 붙인 뒤 그 힌지를 위치
+  액추에이터로 직접 구동한다(액추에이터 ctrl이 곧 sim/cap_twist_env.py의
+  손목 목표각).
+
+  ## 회전 저항을 frictionloss가 아니라 dof_damping(속도 비례)으로 모델링하는 이유
+
+  처음에는 "안 열려본 병" 저항을 건마찰(Coulomb, hinge frictionloss)로
+  모델링했다 -- 그런데 실측해보니(sim/cap_twist_env.py 개발 중 직접 스윕
+  테스트) Coulomb 저항은 속도와 거의 무관하게 거의 일정한 토크를 요구해서,
+  admittance controller가 회전 속도를 늦춰도(Kp_tau를 올려도) 필요 토크가
+  거의 안 줄어들었다 -- 즉 Kp_tau가 사실상 아무 得이 없고 "무조건 작을수록
+  좋다"는 시시한 최적화 문제가 됐다(리워드가 Kp_tau에 대해 거의 단조
+  감소). 실제 admittance control이 의미를 가지려면 "느리게 돌리면 필요한
+  토크가 실제로 줄어드는" 속도-의존 저항이어야 한다 -- 그래서 저항을
+  hinge의 dof_damping(토크 = damping * 각속도)으로 표현했다. frictionloss는
+  아주 작은 고정값(정지 시 채터링 방지용)만 남기고 scene_config로
+  덮어쓰지 않는다.
+
+  scene_config의 resistance_torque(N*m)는 "기본 각속도(OMEGA_BASE)로 돌릴 때
+  필요한 토크"로 정의하고, sim/cap_twist_env.py에서
+  damping = resistance_torque / OMEGA_BASE로 환산해 dof_damping에 대입한다
+  (peg_in_hole.xml의 geom_friction을 런타임에 덮어쓰는 것과 같은 패턴) --
+  이러면 저항이 세질수록(damping 증가) Kp_tau로 속도를 늦추는 게 실제로
+  필요 토크를 낮춰주므로, "너무 작으면 걸림(stuck) 반복, 너무 크면 진행이
+  느려짐"이라는 peg-in-hole의 Kp_xy와 같은 성질의(양쪽에서 나쁜) 탐색
+  문제가 된다.
+
+  ## jointactuatorfrc 센서 = "토크 센서"
+
+  실제 F/T 센서(peg_in_hole의 force/torque site sensor)처럼 접촉력을 재는
+  게 아니라, 힌지에 작용하는 액추에이터 토크 자체를 잰다 -- "손목이 cap을
+  돌리기 위해 지금 얼마나 힘을 주고 있는가"가 곧 사용자가 손목에서
+  느끼는 반작용 토크이므로, admittance controller의 tau_measured 입력으로
+  정확히 대응된다.
+
+  ## actuator forcerange = 그립이 슬립 없이 전달할 수 있는 최대 토크
+
+  이 이상 토크가 필요해지면(즉 뚜껑이 걸려서 안 돌아가면) 실제로는 손목이
+  헛돌거나 그립이 미끄러지는 상황이다. sim/cap_twist_env.py의
+  stuck-detection(TAU_STUCK_THRESHOLD)이 이 한계에 도달하기 전에 먼저
+  반응해서 살짝 역회전 후 재시도하도록, 한계보다 낮은 값으로 설정돼 있다.
+  -->
+  <compiler angle="radian"/>
+  <option timestep="0.002" integrator="implicitfast" gravity="0 0 -9.81"/>
+
+  <worldbody>
+    <light pos="0 0 1" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+    <geom name="ground" type="plane" size="0.3 0.3 0.02" pos="0 0 -0.05" rgba="0.9 0.9 0.9 1"/>
+
+    <body name="bottle" pos="0 0 0">
+      <!-- world에 고정 (joint 없음) -->
+      <geom name="bottle_body" type="cylinder" size="0.03 0.06" pos="0 0 0.06"
+            contype="0" conaffinity="0" rgba="0.25 0.45 0.7 1"/>
+
+      <body name="cap" pos="0 0 0.12">
+        <joint name="cap_hinge" type="hinge" axis="0 0 1" pos="0 0 0"
+               damping="0.05" frictionloss="0.05" limited="false"/>
+        <inertial pos="0 0 0" mass="0.3" diaginertia="1e-3 1e-3 1e-3"/>
+        <geom name="cap_geom" type="cylinder" size="0.032 0.015" pos="0 0 0.015"
+              contype="0" conaffinity="0" rgba="0.8 0.3 0.2 1"/>
+        <site name="cap_grip_site" pos="0 0 0.015" size="0.005"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <!-- kp: 목표각 추종 강성. forcerange: 그립이 슬립 없이 낼 수 있는 최대 토크
+         (sim/cap_twist_env.py의 TAU_STUCK_THRESHOLD보다 커야, 스턱 감지가
+         이 한계에 도달하기 전에 먼저 트리거된다). -->
+    <position name="cap_drive" joint="cap_hinge" kp="8.0" forcerange="-1.2 1.2"/>
+  </actuator>
+
+  <sensor>
+    <jointactuatorfrc name="cap_torque" joint="cap_hinge"/>
+  </sensor>
+</mujoco>

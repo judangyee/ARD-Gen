@@ -1,35 +1,52 @@
-# cap_twist: 리팩토링된 태스크 플러그인 구조를 보여주기 위한 더미 태스크
-# (sim/cap_twist_env.py 상단 docstring 참고) -- MuJoCo 없이 순수 숫자
-# 모델이다. 이 파일 + sim/cap_twist_env.py 두 개, 그리고
-# sim/task_registry.py의 TASK_REGISTRY 한 줄이 새 태스크를 추가하는 데
-# 필요한 전부다.
+# cap_twist: 병뚜껑을 돌려서 여는 실제 MuJoCo 물리 태스크
+# (assets/cap_twist.xml + sim/cap_twist_env.py 상단 docstring 참고).
+#
+# peg_in_hole과 게인 개수가 다르다(2개 -> 1개)는 걸 보여주는 실측 사례이기도
+# 하다 -- gains.names가 1개짜리 리스트인 것 말고는 이 파일의 구조 자체는
+# peg_in_hole.yaml과 동일하고, 파이프라인 코드(optimize/cma_search.py 등)는
+# 하나도 안 건드렸다(sim/task_registry.py의 TaskConfig가 gain_names 길이에
+# 무관하게 게인 벡터<->dict 변환을 처리).
 name: cap_twist
 
 gains:
-  names: [Kp]
+  names: [Kp_tau]
+  # 하한/상한 결정 근거(직접 스윕 실측, git log 참고): resistance_torque가
+  # TAU_STUCK_THRESHOLD(0.8N*m)에 가깝거나 넘는 씬에서는 Kp_tau가 최소
+  # ~1.0은 돼야 stuck-반복 없이 성공한다(Kp_tau<=0.6이면 실패). 반대로
+  # Kp_tau가 커질수록(>2) 매 스텝 속도를 과하게 깎아서 step_count가 늘고
+  # 리워드가 단조 감소한다 -- 즉 peg_in_hole의 Kp_xy/Kd_xy처럼 "너무 작아도
+  # 너무 커도 나쁜" 탐색 문제가 되도록 잡은 범위다.
   bounds:
-    Kp: [0.01, 1.9]  # 이 1차 모델은 |1-Kp|<1(즉 0<Kp<2)이어야 발산하지 않는다
-  x0: [0.05]
-  sigma0: [0.05]
+    Kp_tau: [0.05, 5.0]
+  x0: [0.25]
+  sigma0: [0.2]
 
 eval_scenarios:
-  - {}  # default_scene_config() 그대로 (target_angle=pi, friction=0.01)
-  - friction: 0.03
+  - {}  # default_scene_config() 그대로 (resistance_torque=0.5, cw, 2바퀴) -- 쉬운 케이스
+  - resistance_torque: 1.0  # TAU_STUCK_THRESHOLD(0.8)를 넘는 뻑뻑한 병 -- Kp_tau가 너무 작으면 실패
+  - target_rotation: -12.566370614359172  # -4*pi (ccw, 2바퀴) + 중간 정도 저항
+    resistance_torque: 0.7
 
 success:
-  reward_threshold: 45.0
+  # 실측 기준: 위 3개 시나리오 평균 리워드가 Kp_tau~1.0~1.5 부근에서
+  # 71.5~71.6으로 최고, 그 아래(stuck 반복으로 실패)나 위(step 수 증가)는
+  # 급격히/서서히 떨어진다 -- 71.0은 그 봉우리 바로 근처에서만 도달 가능하다.
+  reward_threshold: 71.0
 
 # 1단계(공유 씬) 스키마의 필드 이름 -- sim/cap_twist_env.py의
-# sample_scene_config()가 반환하는 target_turns(스칼라)+friction(스칼라).
-condition_fields: [target_turns, friction]
+# sample_scene_config()가 반환하는 target_turns(부호=방향)/resistance_torque
+# (OMEGA_BASE로 돌릴 때 필요한 토크)/disengage_ratio(나사산이 다 풀리는
+# 지점의 비율).
+condition_fields: [target_turns, resistance_torque, disengage_ratio]
 
 # direction_words/quantity_words가 채워진 예시(peg_in_hole.yaml은 이 둘이
 # 비어 있었다) -- sim/cap_twist_env.py의 run_episode()가 채우는
 # "direction"("cw"/"ccw")과 "quantity"(반바퀴 단위) 필드에 대응한다.
-# 이 더미 태스크는 force/torque가 없어서(sim/cap_twist_env.py에 물리가
-# 없음) intensity_words는 비워둔다 -- peg_in_hole.yaml이 이미 그 경로를
-# 보여주므로, 여기서는 새로 추가된 direction_words/quantity_words만
-# 시연한다.
+# intensity_words는 비워둔다 -- 지금 템플릿이 {intensity}를 안 쓴다
+# (episode의 "max_torque"를 쓰려면 템플릿에 {intensity}를 추가하고
+# pipeline/filter_episodes.py가 채우는 "force_max" 대신 "max_torque"를
+# 읽도록 language_labeling.py를 바꿔야 하는데, 현재 요청 범위 밖이라
+# 보류 -- direction/quantity만으로도 충분한 시연이 된다).
 language:
   templates:
     - "뚜껑을 {direction} {quantity}바퀴 돌려라."
