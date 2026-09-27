@@ -1,8 +1,12 @@
-"""tacker(타카) 태스크 검증 -- 이 태스크는 다른 태스크들과 달리 "이전 버전과
-동일한지"를 확인할 대상이 없다(신규 태스크). 대신 이 태스크를 추가한 목적
-자체 -- 발사 반동을 Stabilizer가 흡수하는지가 성공/실패를 가른다 -- 가
-실제로 성립하는지를 검증한다(PIPELINE.md의 tacker 절 참고, N=150 전체
-통계는 거기 기록돼 있다 -- 여기는 더 적은 N으로 빠르게 회귀를 잡는 용도).
+"""tacker(타카) 태스크 검증, OpenArm 양팔 버전(sim/tacker_openarm_env.py).
+일반 Stabilizer(가상 EE) 버전은 peg_in_hole과 같은 이유로 레거시가 됐고
+TASK_REGISTRY에서도 빠졌다 -- 이 파일은 그 버전을 대체한다.
+
+이 태스크는 "이전 버전과 동일한지"를 확인할 회귀 대상이 없다(신규 태스크
+설계). 대신 이 태스크를 추가한 목적 자체 -- 발사 반동을 왼팔(실제 7-DOF
+팔, 강화 위치 게인)이 흡수하는지가 성공/실패를 가른다 -- 가 실제로
+성립하는지를 검증한다(PIPELINE.md의 tacker 절 참고, N=150 전체 통계는
+거기 기록돼 있다).
 
 pytest 없이 plain assert로 짰다 -- 이 저장소의 다른 스크립트들과 같은 스타일.
 
@@ -19,8 +23,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import numpy as np
 
 from sim.task_registry import load_task_config
+from sim.tacker_openarm_env import TackerOpenArmEnv
 
-_SEED_GAINS = {"Kp_approach": 0.5}
+_SEED_GAINS = {"Kp_approach": 0.2}
 _N = 40
 
 
@@ -29,18 +34,18 @@ def test_task_registry_wiring() -> None:
     assert task.gain_names == ["Kp_approach"]
     assert task.gain_bounds["Kp_approach"] == (0.02, 3.0)
     assert len(task.eval_scenarios) == 3
+    assert task.env_class is TackerOpenArmEnv
     env = task.make_env()
     result = env.run_episode(_SEED_GAINS, task.default_scene_config())
     assert result["success"] is True
     assert result["fired"] is True
-    print("[OK] task_registry wiring for tacker")
+    print("[OK] task_registry wiring for tacker (OpenArm)")
 
 
-def test_stabilizer_absorbs_recoil() -> None:
+def test_left_arm_reinforced_gains_matter() -> None:
     """이 태스크를 만든 이유 자체에 대한 검증: 같은 씬 시퀀스, 같은 게인으로
-    Stabilizer가 있을 때 vs 없을 때 성공률/변위가 실제로 크게 갈려야 한다.
-    안 갈리면(예: 둘 다 비슷하게 성공/실패) 반동 강도(recoil_strength) 설정을
-    다시 봐야 한다는 신호다."""
+    왼팔이 강화 위치 게인(kp=2273.98 등)일 때 vs OpenArm vendor 기본 게인
+    (kp=230 등)으로 되돌렸을 때 성공률/변위가 실제로 크게 갈려야 한다."""
     task = load_task_config("tacker")
 
     def run(env) -> tuple[int, np.ndarray]:
@@ -55,25 +60,20 @@ def test_stabilizer_absorbs_recoil() -> None:
                 disps.append(result["displacement"])
         return succ, np.array(disps)
 
-    succ_with, disp_with = run(task.make_env())
-    succ_without, disp_without = run(task.make_env(use_stabilizer=False))
+    succ_reinforced, disp_reinforced = run(TackerOpenArmEnv(left_arm_reinforced=True))
+    succ_weak, disp_weak = run(TackerOpenArmEnv(left_arm_reinforced=False))
 
     print(
-        f"[tacker] Stabilizer 있음: {succ_with}/{_N} 성공, 중앙값 변위={np.median(disp_with) * 1000:.3f}mm | "
-        f"Stabilizer 없음: {succ_without}/{_N} 성공, 중앙값 변위={np.median(disp_without) * 1000:.3f}mm"
+        f"[tacker] 왼팔 강화 게인: {succ_reinforced}/{_N} 성공, 중앙값 변위={np.median(disp_reinforced) * 1000:.3f}mm | "
+        f"왼팔 vendor 게인: {succ_weak}/{_N} 성공, 중앙값 변위={np.median(disp_weak) * 1000:.3f}mm"
     )
-    # Stabilizer가 있으면 사실상 항상 성공해야 한다(정지 상태 대비 발사
-    # 순간의 순간적 부하 정도는 kp=20000 weld가 가볍게 버텨야 함).
-    assert succ_with >= _N * 0.9, "Stabilizer가 있는데도 성공률이 낮음 -- 회귀 의심"
-    # Stabilizer 없이는 눈에 띄게 나빠져야 한다(그래야 이 태스크가 Stabilizer의
-    # 존재 가치를 검증하는 의미가 있다).
-    assert succ_without < succ_with, "Stabilizer 유무로 성공률 차이가 없음 -- 반동 강도 재설정 필요"
-    assert np.median(disp_without) > np.median(disp_with) * 10, "Stabilizer 유무로 변위 차이가 크지 않음"
-    print("[OK] Stabilizer가 발사 반동을 흡수한다는 게 실측으로 확인됨")
+    assert succ_weak < succ_reinforced, "왼팔 게인 강화 유무로 성공률 차이가 없음 -- recoil_strength 재설정 필요"
+    assert np.median(disp_weak) > np.median(disp_reinforced), "왼팔 게인 강화 유무로 변위 차이가 없음"
+    print("[OK] 왼팔 강화 게인이 발사 반동을 흡수한다는 게 실측으로 확인됨")
 
 
 if __name__ == "__main__":
     test_task_registry_wiring()
-    test_stabilizer_absorbs_recoil()
+    test_left_arm_reinforced_gains_matter()
     print()
-    print("ALL TACKER TESTS PASSED")
+    print("ALL TACKER (OPENARM) TESTS PASSED")

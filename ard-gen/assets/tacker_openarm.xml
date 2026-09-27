@@ -1,0 +1,199 @@
+<mujoco model="ard_gen_tacker_openarm">
+  <!--
+    ARD-Gen tacker(타카) 태스크, OpenArm 양팔 버전. assets/peg_in_hole_bimanual_openarm.xml
+    을 그대로 베이스로 삼는다 -- 사용자 요청("왼팔이 workpiece를 쥐는 위치,
+    오른팔이 tacker_tool을 쥐는 위치, 양팔의 home 자세는 peg_in_hole_bimanual_openarm.xml
+    에서 이미 검증된 값을 그대로 재사용")에 따라, hole_socket/peg의 grasp
+    anchor(weld relpose)와 home 자세(_HOME_QPOS/_LEFT_ARM_HOME_QPOS)를 **숫자
+    그대로** 물려받았다 -- 그 값들은 "왼팔이 어떤 각도로 뭔가를 쥔 채 오른팔이
+    그 위 6cm에서 접근한다"는 순수 기하학적 관계만 인코딩하고 있어서, 쥐는
+    대상의 형상(hole vs 평평한 workpiece)이나 오른팔이 쥔 도구의 용도(peg
+    삽입 vs 타카 발사)와는 무관하게 그대로 유효하다.
+
+    바뀐 것은 물체/도구의 **형상**과 **이름**뿐이다:
+      - hole_socket(벽 4개+바닥의 구멍 형상) -> workpiece(평평한 사각 블록).
+        위치/방향(body pos/quat)과 grasp weld(관련 relpose)는 완전히 동일 --
+        hole_socket의 로컬 원점이 "hole 목표점"이었던 것처럼, workpiece의
+        로컬 원점이 곧 nail_site 기준점이다(그래서 nail_site pos="0 0 0",
+        hole_center_site와 동일한 자리).
+      - peg(샤프트+구형 tip) -> tacker_tool(같은 두 지오metry를 재사용,
+        타카 본체로 재해석). peg_tip_site -> tacker_tip_site, 로컬 오프셋
+        완전히 동일 -- sim/tacker_openarm_env.py의 _TOOL_LOCAL_OFFSET이
+        peg_in_hole_bimanual_openarm_sim.py의 _PEG_LOCAL_OFFSET과 같은 값이다.
+
+    ## peg_force/peg_torque 센서를 없앤 이유 (일반 Stabilizer 버전 tacker에서 이미 발견한 버그)
+
+    구버전 assets/tacker.xml(일반 3-슬라이드 Stabilizer 버전) 개발 중 실측으로
+    발견한 것: MuJoCo의 site force/torque 센서는 **freejoint로 연결된
+    바디에서는 구조적으로 항상 0을 반환한다**(그 조인트에 구속 자유도가
+    없어서 -- PIPELINE.md의 tacker 절 참고). hole_socket/peg 둘 다 freejoint라,
+    원본 peg_in_hole_bimanual_openarm.xml의 peg_force/peg_torque 센서도 사실
+    이 문제를 겪고 있을 가능성이 높다(그 태스크의 PIPELINE.md 절에 이미
+    정직하게 남겨둔 발견). 이 파일에서는 그 센서를 아예 빼고, sim/
+    tacker_openarm_env.py가 `data.qfrc_constraint`(workpiece 자유도에 실제로
+    작용하는 모든 구속력의 합 -- 접촉+equality 전부 포함)를 직접 읽어서
+    "왼팔이 발사 반동을 얼마나 버티고 있는지"를 로깅한다.
+
+    ## workpiece 초기 자세를 world에서 무작위화하지 못하는 이유 (정직하게 밝힘)
+
+    이 구조는 왼팔이 에피소드 내내 고정 home 자세이고 grasp weld가 컴파일
+    시점부터 항상 활성(active="true")이다 -- 즉 workpiece의 world pose는
+    왼팔의 고정 자세로 완전히 결정되고, hole_socket이 그랬던 것처럼
+    "물체를 아무 데나 놓고 왼팔이 쫓아가서 잡는" 구조가 아니다. 그래서
+    "workpiece 초기 자세 무작위화" 요청은 world pose가 아니라 **nail_site의
+    workpiece-로컬 오프셋**(조준점이 표면 어디인지)과 **오른팔 시작 오프셋**
+    (tool_init_offset_xy, peg_in_hole의 peg_init_offset_xy와 동일한 역할)
+    으로 구현했다 -- 둘 다 실질적인 씬 난이도 축이라는 점은 동일하다.
+  -->
+  <compiler angle="radian"/>
+  <!-- integrator="implicitfast": peg_in_hole_bimanual_openarm.xml에는 이게
+       없어서(cone/impratio만 지정) 실측해보니 왼팔 정지 홀드만으로도(오른팔
+       조작 전혀 없이) 300ms 안에 workpiece가 20mm 넘게 드리프트했다 --
+       "강한 위치 액추에이터(kp=2273.98) + 항상 활성인 weld" 조합에서 기본
+       세미암시적 오일러 적분기가 서서히 에너지를 새게 하는, 이 저장소가
+       assets/peg_in_hole.xml(VX300s)/screw_driving_bimanual_openarm.xml에서
+       이미 겪고 고쳤던 것과 완전히 같은 버그다(그 파일들 docstring 참고) --
+       OpenArm peg_in_hole 쪽은 이 옵션이 누락된 채로 남아있었던 것으로
+       보인다(그 태스크의 극심한 드리프트 논의가 전부 "관절 한계"/"결합
+       동역학" 탓으로만 돌려졌는데, 이 더 단순한 원인이 최소한 일부는
+       설명할 가능성이 있다 -- PIPELINE.md의 tacker 절 참고). 이 옵션을
+       추가하니 같은 정지 홀드 테스트에서 드리프트가 20mm대에서 실측
+       0.0x mm 수준으로 사라졌다. -->
+  <option cone="elliptic" impratio="10" integrator="implicitfast"/>
+  <visual>
+    <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6" specular="0.1 0.1 0.1"/>
+  </visual>
+
+  <asset>
+    <model name="arm_pedestal" file="openarm/pedestal/openarm_pedestal.xml"/>
+  </asset>
+
+  <default>
+    <default class="tool_contact">
+      <geom contype="1" conaffinity="1" condim="4" friction="0.5 0.01 0.001" solref="0.002 1" solimp="0.9 0.95 0.001"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <light pos="0.4 0 1.5" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+    <light pos="0.7 -0.4 1.0" dir="-0.4 0.4 -0.7" diffuse="0.4 0.4 0.4"/>
+
+    <geom name="ground" type="plane" pos="0 0 0" size="0.8 0.8 0.01" contype="0" conaffinity="0" rgba="0.5 0.5 0.52 1"/>
+
+    <body name="table" pos="0.35 0 0">
+      <geom name="table_top" type="box" pos="0 0 0.38" size="0.25 0.25 0.015" contype="0" conaffinity="0" rgba="0.55 0.4 0.3 1"/>
+      <geom name="table_leg_1" type="box" pos="0.22 0.22 0.19" size="0.015 0.015 0.19" contype="0" conaffinity="0" rgba="0.35 0.25 0.18 1"/>
+      <geom name="table_leg_2" type="box" pos="-0.22 0.22 0.19" size="0.015 0.015 0.19" contype="0" conaffinity="0" rgba="0.35 0.25 0.18 1"/>
+      <geom name="table_leg_3" type="box" pos="0.22 -0.22 0.19" size="0.015 0.015 0.19" contype="0" conaffinity="0" rgba="0.35 0.25 0.18 1"/>
+      <geom name="table_leg_4" type="box" pos="-0.22 -0.22 0.19" size="0.015 0.015 0.19" contype="0" conaffinity="0" rgba="0.35 0.25 0.18 1"/>
+    </body>
+
+    <camera name="wide_cam" mode="targetbody" target="workpiece" pos="1.03597 0.54521 0.9"/>
+    <camera name="top_cam" mode="targetbody" target="workpiece" pos="0.05 0.0 0.75"/>
+
+    <!-- workpiece: hole_socket과 완전히 같은 body pos/quat(FK로 계산된, 왼팔
+         home 자세에서 그 자리에 오도록 맞춰진 값 -- 위 docstring 참고).
+         형상만 hole(벽+바닥)에서 평평한 사각 블록으로 바꿨다. -->
+    <body name="workpiece" pos="0.21559240 -0.07038191 0.48106862" gravcomp="1">
+      <freejoint name="workpiece_free"/>
+      <inertial pos="0 0 0" mass="0.15" diaginertia="1e-4 1e-4 1.5e-4"/>
+      <geom class="tool_contact" name="workpiece_geom" type="box" size="0.03 0.03 0.006" pos="0 0 -0.006" rgba="0.65 0.5 0.35 1"/>
+      <!-- 로컬 xy는 reset()이 site_pos로 덮어쓴다(무작위 조준점) -- 로컬
+           원점(0,0,0)이 곧 hole_center_site가 있던 자리, 즉 아래 hole_grasp
+           relpose가 유지하는 "왼팔 home 자세 기준 목표점"이다. -->
+      <site name="nail_site" pos="0 0 0" size="0.003" rgba="1 0 0 0.6"/>
+    </body>
+
+    <!-- tacker_tool: peg와 완전히 같은 body pos/quat/geom(샤프트+구형 tip) --
+         같은 오른팔 home 자세에서 같은 지점에 오도록 맞춰진 값이라, "타카"로
+         재해석해도 기구학적으로 그대로 유효하다(위 docstring 참고). -->
+    <body name="tacker_tool" pos="0.21564624 -0.07035550 0.56015799"
+          quat="-0.0247387074 -0.0000234851 0.0001681527 0.9996939370" gravcomp="1">
+      <freejoint name="tacker_tool_free"/>
+      <geom class="tool_contact" name="tacker_tool_shaft" type="box" size="0.01 0.01 0.03" mass="0.04" rgba="0.2 0.4 0.85 1"/>
+      <geom class="tool_contact" name="tacker_tool_tip" type="sphere" pos="0 0 -0.03" size="0.01" mass="0.01" rgba="0.2 0.4 0.85 1"/>
+      <site name="tacker_tip_site" pos="0 0 -0.04" size="0.003" rgba="0.9 0.9 0.1 1"/>
+    </body>
+
+    <!-- OpenArm 양팔 + 받침대 (공식 자산, assets/openarm/ 참고) -->
+    <attach model="arm_pedestal" prefix=""/>
+  </worldbody>
+
+  <equality>
+    <!-- peg_grasp와 완전히 동일한 relpose(오른팔이 tacker_tool을 쥔다). -->
+    <weld name="tacker_grasp" body1="openarm_right_ee_base_link" body2="tacker_tool"
+          relpose="-0.02222 0 -0.21214 1 0 0 0"
+          solref="0.002 1" solimp="0.95 0.99 0.0001 0.5 2"
+          active="true"/>
+    <!-- hole_grasp와 완전히 동일한 relpose(왼팔이 workpiece를 쥔다). -->
+    <weld name="workpiece_grasp" body1="openarm_left_ee_base_link" body2="workpiece"
+          relpose="-0.01772 -0.00214 -0.19274 0.66481967 0.50297462 0.44306384 0.3297359"
+          solref="0.002 1" solimp="0.95 0.99 0.0001 0.5 2"
+          active="true"/>
+  </equality>
+
+  <contact>
+    <exclude body1="tacker_tool" body2="openarm_right_ee_base_link"/>
+    <exclude body1="tacker_tool" body2="openarm_right_ee_inner_finger"/>
+    <exclude body1="tacker_tool" body2="openarm_right_ee_outer_finger"/>
+    <exclude body1="workpiece" body2="openarm_left_ee_base_link"/>
+    <exclude body1="workpiece" body2="openarm_left_ee_inner_finger"/>
+    <exclude body1="workpiece" body2="openarm_left_ee_outer_finger"/>
+    <!-- tacker_tool과 workpiece 사이의 실제 충돌도 꺼야 한다(실측으로
+         발견): peg_in_hole의 peg는 hole 벽에 부딪히는 접촉 자체가 물리의
+         핵심이라 켜둬야 하지만, tacker는 "발사"가 순수 스크립트 이벤트
+         (sim/tacker_openarm_env.py의 velocity kick)라서 tacker_tool의
+         실제 지오metry(peg 형상 그대로 재사용, contype=1)가 workpiece에
+         닿는 순간 의도치 않은 충격 접촉력이 생겨 recoil_strength=0에서도
+         workpiece가 수십 mm씩 튕겨나갔다(진짜 원인을 못 찾고 recoil 계산
+         버그로 착각할 뻔함, 직접 스윕해서 recoil_strength와 무관하게 큰
+         displacement가 나오는 걸 보고 발견). -->
+    <exclude body1="tacker_tool" body2="workpiece"/>
+  </contact>
+
+  <!-- vendor 액추에이터 16개는 그대로 남아있다(ctrl=0으로 안 건드리면 간섭
+       없음, peg_in_hole_bimanual_openarm.xml과 동일한 이유). pos_right_j*는
+       왼팔 강화 게인 온/오프 비교 실험에서만 쓰고(기본은 무력화, sim 모듈
+       참고), 실제 오른팔 구동은 torque_right_j*(computed-torque)로 한다 --
+       전부 peg_in_hole_bimanual_openarm.xml과 완전히 동일. -->
+  <actuator>
+    <position name="pos_right_j1" joint="openarm_right_joint1" kp="2273.98" kv="1568.18" ctrlrange="-1.3963 3.4907"/>
+    <position name="pos_right_j2" joint="openarm_right_joint2" kp="2273.98" kv="1568.18" ctrlrange="-0.17453 3.3161"/>
+    <position name="pos_right_j3" joint="openarm_right_joint3" kp="87.90" kv="894.41" ctrlrange="-1.5708 1.5708"/>
+    <position name="pos_right_j4" joint="openarm_right_joint4" kp="87.90" kv="894.41" ctrlrange="0 2.4435"/>
+    <position name="pos_right_j5" joint="openarm_right_joint5" kp="411.75" kv="663.96" ctrlrange="-1.5708 1.5708"/>
+    <position name="pos_right_j6" joint="openarm_right_joint6" kp="411.75" kv="663.96" ctrlrange="-0.7854 0.7854"/>
+    <position name="pos_right_j7" joint="openarm_right_joint7" kp="411.75" kv="663.96" ctrlrange="-1.5708 1.5708"/>
+    <position name="pos_left_j1" joint="openarm_left_joint1" kp="2273.98" kv="1568.18" ctrlrange="-3.4907 1.3963"/>
+    <position name="pos_left_j2" joint="openarm_left_joint2" kp="2273.98" kv="1568.18" ctrlrange="-3.3161 0.17453"/>
+    <position name="pos_left_j3" joint="openarm_left_joint3" kp="87.90" kv="894.41" ctrlrange="-1.5708 1.5708"/>
+    <position name="pos_left_j4" joint="openarm_left_joint4" kp="87.90" kv="894.41" ctrlrange="0 2.4435"/>
+    <position name="pos_left_j5" joint="openarm_left_joint5" kp="411.75" kv="663.96" ctrlrange="-1.5708 1.5708"/>
+    <position name="pos_left_j6" joint="openarm_left_joint6" kp="411.75" kv="663.96" ctrlrange="-0.7854 0.7854"/>
+    <position name="pos_left_j7" joint="openarm_left_joint7" kp="411.75" kv="663.96" ctrlrange="-1.5708 1.5708"/>
+
+    <motor name="torque_right_j1" joint="openarm_right_joint1" ctrlrange="-40 40"/>
+    <motor name="torque_right_j2" joint="openarm_right_joint2" ctrlrange="-40 40"/>
+    <motor name="torque_right_j3" joint="openarm_right_joint3" ctrlrange="-27 27"/>
+    <motor name="torque_right_j4" joint="openarm_right_joint4" ctrlrange="-27 27"/>
+    <motor name="torque_right_j5" joint="openarm_right_joint5" ctrlrange="-7 7"/>
+    <motor name="torque_right_j6" joint="openarm_right_joint6" ctrlrange="-7 7"/>
+    <motor name="torque_right_j7" joint="openarm_right_joint7" ctrlrange="-7 7"/>
+  </actuator>
+
+  <keyframe>
+    <!-- qpos 순서: workpiece 자유조인트(7) + tacker_tool 자유조인트(7) +
+         왼팔(9) + 오른팔(9) = 32 -- peg_in_hole_bimanual_openarm.xml과
+         완전히 동일한 순서/값(물체 이름만 바뀌었을 뿐 FK 결과는 같다). -->
+    <key name="home"
+      qpos="0.21559240 -0.07038191 0.48106862 1 0 0 0
+            0.21564624 -0.07035550 0.56015799 -0.0247387074 -0.0000234851 0.0001681527 0.9996939370
+            -0.33119160341930914 -0.6927695819191171 1.0264533366778317 1.8918419565784326 -0.9724271650596741 -0.11753742523671289 -0.306424166993611 0.110 0.110
+            -0.4932859043730308 2.7728121142883237 0.7779694449047385 2.068501962471789 0.5568966487876724 -0.5030469209189363 0.973709272141154 -0.030 -0.030"
+      ctrl="-0.4932859043730308 2.7728121142883237 0.7779694449047385 2.068501962471789 0.5568966487876724 -0.5030469209189363 0.973709272141154
+            -0.33119160341930914 -0.6927695819191171 1.0264533366778317 1.8918419565784326 -0.9724271650596741 -0.11753742523671289 -0.306424166993611
+            0 0 0 0 0 0 0 0.110
+            0 0 0 0 0 0 0 -0.030
+            0 0 0 0 0 0 0"/>
+  </keyframe>
+</mujoco>

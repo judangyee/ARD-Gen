@@ -76,7 +76,12 @@ def main() -> None:
     print(f"[render_episode] scene_config(1단계)={episode['scene_config']}")
     print(f"[render_episode] language={episode.get('language')}")
 
-    env = task.make_env(use_stabilizer=True)
+    # use_stabilizer=True를 강제로 넘기지 않는다 -- make_env()는 어차피
+    # tasks/{task}.yaml에 stabilizer 절이 있으면 기본값으로 이미 켠다.
+    # tacker(OpenArm, 왼팔이 항상 붙어있는 실제 팔이라 그 kwarg 자체가
+    # 없음) 같은 태스크의 Env는 이 kwarg를 아예 안 받아서 강제로 넘기면
+    # TypeError가 났다(실측 확인).
+    env = task.make_env()
     sim = env._sim
     renderer = mujoco.Renderer(sim.model, height=args.height, width=args.width)
     camera = _camera_for(args.task, sim)

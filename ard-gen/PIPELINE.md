@@ -591,6 +591,16 @@ LLVM 공유 라이브러리를 동시에 로드해서 생기는 ABI 충돌 -- �
 캡처하는 스크립트에서만 `MUJOCO_GL=osmesa`를 쓰고 나머지는 안 쓰는 것**이
 가장 간단한 회피책이다(실측: 두 조합 다 정상 동작 확인).
 
+## [레거시] tacker(타카) 최초 버전 -- 일반 Stabilizer(가상 EE) 기반
+
+> **이 절 전체가 대체됐다.** peg_in_hole이 VX300s에서 OpenArm으로 교체된 것과
+> 같은 이유로, tacker도 사용자 요청에 따라 아래 "tacker(타카), OpenArm 양팔
+> 버전" 절의 구조로 교체했다 -- `TASK_REGISTRY["tacker"]`는 더 이상 여기 설명된
+> `sim.tacker_env:TackerEnv`(3-슬라이드 가상 Stabilizer, `sim/stabilizer.py`
+> 재사용)를 가리키지 않는다. 코드/자산(`assets/tacker.xml`, `sim/tacker_env.py`,
+> `tests/test_tacker_task.py`의 옛 버전)은 참고용으로만 저장소에 남겨뒀다 --
+> 아래 절은 설계 배경 기록으로서 그대로 둔다.
+
 ## 신규 태스크: tacker(타카) -- "위치 정확도 + 1회성 발사"
 
 peg_in_hole/cap_twist는 둘 다 Actuator가 에피소드 내내 연속적으로 힘/토크를
@@ -717,3 +727,140 @@ workpiece가 테이블 마찰만으로 버티다 보니 중앙값 기준 1000배
 로 바꿨다(태스크가 늘어날 때마다 이 파일을 고칠 필요가 없어짐) --
 `_camera_for()`도 이름 -> 카메라 dict로 바꿔서 tacker의 `top_cam`을 추가로
 등록했다.
+
+## tacker(타카), OpenArm 양팔 버전 -- 왼팔이 진짜 팔로 workpiece를 쥐도록 재설계
+
+peg_in_hole이 VX300s에서 OpenArm 양팔로 교체된 뒤(위 절 참고), 사용자가
+"tacker도 일반 Stabilizer(가상 EE) 패턴을 다시 쓰지 말고 peg_in_hole의
+OpenArm 구조를 그대로 이어서 쓰라"고 명시적으로 요청했다 -- `TASK_REGISTRY["tacker"]`
+를 `sim.tacker_openarm_env:TackerOpenArmEnv`로 교체했다. 설계 철학(오른팔=
+위치 접근+자동 발사, 왼팔=반동 흡수가 물리적 핵심)은 이전 버전과 동일하고,
+바뀐 건 **왼팔/오른팔을 구현하는 방식**뿐이다.
+
+### 설계: grasp anchor/home 자세를 새로 찾지 않고 그대로 재사용
+
+작업 전에 사용자에게 확인 질문을 했다 -- "왼팔이 workpiece를 쥐는 위치,
+오른팔이 tacker_tool을 쥐는 위치, 양팔의 home 자세를 `assets/
+peg_in_hole_bimanual_openarm.xml`에서 이미 검증된 값(hole_socket/peg의 grasp
+anchor·home pose)을 그대로 재사용할지, tacker 전용으로 새로 찾을지" -- 사용자가
+**재사용**을 선택했다. 근거: 그 값들은 "왼팔이 어떤 각도로 뭔가를 쥔 채 오른팔이
+그 위 6cm(`_HOVER_GAP_M`)에서 접근한다"는 순수 기하학적 관계만 인코딩하고
+있어서, 쥐는 대상의 형상(hole vs 평평한 workpiece)이나 오른팔이 쥔 도구의
+용도(peg 삽입 vs 타카 발사)와 무관하게 유효하다. 그래서 `assets/
+tacker_openarm.xml`은 `hole_grasp`/`peg_grasp` weld의 relpose, `_HOME_QPOS`/
+`_LEFT_ARM_HOME_QPOS`, gravcomp 오버라이드, vendor 액추에이터 무력화, 관절별
+강화 게인(pos_left_j*/pos_right_j*)을 **숫자 그대로** 물려받았다 -- 바뀐 건
+hole_socket(벽+바닥)을 평평한 workpiece 블록으로, peg를 tacker_tool로 재해석한
+것뿐이다(같은 body pos/quat, 같은 지오metry 재사용). 이 선택 덕분에 원래
+peg_in_hole_bimanual_openarm.xml이 5~6차례 반복 보정했던 grasp anchor
+재조정/home 자세 CMA-ES 재탐색을 전혀 다시 할 필요가 없었다.
+
+오른팔 제어는 peg_in_hole_bimanual_openarm_sim.py의 resolved-rate Jacobian
+IK(널스페이스 투영 + 관절 한계 회피) + computed-torque(매 스텝 `mj_fullM`)
+구조를 코드 그대로 재사용하되, 그 위에 얹는 태스크 루프만 admittance+
+z-rate 스케줄에서 순수 위치오차 비례 제어(`Kp_approach`, 일반 Stabilizer
+버전 tacker와 같은 설계 철학)로 바꿨다.
+
+### 발견 1(실측 버그): tacker_tool과 workpiece의 실제 충돌을 꺼야 했다
+
+peg의 지오metry(샤프트+구형 tip, `contype=1`)를 그대로 재사용했는데, 이건
+peg_in_hole에서는 hole 벽과의 접촉 자체가 물리의 핵심이라 당연히 켜져
+있어야 하지만, tacker는 "발사"가 순수 스크립트 이벤트(velocity kick)라서
+tacker_tool이 workpiece에 실제로 부딪히면 **의도치 않은 접촉 충격력**이
+추가로 생긴다. 처음 돌려봤을 때 `recoil_strength=0`(반동 없음)에서도
+workpiece가 40~60mm씩 튕겨나가서 recoil 계산 자체가 잘못됐나 의심했는데,
+recoil_strength를 0부터 스윕해도 displacement가 거의 안 바뀌는 걸 보고
+(반동과 무관한 원인이라는 뜻) 실제 원인을 찾았다 -- `<contact><exclude
+body1="tacker_tool" body2="workpiece"/></contact>`로 껐다.
+
+### 발견 2(더 중요한 실측 버그): `integrator="implicitfast"` 누락으로 정지
+### 홀드만으로도 20mm+ 드리프트 -- 원본 OpenArm peg_in_hole도 같은 결함일 가능성
+
+위 접촉 버그를 고치고도 `recoil_strength=0`에서 여전히 약 9~11mm의
+displacement가 남았다. 오른팔을 전혀 움직이지 않고 **왼팔만 고정 자세로
+300ms(60스텝) 정지 홀드**시키는 격리 테스트를 해보니, workpiece가 그것만으로
+20mm 넘게 드리프트했다 -- 반동/오른팔과 완전히 무관한, 왼팔의 정지 홀드
+자체의 문제였다. 원인을 찾다가 `assets/peg_in_hole_bimanual_openarm.xml`의
+`<option>`에 `cone="elliptic" impratio="10"`만 있고 **integrator가 지정돼
+있지 않다**(기본값=세미암시적 오일러)는 걸 발견했다 -- 이건 이 저장소가
+`assets/peg_in_hole.xml`(VX300s)과 `screw_driving_bimanual_openarm.xml`에서
+**이미 겪고 고쳤던, 문서화까지 해둔** 바로 그 버그다: "강한 위치 액추에이터
++ 항상 활성인 weld" 조합에서 기본 오일러 적분기가 서서히 에너지를 새게 해서
+드리프트를 만든다. `assets/tacker_openarm.xml`에 `integrator="implicitfast"`를
+추가하니 같은 정지 홀드 테스트에서 드리프트가 **20mm대 -> 5μm 수준**으로
+완전히 사라졌다(왼팔 강화 게인/vendor 게인 둘 다 동일하게 해결됨).
+
+**파생 시사점(정직하게 밝힘)**: 현재 `TASK_REGISTRY["peg_in_hole"]`이 쓰는
+`assets/peg_in_hole_bimanual_openarm.xml`도 이 옵션이 그대로 빠져 있다 --
+그 태스크 개발 당시 겪었던 극심한 드리프트 논의("2000스텝까지 34~48mm,
+4000스텝에 272mm", "45~75mm 범위에서 진동")가 전부 "관절 한계 여유 부족"과
+"결합 동역학"으로만 설명됐는데, 이 더 단순한(그리고 이미 두 번이나 겪었던)
+원인이 최소한 일부는 기여했을 가능성이 있다. 이번 작업 범위 밖이라 그
+파일은 손대지 않았지만, 다음에 그 태스크의 드리프트/정밀도를 더 개선하고
+싶은 사람은 이 옵션 추가부터 실측해볼 것을 권한다.
+
+### recoil_strength 스케일 재보정
+
+일반 Stabilizer 버전(순수 3-슬라이드 가상 EE, 관성 0.1kg, kp=20000)은
+recoil_strength 0.15~0.45(m/s 스케일 velocity kick)만으로도 뚜렷한 성공/실패
+차이가 났지만, 진짜 7-DOF 팔 전체의 분산된 관성/댐핑이 훨씬 크게 개입하는
+이 버전에서는 같은 스케일의 kick이 거의 무해했다(위 두 버그를 고친 뒤
+실측 스윕: 왼팔 강화 게인 기준 `recoil_strength<=15`는 변위<4mm로 항상
+성공, 25 이상부터 threshold(6mm)를 넘기 시작해 130에서 238mm까지 커진다).
+그래서 `sample_scene_config()`의 반동 강도 범위를 5~35로 재보정했다 --
+"왼팔 강화 게인으로도 성공/실패가 실제로 갈리는" 구간이다.
+
+### 검증 1: CMA-ES가 게인 1개로도 정상 수렴하는가
+
+일반 Stabilizer 버전과 같은 패턴 -- 1세대 만에 목표 리워드(65.0)에 도달했다
+(`Kp_approach≈0.174`). 이 게인 자체의 landscape는 여전히 평탄하다(0.02~3.0
+전 구간에서 성공, 반동 강도가 고정이라면) -- 이 태스크의 물리적 핵심이
+애초에 이 게인이 아니라 왼팔이라는 설계 의도와 일치한다. 부트스트랩(1000
+trial, seed 게인 ±0.5~2배 노이즈) 성공률 **72.5%**(725/1000) -- 재보정된
+반동 강도 범위 덕분에 실제로 실패도 섞여 있는, 이전 버전(항상 100%)보다
+훨씬 의미 있는 난이도 분포다. diffusion 검증(새 무작위 씬 100개) 성공률
+**77.0%**(+4.5%p 개선).
+
+### 검증 2: 왼팔 강화 게인 유무 (이 태스크를 만든 목적 자체에 대한 검증)
+
+이 버전은 grasp weld가 컴파일 시점부터 항상 활성(왼팔이 처음부터 쥐고
+있음)이라, 일반 Stabilizer 버전처럼 "붙였다/안 붙였다"로 비교할 수 없다 --
+대신 **왼팔의 강화 위치 게인(`pos_left_j*`, kp=2273.98/87.90/411.75) vs
+OpenArm vendor 기본 게인(`assets/openarm/openarm_bimanual.xml`의
+`left_joint*_ctrl`, kp=230/190/30, motor_DM8009/DM4340/DM4310)**으로 비교했다.
+같은 씬 시퀀스(N=150, 시드 고정) + 같은 고정 게인(Kp_approach=0.1739)으로:
+
+| | 왼팔 강화 게인 | 왼팔 vendor(약한) 게인 |
+|---|---|---|
+| 성공률 | **73.3%** (110/150, 95% CI 대략 ±7.1%p) | **46.7%** (70/150, 95% CI 대략 ±8.0%p) |
+| 발사 후 변위(평균) | 4.387mm | 6.685mm |
+| 발사 후 변위(중앙값) | 2.882mm | 6.245mm |
+
+두 신뢰구간이 겹치지 않는다(66.2%~ vs ~54.7%) -- 통계적으로 유의미한 차이다.
+일반 Stabilizer 버전(100% vs 37.3%, 변위 1000배 차이)만큼 극적이진 않지만
+(그 버전은 순수 스프링 vs 아예 없음이라는 이진 비교였고, 이건 "강한 실제
+팔" vs "약한 실제 팔"이라는 더 현실적인 비교라서 차이가 더 점진적이다),
+방향과 유의성은 명확하다 -- `tests/test_tacker_task.py`에 더 작은 N(40)으로
+같은 검증을 회귀 테스트로 남겼다.
+
+### 파이프라인 실행 기록 (0→1→2-A→2-B→4→5, 3단계 없음)
+
+사용자 요청대로 3단계(Stabilizer) 별도 스텝을 건너뛰었다 -- 왼팔이
+`peg_in_hole_openarm`처럼 Env/XML 안에 이미 통합돼 있어서 실행할 별도
+단계 자체가 없다.
+
+- **필터링**: 350개 씬 중 252개 성공(72.0%, `data/episodes/tacker/`).
+- **언어 라벨링**: force_max 범위 [5.9, 22.6]N(실제 편차 있음, `qfrc_constraint`
+  기반 로깅이 이번에도 유효했다 -- workpiece가 freejoint라 XML `<sensor>`
+  대신 이 방식을 처음부터 채택), 강도 분포 gentle 83 / normal 83 / firm 86.
+- **LeRobotDataset 변환**: 252개 에피소드, 10,916프레임, state_dim=6(오른팔
+  3 + 왼팔 3, wrist 없음 -- 이유는 위 레거시 절과 동일하게 유효), action_dim=3,
+  task_instruction 9종. `data/lerobot/tacker/`.
+
+### render_episode.py 추가 수정
+
+`task.make_env(use_stabilizer=True)`를 강제로 호출하던 부분을 `task.make_env()`
+로 바꿨다 -- `TackerOpenArmEnv`는 왼팔이 항상 붙어있는 실제 팔이라 애초에
+`use_stabilizer` kwarg를 안 받아서, 그 kwarg를 강제로 넘기면 `TypeError`가
+났다(peg_in_hole/cap_twist는 여전히 그 kwarg를 받으므로 기존 동작에 영향 없음,
+둘 다 재렌더링해서 확인).

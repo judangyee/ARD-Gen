@@ -32,7 +32,11 @@ TASK_REGISTRY: dict[str, str] = {
     # sim/peg_in_hole_openarm_env.py 상단 docstring 참고).
     "peg_in_hole": "sim.peg_in_hole_openarm_env:PegInHoleOpenArmEnv",
     "cap_twist": "sim.cap_twist_env:CapTwistEnv",
-    "tacker": "sim.tacker_env:TackerEnv",
+    # 일반 Stabilizer(가상 EE) 버전(sim.tacker_env:TackerEnv)은 peg_in_hole과
+    # 같은 이유로 OpenArm 양팔 버전으로 교체했다(사용자 요청) -- 구버전
+    # 코드/자산(assets/tacker.xml, sim/tacker_env.py)은 참고용으로 남겨뒀지만
+    # 더 이상 등록돼 있지 않다.
+    "tacker": "sim.tacker_openarm_env:TackerOpenArmEnv",
 }
 
 
