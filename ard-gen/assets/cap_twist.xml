@@ -83,9 +83,9 @@
          모두 sim/stabilizer.py 하나로 동일하게 다룰 수 있는 이유가 이것이다.
          자세한 설계 근거는 assets/peg_in_hole.xml의 같은 블록 주석 참고. -->
     <body name="stabilizer_ee" pos="0 0 0">
-      <joint name="stab_x" type="slide" axis="1 0 0" damping="15"/>
-      <joint name="stab_y" type="slide" axis="0 1 0" damping="15"/>
-      <joint name="stab_z" type="slide" axis="0 0 1" damping="15"/>
+      <joint name="stab_x" type="slide" axis="1 0 0" damping="90"/>
+      <joint name="stab_y" type="slide" axis="0 1 0" damping="90"/>
+      <joint name="stab_z" type="slide" axis="0 0 1" damping="90"/>
       <inertial pos="0 0 0" mass="0.1" diaginertia="1e-5 1e-5 1e-5"/>
       <geom name="stabilizer_ee_geom" type="sphere" size="0.012" contype="0" conaffinity="0" rgba="0.2 0.8 0.3 1"/>
       <site name="stabilizer_ee_site" pos="0 0 0" size="0.005"/>
@@ -103,9 +103,9 @@
          이 한계에 도달하기 전에 먼저 트리거된다). -->
     <position name="cap_drive" joint="cap_hinge" kp="8.0" forcerange="-1.2 1.2"/>
 
-    <position name="stab_x" joint="stab_x" kp="400" forcerange="-500 500"/>
-    <position name="stab_y" joint="stab_y" kp="400" forcerange="-500 500"/>
-    <position name="stab_z" joint="stab_z" kp="400" forcerange="-500 500"/>
+    <position name="stab_x" joint="stab_x" kp="20000" forcerange="-3000 3000"/>
+    <position name="stab_y" joint="stab_y" kp="20000" forcerange="-3000 3000"/>
+    <position name="stab_z" joint="stab_z" kp="20000" forcerange="-3000 3000"/>
   </actuator>
 
   <sensor>

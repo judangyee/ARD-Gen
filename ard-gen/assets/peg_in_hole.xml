@@ -253,31 +253,40 @@
          (body 자체의 고정 오프셋이 있으면 qpos에 그 오프셋이 추가로 더해져서
          ctrl에 world 목표 좌표를 그대로 못 넣는다 -- sim/stabilizer.py 개발
          중 실측으로 확인한 버그, 자세한 내용은 그 파일 docstring 참고).
-         damping=15/kp=400은 이 몸체 질량(0.1kg)에서 진동 없이 빠르게
-         수렴하도록 실측으로 잡은 값이다(critical damping ~= 2*sqrt(kp*m)
-         =2*sqrt(400*0.1)=12.6 근방). forcerange는 넉넉하게 커서 실제
-         한계는 사실상 없다(가상 엔드이펙터라 실제 토크 제한이 의미 없음).
 
-         ## kp를 올려도 못 구하는 실패 4건 (실측, 3단계 검증 결과)
+         ## kp=400 -> 20000으로 올린 경위 (실측, 3단계 심층 검증 결과)
 
-         자유물체 전환 + Stabilizer 후 무작위 40씬 회귀에서, 원래(hole 완전
-         고정) 성공하던 28개 중 24개는 그대로 성공하고 4개만 새로 실패한다
-         (실패 원인: peg가 옆으로 크게 빗나가 벽 위에 걸린 채 400스텝 내내
-         Z_RATE로 계속 눌러 100N+까지 힘이 쌓이는 경계선 케이스). kp를
-         400->1500(거의 4배)으로 올려도 이 4건은 똑같이 실패했다 -- 위치
-         액추에이터는 F=kp*(목표-현재)라 정적 평형에서 오차가 kp에 반비례로
-         줄어들 뿐(약 110N/1500=73mm) 절대 0이 되지 않고, 이 정도로 큰 힘을
-         받는 경계선 케이스에서는 그 잔류 변위조차 삽입을 갈라놓기에 충분하다.
-         즉 이 4건의 실패는 Stabilizer/weld 강성 부족이 아니라, "hole이
-         완전 강체가 아니게 되면" 실제로 달라지는 정당한 물리(경계선
-         케이스의 미세한 wobble-in 동역학 변화)다 -- 실제 로봇에서도 아주
-         뻑뻑하게 쥔 손이 여전히 미세하게 밀리는 것과 같다. kp를 과하게
-         더 올리면(수만 단위) 이 timestep(0.002s)에서 수치적으로 불안정해질
-         위험이 커서, 4개를 마저 구하려고 억지로 올리지 않았다. -->
+         처음엔 kp=400(critical damping~=2*sqrt(400*0.1)=12.6 근방)으로
+         두고, "peg가 벽에 걸려 100N+까지 힘이 쌓이는 경계선 케이스 몇 건이
+         남는 건 hole이 완전 강체가 아니게 되며 생기는 정당한 물리"라고
+         결론 내렸었다 -- kp를 400->1500(4배)으로 올려도 그 케이스들이
+         똑같이 실패하는 걸 보고 "weld/EE 강성 문제가 아니다"라고 판단한
+         것인데, **이건 성급한 결론이었다**. 나중에 직접 hole_socket에
+         알려진 정적 힘을 걸어서(xfrc_applied) 측정해보니:
+           - weld 자체(qfrc_constraint)는 정상이었다 -- 가한 힘과 거의
+             1:1로 전달됨(예: 100N 가하면 weld도 ~102N을 받음).
+           - 그런데 EE 위치 액추에이터의 정적 평형 변위가 kp=400에서는
+             100N에 **254.77mm**나 됐다(F=kp*오차이므로 오차=F/kp=100/400
+             =0.25m, 실측과 정확히 일치) -- 1500으로 4배 올려도 여전히
+             ~67mm급이라 두 값 다 삽입 공차(수 mm)에 비하면 "이미 압도적으로
+             큰 실패"라, 4배 올린 게 사실상 아무 차이도 안 만들어 보였을
+             뿐이다(오차가 250mm에서 67mm로 줄어도 둘 다 똑같이 크게 실패).
+           - kp를 실측으로 스윕(400/2000/5000/10000/20000/40000/80000/
+             150000/300000)해서 100N 정적 힘에서의 변위를 직접 재보니
+             20000 근방까지는 kp에 반비례로 계속 줄다가(40000에서 최소
+             ~2.93mm), 그 이상(80000+)에서는 오히려 다시 늘어난다(감쇠비가
+             그 강성에 안 맞아 진동/링잉이 생기는 것으로 추정) -- NaN은
+             전혀 안 났지만(수치적으로는 "안정") 물리적으로는 도움이
+             안 된다. 20000(감쇠 90, critical damping~=2*sqrt(20000*0.1)
+             =89.4와 거의 정확히 일치)을 골랐다 -- 100N에서 변위 4.45mm로,
+             400 대비 약 57배 개선.
+         forcerange를 3000으로 넉넉히 키운 이유: kp가 20000이라 같은 변위에도
+         필요한 힘이 커지므로, 예전 forcerange=500으로는 실제 관측되는
+         부하(최대 ~100~300N대)에서도 여유가 빠듯했다. -->
     <body name="stabilizer_ee" pos="0 0 0">
-      <joint name="stab_x" type="slide" axis="1 0 0" damping="15"/>
-      <joint name="stab_y" type="slide" axis="0 1 0" damping="15"/>
-      <joint name="stab_z" type="slide" axis="0 0 1" damping="15"/>
+      <joint name="stab_x" type="slide" axis="1 0 0" damping="90"/>
+      <joint name="stab_y" type="slide" axis="0 1 0" damping="90"/>
+      <joint name="stab_z" type="slide" axis="0 0 1" damping="90"/>
       <inertial pos="0 0 0" mass="0.1" diaginertia="1e-5 1e-5 1e-5"/>
       <geom name="stabilizer_ee_geom" type="sphere" size="0.012" contype="0" conaffinity="0" rgba="0.2 0.8 0.3 1"/>
       <site name="stabilizer_ee_site" pos="0 0 0" size="0.005"/>
@@ -295,9 +304,9 @@
   </equality>
 
   <actuator>
-    <position name="stab_x" joint="stab_x" kp="400" forcerange="-500 500"/>
-    <position name="stab_y" joint="stab_y" kp="400" forcerange="-500 500"/>
-    <position name="stab_z" joint="stab_z" kp="400" forcerange="-500 500"/>
+    <position name="stab_x" joint="stab_x" kp="20000" forcerange="-3000 3000"/>
+    <position name="stab_y" joint="stab_y" kp="20000" forcerange="-3000 3000"/>
+    <position name="stab_z" joint="stab_z" kp="20000" forcerange="-3000 3000"/>
   </actuator>
 
   <actuator>
