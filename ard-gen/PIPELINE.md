@@ -590,3 +590,130 @@ LLVM 공유 라이브러리를 동시에 로드해서 생기는 ABI 충돌 -- �
 (오프스크린 렌더러를 안 만듦), **`render_episode.py`처럼 실제로 프레임을
 캡처하는 스크립트에서만 `MUJOCO_GL=osmesa`를 쓰고 나머지는 안 쓰는 것**이
 가장 간단한 회피책이다(실측: 두 조합 다 정상 동작 확인).
+
+## 신규 태스크: tacker(타카) -- "위치 정확도 + 1회성 발사"
+
+peg_in_hole/cap_twist는 둘 다 Actuator가 에피소드 내내 연속적으로 힘/토크를
+조절해야 하는 태스크였다(admittance PD 루프). tacker는 의도적으로 그
+반대다 -- Actuator는 목표 지점까지 정확히 접근하기만 하면 되고, 도달하는
+순간 자동으로 발사되는 **이산적 이벤트**다. 그래서 이 태스크가 검증하는
+물리적 핵심이 Actuator가 아니라 **Stabilizer(발사 반동 흡수)**로 넘어간다
+-- 구현 세부는 `assets/tacker.xml`, `sim/tacker_env.py`, `tasks/tacker.yaml`
+상단 docstring 참고, 여기서는 설계 배경과 실측 결과만 정리한다.
+
+### 설계 요약
+
+- **workpiece**: peg_in_hole의 hole_socket과 같은 패턴(freejoint, 테이블 위에
+  얹힌 채 시작). **nail_site**: workpiece에 강체로 붙은 순수 목표점(로컬
+  오프셋을 reset()이 무작위화). **tacker_ee**: Actuator의 가상 엔드이펙터
+  (stabilizer_ee와 자매 설계, 같은 kp=20000 -- 이 강성 자체는 탐색 대상이
+  아니다).
+- **게인 1개(Kp_approach)**: 접근 오차에 곱하는 비례 게인 하나뿐이다 --
+  peg_in_hole/cap_twist의 게인이 "매 스텝 관측되는 물리 피드백에 반응"했던
+  것과 달리, 접근 중에는 반응할 물리 신호가 없어서(발사 전까지 접촉/저항
+  없음) 순수 기하학적 접근 속도 프로파일만 정한다.
+- **발사 트리거**: 사람이 "발사" 액션을 주지 않는다 -- EE와 nail_site 거리가
+  FIRE_TOLERANCE_M(3mm) 이내로 들어오는 스텝에서 자동 발사(에피소드당 정확히
+  1회).
+- **반동**: workpiece의 freejoint 선속도에 직접 velocity kick을 가한다
+  (impulse의 이상화). 수평 성분이 주고 수직은 작게 섞었다 -- 순수 수직
+  킥은 중력+테이블 접촉만으로 금방 멈춰서 Stabilizer 유무가 거의 안
+  갈리기 때문(이 태스크를 만든 목적 자체가 "Stabilizer 유무로 성공률이
+  갈리는가"라서, 그게 실제로 갈리는 방향으로 설계해야 의미가 있다).
+- **성공 조건**: 발사됐고(fired) + 발사 후 workpiece 변위가
+  SUCCESS_DISPLACEMENT_M(6mm) 이내.
+
+### 실측 버그 발견: freejoint 바디의 XML `<sensor>` force/torque는 항상 0이다
+
+처음엔 peg_in_hole의 peg_tip_site와 같은 패턴으로 nail_site에
+`<sensor><force/><torque/></sensor>`를 붙였는데, 실측해보니(`xfrc_applied`류
+직접 검증) workpiece가 실제로 밀리고 있어도 센서 값이 수치 잡음 수준(1e-16
+이하)으로 항상 0이었다. 원인: MuJoCo의 site force/torque 센서는 "그 바디를
+부모(world)에 연결하는 조인트를 통해 전달되는 구속력"을 재는데, freejoint는
+6DOF가 전부 자유(구속 없음)라서 정의상 그 조인트를 통해 전달되는 구속력이
+항상 0이다 -- peg_in_hole.xml의 peg처럼 조인트 없이 부모에 강체로 고정된
+자식 바디였다면 그 "고정" 자체가 암묵적 구속이라 센서가 정상 작동하지만,
+freejoint 바디에서는 구조적으로 작동할 수 없다.
+
+**중요한 파생 발견**: OpenArm peg_in_hole의 `peg_force` 센서도 `peg`가
+freejoint 바디(`peg_free`)라 같은 구조적 결함을 겪고 있을 가능성이 높다 --
+이전 절("정직하게 밝히는 한계: force_max에 실질적 변화가 없다")에서 그
+원인을 "제어 방식이 접촉 자체를 거의 안 만들어서"라고 설명했는데, 이제 보니
+그 설명은 불완전했을 수 있다(제어 방식 문제가 실제로 있더라도, 설령 강한
+접촉이 있었어도 애초에 그 센서로는 안 잡혔을 것이라는 뜻) -- 두 원인을
+분리하지 않았다(범위 밖이라 이번엔 손대지 않았다), 다음에 그 태스크의
+force_max를 의미 있게 만들려면 이 센서 자체부터 OpenArm peg처럼 freejoint인
+바디에서 qfrc_constraint 방식으로 바꿔야 할 가능성을 먼저 확인할 것.
+
+tacker에서는 XML 센서를 아예 없애고, `sim/tacker_env.py`가
+`data.qfrc_constraint`(그 바디의 자유도에 실제로 작용하는 모든 구속력의
+합 -- 접촉+equality 전부 포함, 이 프로젝트가 Stabilizer kp=20000을 검증할 때
+이미 썼던 것과 같은 종류의 진단량)를 매 스텝 직접 읽어서 로깅한다. 이걸로
+바꾸니 실측값이 물리적으로 올바르게 나왔다(정지 상태 ≈0.15kg*9.81≈1.47N,
+발사 순간 스파이크 최대 수 N).
+
+### 검증 1: CMA-ES가 게인 1개로도 정상 수렴하는가 -- 수렴은 하지만 landscape가 매우 평탄함
+
+1세대 만에 목표 리워드(65.0)에 도달했다(`Kp_approach≈0.50`). Kp_approach를
+0.02(하한)부터 3.0(상한)까지 수동으로 스윕해봐도 **전 구간에서 성공** --
+차이는 step_count(162 -> 8)와 리워드(68.37 -> 69.91, 0.5 부근이 근소하게
+최고)뿐이었다. peg_in_hole/cap_twist의 "너무 작아도 커도 확실히 실패하는"
+뚜렷한 이중 실패 모드와 달리 이 게인은 얕은 최적점만 가진 평탄한 문제다 --
+이건 버그가 아니라 설계 의도와 일치하는 결과다(이 태스크의 물리적 핵심이
+애초에 Actuator 게인이 아니라 Stabilizer이므로, Actuator 쪽 탐색이 쉬운 게
+당연하다). 부트스트랩(1000 trial, seed 게인 ±0.5~2배 노이즈) 성공률
+100.0%, diffusion 검증(새 무작위 씬 100개) 성공률 100.0%(둘 다 Stabilizer
+있는 상태 기준).
+
+### 검증 2: Stabilizer 유무 성공률 차이 (이 태스크를 만든 목적 자체에 대한 검증)
+
+같은 씬 시퀀스(N=150, 시드 고정) + 같은 고정 게인(Kp_approach=0.5014, CMA-ES
+seed 값)으로 Stabilizer 있음/없음만 바꿔 비교했다:
+
+| | Stabilizer 있음 | Stabilizer 없음 |
+|---|---|---|
+| 성공률 | **100.0%** (150/150) | **37.3%** (56/150, 95% CI 대략 ±7.7%p) |
+| 발사 후 변위(중앙값) | 0.008mm | 8.857mm |
+| 발사 후 변위(90백분위) | 0.015mm | 14.891mm |
+| 발사 후 변위(최대) | 0.024mm | 18.618mm |
+
+**차이가 확실하게 난다** -- Stabilizer가 있으면 weld(kp=20000)가 반동을
+거의 완전히 흡수해서(변위가 0.01mm 스케일) 사실상 항상 성공하고, 없으면
+workpiece가 테이블 마찰만으로 버티다 보니 중앙값 기준 1000배 가까이 더
+밀려서(수 mm~2cm) 60% 이상이 실패한다. 이 태스크를 추가한 목적(Actuator가
+아니라 Stabilizer가 물리적 핵심이라는 걸 데이터로 보여주는 것)이 실제로
+성립함을 확인했다 -- `tests/test_tacker_task.py`에 더 작은 N(40)으로 같은
+검증을 회귀 테스트로 남겼다.
+
+### 파이프라인 실행 기록
+
+`optimize/cma_search.py` → `pipeline/bootstrap.py`(1000 trial) →
+`pipeline/diffusion_gains.py`(500 epoch) → `pipeline/filter_episodes.py`
+(250 scenes) → `pipeline/language_labeling.py` → `pipeline/to_lerobot.py`
+순서로 전부 실행했다:
+
+- **필터링**: 250/250 성공(100.0%, `data/episodes/tacker/`).
+- **언어 라벨링**: force_max 범위 [1.9, 20.4]N(qfrc_constraint 수정 이후 --
+  peg_in_hole OpenArm과 달리 실제 편차가 있는 값이라 강도 라벨이 의미
+  있다), 강도 분포 gentle 83 / normal 82 / firm 85. 샘플: "표시된 지점을
+  조준해서 힘있게 발사하라." role_labels 250개 전부
+  `{"right_arm":"actuator","left_arm":"stabilizer"}` 동일.
+- **LeRobotDataset 변환**: 250개 에피소드, 9,601프레임, state_dim=6(오른팔
+  3 + 왼팔 3 -- wrist 회전 없음, 아래 참고), action_dim=3, task_instruction
+  9종. `data/lerobot/tacker/`.
+
+### wrist 회전을 안 둔 이유 (3차원 action으로 충분한지 검토한 결론)
+
+이 태스크는 타카를 표면에 수직으로 대고 누르는 동작이라, peg_in_hole(삽입축
+정렬)이나 cap_twist(회전 진행도)처럼 "각도가 성공 조건에 들어가는" 요소가
+전혀 없다 -- 성공은 순수하게 위치(발사 지점 도달) + 발사 후 변위로만
+정의된다. 그래서 action/state 모두 3차원 위치만으로 충분하다고 판단했고,
+실제로 4차원을 추가할 이유가 하나도 나오지 않았다(위 검증 결과가 이미
+3차원만으로 100% 성공률을 보여준다).
+
+### render_episode.py 일반화
+
+`--task` choices를 하드코딩된 2개 목록 대신 `sim.task_registry.list_tasks()`
+로 바꿨다(태스크가 늘어날 때마다 이 파일을 고칠 필요가 없어짐) --
+`_camera_for()`도 이름 -> 카메라 dict로 바꿔서 tacker의 `top_cam`을 추가로
+등록했다.

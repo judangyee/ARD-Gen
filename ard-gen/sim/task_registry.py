@@ -32,6 +32,7 @@ TASK_REGISTRY: dict[str, str] = {
     # sim/peg_in_hole_openarm_env.py 상단 docstring 참고).
     "peg_in_hole": "sim.peg_in_hole_openarm_env:PegInHoleOpenArmEnv",
     "cap_twist": "sim.cap_twist_env:CapTwistEnv",
+    "tacker": "sim.tacker_env:TackerEnv",
 }
 
 

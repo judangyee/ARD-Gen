@@ -1,0 +1,68 @@
+# tacker(타카): "위치 정확도 + 1회성 발사" 태스크 설정
+# (assets/tacker.xml + sim/tacker_env.py 상단 docstring 참고).
+#
+# peg_in_hole/cap_twist와 달리 물리적 핵심이 Actuator가 아니라 Stabilizer
+# (발사 반동 흡수)로 넘어간 태스크다 -- 게인이 1개뿐인 것도 그래서다
+# (Actuator는 접근 속도 하나만 조절하면 되고, 검증 포인트는 Stabilizer
+# 유무에 따른 성공률 차이에 있다, PIPELINE.md의 tacker 절 참고).
+name: tacker
+
+gains:
+  names: [Kp_approach]
+  # 하한/상한 결정 근거: 접근 거리가 3~10cm대라 MAX_APPROACH_STEP_M(1cm)에
+  # 걸려 먼 거리에서는 게인 크기가 중요치 않다 -- 근접 구간(tolerance의
+  # 4배=12mm 이내)에서의 스텝 크기가 관건이다. Kp_approach가 너무 작으면
+  # (하한 부근) MAX_STEPS(400) 안에 tolerance(3mm)에 못 들어와 타임아웃
+  # 실패, 너무 크면(상한 부근) 근접 구간에서도 큰 스텝으로 움직여
+  # overshoot_penalty가 커진다.
+  bounds:
+    Kp_approach: [0.02, 3.0]
+  x0: [0.03]
+  sigma0: [0.3]
+
+# CMA-ES 평가용 대표 시나리오 3개: 접근 거리/방향과 반동 강도를 다르게 잡아서
+# "게인이 있어야만 성공하는" 난이도를 만든다(peg_in_hole의 eval_scenarios와
+# 같은 역할).
+eval_scenarios:
+  - actuator_init_offset: [0.05, 0.0, 0.06]
+    recoil_strength: 0.3
+  - actuator_init_offset: [-0.04, 0.04, 0.05]
+    recoil_strength: 0.35
+  - actuator_init_offset: [0.03, -0.05, 0.07]
+    recoil_strength: 0.4
+
+success:
+  reward_threshold: 65.0
+
+# pipeline/diffusion_gains.py의 조건 벡터에 쓸 필드 이름과 순서.
+# sim/tacker_env.py의 sample_scene_config() 스키마 = sim 레벨 스키마 그
+# 자체(peg_in_hole OpenArm 버전과 같은 이유로 별도 "1단계 공유 씬" 변환이
+# 없음)의 workpiece_pos_xy(2)+workpiece_yaw(1)+nail_offset_xy(2)+
+# actuator_init_offset(3)+recoil_strength(1)+recoil_angle(1) = 10차원.
+condition_fields: [workpiece_pos_xy, workpiece_yaw, nail_offset_xy, actuator_init_offset, recoil_strength, recoil_angle]
+
+# 3단계(Stabilizer, 왼팔): 오른팔(Actuator)이 발사하는 workpiece를 옆에서
+# 붙잡는다. grasp_offset은 workpiece 절반 폭(0.03m)보다 살짝 바깥(0.04m)
+# 지점 -- peg_in_hole/cap_twist와 같은 관례(Stabilizer는 grasp 물리 자체를
+# 모델링하지 않으므로 물체 표면에 딱 붙을 필요가 없다).
+stabilizer:
+  object_body: workpiece
+  grasp_offset: [0.0, -0.04, 0.0]
+
+# 5단계(언어 라벨링)용 어휘. direction_words/quantity_words는 방향/수량
+# 개념 자체가 없는 태스크라 비워둔다. intensity_words는 채워둔다 --
+# force_max(발사 반동이 workpiece_force 센서에 만드는 스파이크, recoil_strength에
+# 따라 실제로 편차가 생김, OpenArm peg_in_hole과 달리 이 태스크는 힘 신호
+# 자체가 반동 이벤트라 의미 있는 변화가 있다)로 "얼마나 강하게 눌러
+# 박았는지"를 표현한다.
+language:
+  templates:
+    - "표시된 지점을 조준해서 {intensity} 발사하라."
+    - "타카를 목표 위치에 정확히 대고 {intensity} 눌러라."
+    - "목표 지점에 맞춰 신중하게 조준한 뒤 {intensity} 박아라."
+  intensity_words:
+    gentle: 살짝
+    normal: 적당한 세기로
+    firm: 힘있게
+  direction_words: {}
+  quantity_words: {}

@@ -1,0 +1,152 @@
+<mujoco model="ard_gen_tacker">
+  <!--
+    ARD-Gen 신규 태스크: 타카(tacker) -- "위치 정확도 + 1회성 발사".
+
+    peg_in_hole/cap_twist와 근본적으로 다른 점: 저 둘은 Actuator가 에피소드
+    내내 연속적으로 힘/토크를 조절해야 하는 태스크였다(admittance PD). 타카는
+    Actuator가 할 일이 "정확한 위치까지 접근"뿐이고, 도달 즉시 자동으로
+    발사되는 **이산적 이벤트**다 -- 그래서 물리적으로 흥미로운 부분(그리고
+    Stabilizer가 검증해야 할 부분)이 Actuator에서 Stabilizer로 넘어간다:
+    발사 반동(impulse)을 Stabilizer가 얼마나 잘 흡수하느냐가 성공/실패를
+    가른다. Actuator 쪽 게인은 "접근 속도/오버슈트 방지"라는, peg_in_hole의
+    Kp_xy/Kd_xy나 cap_twist의 Kp_tau보다 훨씬 단순한 역할만 한다
+    (sim/tacker_env.py 상단 docstring 참고).
+
+    ## workpiece: peg_in_hole의 hole_socket과 완전히 같은 패턴
+
+    freejoint 자유물체 + 테이블 위에 얹힌 상태로 시작(초기 낙하 없음) --
+    Stabilizer가 붙잡는 대상이 되려면 물리적으로 밀릴 수 있어야 한다는
+    이유도 동일하다. workpiece 자체는 못을 박아 넣을 평평한 나무판을
+    상정한 얇은 box다.
+
+    ## nail_site: 순수 기하 목표점, 부착된 물체 없음
+
+    peg_in_hole의 hole_center_site와 달리 nail_site는 접촉 형상이 아니라
+    "이 지점에 EE가 도달하면 발사"라는 순수 목표점이다 -- workpiece의
+    자식이라 물체와 같이 움직이고(자유물체 위에서도 위치가 항상 유효),
+    로컬 xy 오프셋을 reset()이 site_pos로 덮어써서 무작위화한다(clearance_m을
+    geom_size로 덮어쓰는 것과 같은 패턴).
+
+    ## tacker_ee: Actuator의 가상 엔드이펙터 (stabilizer_ee와 자매 설계)
+
+    실제 팔 기구학을 모델링하지 않는 이유는 sim/stabilizer.py 상단
+    docstring과 동일 -- "IK 기반, 파라미터 탐색 불필요"를 만족하려면 직렬
+    링크가 없어야 한다. stabilizer_ee와 다른 점은 딱 하나: 여기서는 EE
+    자신이 곧 Actuator이므로 쓰는 이름이 다르다(joint act_x/y/z, body
+    tacker_ee) -- 물리 파라미터(kp=20000, damping=90)는 stabilizer_ee와
+    동일하게 뒀다. 이유: 이 액추에이터의 "강성" 자체는 이 태스크의 탐색
+    대상이 아니다(tasks/tacker.yaml의 게인은 Kp_approach 하나뿐이고, 이건
+    sim/tacker_env.py의 외부 제어 루프에서 매 스텝 delta position을 계산하는
+    비례 게인이지 이 XML 액추에이터의 kp가 아니다) -- 그래서 다른 가상
+    EE들과 같은, 이미 검증된 "확실히 명령을 따라가는" 강성 값을 그대로
+    재사용한다.
+
+    ## 발사 반동: workpiece에 직접 velocity kick
+
+    실제 임팩트 드라이버/타카가 발사되는 순간 반동이 손(Actuator)과
+    작업물(workpiece) 양쪽에 전달되는데, 이 태스크가 검증하려는 건
+    "작업물이 얼마나 밀리는가(그리고 Stabilizer가 그걸 얼마나 잘
+    붙잡는가)"이므로 sim/tacker_env.py가 workpiece의 freejoint 선속도에
+    직접 킥을 준다(순간적인 impulse의 이상화 -- mv=F*dt에서 dt->0 극한).
+    그래서 이 XML 자체에는 발사를 표현하는 별도 요소가 없다(발사는 전적으로
+    sim 쪽 로직).
+
+    ## workpiece 반력 로깅: XML <sensor> force/torque를 안 쓰는 이유 (실측으로 발견)
+
+    처음엔 peg_in_hole의 peg_tip_site와 같은 패턴으로 nail_site에
+    `<sensor><force/><torque/></sensor>`를 붙이려 했는데, 실측해보니 이
+    방식은 **freejoint로 연결된 바디에서는 구조적으로 항상 0을 반환한다**
+    (수치 잡음 수준, 1e-16 이하) -- workpiece가 실제로 테이블 위를
+    미끄러지고 있어도 마찬가지였다. 원인: MuJoCo의 site force/torque
+    센서는 "그 바디를 부모에 연결하는 JOINT를 통해 전달되는 구속력"을
+    재는데, freejoint는 6DOF가 전부 자유(구속 없음)라서 정의상 그 조인트를
+    통해 전달되는 구속력이 항상 0이다(peg_in_hole.xml의 peg처럼 조인트 없이
+    부모에 강체로 고정된 자식 바디였다면 그 "고정" 자체가 암묵적 구속이라
+    센서가 정상 작동한다 -- OpenArm peg_in_hole의 peg_force 센서도 peg가
+    freejoint라 같은 문제를 겪고 있을 가능성이 높다, PIPELINE.md 참고).
+    그래서 이 XML에는 force/torque 센서를 두지 않는다 -- 대신
+    sim/tacker_env.py가 `data.qfrc_constraint`(워크피스 자유도에 실제로
+    작용하는 모든 구속력의 합 -- 접촉+equality 전부 포함, 이 프로젝트가
+    Stabilizer 강성을 검증할 때 이미 썼던 것과 같은 진단량)를 매 스텝 직접
+    읽어서 "workpiece_force"로 기록한다(실측 확인: 발사 순간 스파이크,
+    이후 중력을 버티는 정상상태 값(0.15kg*9.81≈1.47N)으로 수렴 -- 물리적으로
+    올바른 값이 나온다).
+  -->
+  <compiler angle="radian"/>
+  <option timestep="0.002" integrator="implicitfast" gravity="0 0 -9.81"/>
+  <visual>
+    <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6" specular="0.1 0.1 0.1"/>
+  </visual>
+
+  <default>
+    <default class="tacker_contact">
+      <geom contype="1" conaffinity="1" condim="4" friction="0.4 0.005 0.0001" solref="0.002 1" solimp="0.9 0.95 0.001"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <light pos="0.3 0 1" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+    <light pos="0.6 -0.3 0.6" dir="-0.4 0.4 -0.7" diffuse="0.4 0.4 0.4"/>
+
+    <geom name="ground" type="plane" pos="0 0 -0.02" size="0.8 0.8 0.01" contype="0" conaffinity="0" rgba="0.5 0.5 0.52 1"/>
+    <!-- 테이블: workpiece가 초기 낙하 없이 바로 얹혀 쉬도록 z=0에 둔다
+         (workpiece 바디 pos z=half_height가 곧 바닥면이 닿는 자리). -->
+    <geom name="tacker_table" type="plane" pos="0 0 0" size="0.8 0.8 0.01"
+          contype="1" conaffinity="1" friction="1.0 0.005 0.0001" rgba="0.6 0.5 0.4 1"/>
+
+    <camera name="top_cam" mode="targetbody" target="workpiece" pos="0.25 0.25 0.3"/>
+
+    <!-- workpiece: 못을 박을 얇은 나무판. half-height 0.01이라 body pos
+         z=0.01이면 바닥이 정확히 테이블면(z=0)에 닿는다. -->
+    <body name="workpiece" pos="0 0 0.01">
+      <freejoint name="workpiece_free"/>
+      <inertial pos="0 0 0" mass="0.15" diaginertia="1e-4 1e-4 1.5e-4"/>
+      <geom class="tacker_contact" name="workpiece_geom" type="box" size="0.03 0.03 0.01" rgba="0.65 0.5 0.35 1"/>
+      <!-- 로컬 xy는 reset()이 site_pos로 덮어쓴다(무작위 조준점) -- z는
+           top face(+half_height)에 고정. -->
+      <site name="nail_site" pos="0 0 0.01" size="0.003" rgba="1 0 0 0.6"/>
+    </body>
+
+    <!-- Actuator 가상 엔드이펙터(tacker_ee): sim/stabilizer.py의 stabilizer_ee와
+         자매 설계 -- 위 docstring 참고. -->
+    <body name="tacker_ee" pos="0 0 0">
+      <joint name="act_x" type="slide" axis="1 0 0" damping="90"/>
+      <joint name="act_y" type="slide" axis="0 1 0" damping="90"/>
+      <joint name="act_z" type="slide" axis="0 0 1" damping="90"/>
+      <inertial pos="0 0 0" mass="0.1" diaginertia="1e-5 1e-5 1e-5"/>
+      <geom name="tacker_tool_geom" type="cylinder" size="0.01 0.02" contype="0" conaffinity="0" rgba="0.2 0.4 0.85 1"/>
+      <site name="tacker_tip_site" pos="0 0 0" size="0.004" rgba="0.9 0.9 0.1 1"/>
+    </body>
+
+    <!-- Stabilizer(왼팔) 가상 엔드이펙터: assets/peg_in_hole.xml/cap_twist.xml과
+         완전히 같은 패턴/명명(stab_x/y/z, stabilizer_ee, stabilizer_weld) --
+         sim/stabilizer.py 하나로 동일하게 다뤄진다. kp=20000/damping=90 근거는
+         assets/peg_in_hole.xml의 같은 블록 주석(실측 스윕 결과) 참고. -->
+    <body name="stabilizer_ee" pos="0 0 0">
+      <joint name="stab_x" type="slide" axis="1 0 0" damping="90"/>
+      <joint name="stab_y" type="slide" axis="0 1 0" damping="90"/>
+      <joint name="stab_z" type="slide" axis="0 0 1" damping="90"/>
+      <inertial pos="0 0 0" mass="0.1" diaginertia="1e-5 1e-5 1e-5"/>
+      <geom name="stabilizer_ee_geom" type="sphere" size="0.012" contype="0" conaffinity="0" rgba="0.2 0.8 0.3 1"/>
+      <site name="stabilizer_ee_site" pos="0 0 0" size="0.005"/>
+    </body>
+  </worldbody>
+
+  <equality>
+    <weld name="stabilizer_weld" body1="stabilizer_ee" body2="workpiece"
+          solref="0.002 1" solimp="0.95 0.99 0.0001 0.5 2" active="false"/>
+  </equality>
+
+  <actuator>
+    <position name="act_x" joint="act_x" kp="20000" forcerange="-3000 3000"/>
+    <position name="act_y" joint="act_y" kp="20000" forcerange="-3000 3000"/>
+    <position name="act_z" joint="act_z" kp="20000" forcerange="-3000 3000"/>
+  </actuator>
+
+  <actuator>
+    <position name="stab_x" joint="stab_x" kp="20000" forcerange="-3000 3000"/>
+    <position name="stab_y" joint="stab_y" kp="20000" forcerange="-3000 3000"/>
+    <position name="stab_z" joint="stab_z" kp="20000" forcerange="-3000 3000"/>
+  </actuator>
+
+</mujoco>

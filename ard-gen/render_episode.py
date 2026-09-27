@@ -34,12 +34,17 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 
 from pipeline.episode_io import load_episode
-from sim.task_registry import load_task_config
+from sim.task_registry import list_tasks, load_task_config
+
+# 카메라 이름이 있는 태스크만 여기 추가한다 -- 없으면 아래 기본 자유
+# 시점 카메라로 대체된다(tacker도 top_cam이 있지만 workpiece가 매 씬 다른
+# xy/yaw에 놓이므로 mode="targetbody"가 알아서 따라간다).
+_NAMED_CAMERAS = {"peg_in_hole": "top_cam", "tacker": "top_cam"}
 
 
 def _camera_for(task_name: str, sim):
-    if task_name == "peg_in_hole":
-        return "top_cam"
+    if task_name in _NAMED_CAMERAS:
+        return _NAMED_CAMERAS[task_name]
     cam = mujoco.MjvCamera()
     cam.lookat = [0, 0, 0.08]
     cam.distance = 0.35
@@ -50,7 +55,7 @@ def _camera_for(task_name: str, sim):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--task", type=str, required=True, choices=["peg_in_hole", "cap_twist"])
+    parser.add_argument("--task", type=str, required=True, choices=list_tasks())
     parser.add_argument("--episode-path", type=str, required=True)
     parser.add_argument("--out", type=str, default="./episode.mp4")
     parser.add_argument("--width", type=int, default=640)
