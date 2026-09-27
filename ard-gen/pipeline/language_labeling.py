@@ -1,5 +1,15 @@
 """ARD-Gen 5단계: force/torque profile로 자연어 지시문을 생성한다 (태스크 무관).
 
+## language 필드가 dict인 이유 (role_labels)
+
+이 파일이 생성하는 episode["language"]는 문장 하나가 아니라
+{"task_instruction": str, "role_labels": {...}, "quantity_target": ...,
+"direction": ...} dict다(pipeline/episode_io.py 스키마 참고).
+role_labels는 ARD-VLA의 role classifier(어느 팔이 Actuator/Stabilizer
+인지 구분하는 모델) 학습에 쓰이는 필드라서, 문장과 별개로 항상 채워야
+한다 -- episode에 left_arm이 있으면(3단계 Stabilizer 지원 태스크)
+{"right_arm":"actuator","left_arm":"stabilizer"}, 없으면 오른팔만.
+
 ## 템플릿 기반으로 구현한 이유 (Claude API 대신)
 
 지금은 파이프라인이 0->1->2->4->5까지 끝까지 도는지를 확인하는 단계다 --
@@ -83,6 +93,32 @@ def make_language(
     return template.format(**fields)
 
 
+def make_language_record(
+    episode: dict,
+    language_cfg: dict,
+    low_thresh: float,
+    high_thresh: float,
+    template_idx: int,
+) -> dict:
+    """episode_io.py의 language 스키마(dict)를 만든다. make_language()가
+    만드는 문장(task_instruction) 외에, ARD-VLA의 role classifier 학습에
+    쓰일 role_labels(왼팔/오른팔이 각각 어떤 역할인지)와, 언어 라벨의
+    구조화된 값(quantity_target/direction, episode에 없으면 None)을
+    함께 담는다 -- role_labels는 episode에 left_arm이 있는지(3단계
+    Stabilizer 지원 태스크인지)로 자동 결정되므로 태스크마다 따로 지정할
+    필요가 없다."""
+    text = make_language(episode, language_cfg, low_thresh, high_thresh, template_idx)
+    role_labels = {"right_arm": episode.get("right_arm", {}).get("role", "actuator")}
+    if episode.get("left_arm") is not None:
+        role_labels["left_arm"] = episode["left_arm"].get("role", "stabilizer")
+    return {
+        "task_instruction": text,
+        "role_labels": role_labels,
+        "quantity_target": episode.get("quantity"),
+        "direction": episode.get("direction"),
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", type=str, default="peg_in_hole", choices=list_tasks())
@@ -114,14 +150,20 @@ def main() -> None:
     )
 
     bucket_counts = {"gentle": 0, "normal": 0, "firm": 0}
+    sample_records = []
     for i, (path, episode) in enumerate(zip(paths, episodes)):
-        language = make_language(episode, language_cfg, low_thresh, high_thresh, template_idx=i)
-        save_language(path, language)
+        record = make_language_record(episode, language_cfg, low_thresh, high_thresh, template_idx=i)
+        save_language(path, record)
         if episode.get("force_max") is not None:
             bucket_counts[_intensity_bucket(episode["force_max"], low_thresh, high_thresh)] += 1
+        if i < 3:
+            sample_records.append(record)
 
     print(f"[language_labeling] 강도 분포: {bucket_counts}")
     print(f"[language_labeling] {len(paths)}개 에피소드에 language 필드 추가 완료")
+    print("[language_labeling] 샘플:")
+    for r in sample_records:
+        print(f"  {r}")
 
 
 if __name__ == "__main__":

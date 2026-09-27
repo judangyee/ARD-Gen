@@ -275,6 +275,17 @@ class CapTwistEnv(BaseTaskEnv):
             self._stabilizer, sim.model, sim.data, N_SUBSTEPS
         )
 
+        # 4단계(LeRobotDataset 변환 등)가 쓸 수 있는 실제 스텝별 궤적을
+        # peg_in_hole과 같은 관례(ee_poses/actions/torques)로 남긴다 --
+        # 예전엔 스칼라 요약(accumulated_rotation 등)만 반환해서, 이
+        # 태스크의 right_arm 궤적이 filter_episodes.py에서 통째로 빈
+        # 배열이 되는 문제가 있었다(오른팔 학습 데이터가 사실상 없는 셈).
+        # 스칼라라 D=1일 뿐, peg_in_hole의 (T+1,D)/(T,D) 관례와 형태만
+        # 맞춘다.
+        angle_history: list[np.ndarray] = [np.array([sim.get_angle()], dtype=np.float32)]
+        omega_history: list[np.ndarray] = []
+        torque_history: list[np.ndarray] = []
+
         for step_count in range(1, MAX_STEPS + 1):
             tau = sim.get_torque()
             max_torque = max(max_torque, abs(tau))
@@ -294,6 +305,10 @@ class CapTwistEnv(BaseTaskEnv):
             self.step(target_angle)
             if self._stabilizer is not None:
                 left_arm_traj.append(self._stabilizer.ee_pos)
+
+            omega_history.append(np.array([omega], dtype=np.float32))
+            torque_history.append(np.array([tau], dtype=np.float32))
+            angle_history.append(np.array([sim.get_angle()], dtype=np.float32))
 
             actual_angle = sim.get_angle()
             forward_progress = actual_angle * direction
@@ -338,6 +353,15 @@ class CapTwistEnv(BaseTaskEnv):
             "direction": "cw" if target_rotation >= 0 else "ccw",
             "quantity": round(abs(turns) * 2) / 2,  # 반바퀴 단위로 반올림
             "stabilizer_grasped": bool(self._stabilizer.grasped) if self._stabilizer is not None else None,
+            # peg_in_hole과 같은 키 이름("ee_poses"/"actions"/"torques")을 그대로
+            # 쓴다 -- pipeline/filter_episodes.py가 태스크를 몰라도
+            # result.get("ee_poses", ...) 식으로 이미 이 이름들을 찾고 있어서,
+            # 이름만 맞추면 그 코드를 하나도 안 고쳐도 된다. "forces"는 이
+            # 태스크에 선형 힘 센서가 없어 항상 빈 배열로 남는다(정직한 반영,
+            # 억지로 안 채움).
+            "ee_poses": np.stack(angle_history).astype(np.float32),
+            "actions": np.stack(omega_history).astype(np.float32) if omega_history else np.zeros((0, 1), dtype=np.float32),
+            "torques": np.stack(torque_history).astype(np.float32) if torque_history else np.zeros((0, 1), dtype=np.float32),
         }
         if self._stabilizer is not None:
             result["left_arm_traj"] = np.stack(left_arm_traj).astype(np.float32)

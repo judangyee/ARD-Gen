@@ -13,7 +13,8 @@ left_arm으로 실어 나른다. stabilizer 절이 없는 태스크는 여전히
             "role": "stabilizer",
         },
         "right_arm": {
-            "traj": (T+1, D) ndarray,    # ee_poses
+            "traj": (T+1, D) ndarray,    # ee_poses (관측/state)
+            "action": (T, A) ndarray,    # 매 스텝 실제 제어 명령 (LeRobotDataset의 action)
             "gain_names": ["Kp_xy", "Kd_xy"],  # 태스크마다 개수/이름이 다름
             "gains": (len(gain_names),) ndarray,
             "force": (T, 3) ndarray,
@@ -24,7 +25,12 @@ left_arm으로 실어 나른다. stabilizer 절이 없는 태스크는 여전히
         "success": True,
         "insertion_depth": float,        # 있으면 저장(태스크마다 없을 수도 있음)
         "force_max": float,
-        "language": str | None,         # 5단계에서 채워짐, 그 전엔 없음
+        "language": {                    # 5단계에서 채워짐, 그 전엔 없음(dict, JSON으로 저장)
+            "task_instruction": str,       # 템플릿으로 생성한 자연어 문장
+            "role_labels": {"right_arm": "actuator", "left_arm": "stabilizer"},  # left_arm 있을 때만
+            "quantity_target": float | None,
+            "direction": str | None,
+        },
         # 그 외 태스크별 스칼라 필드(예: 회전 태스크의 "direction", "quantity")도
         # 최상위에 그대로 넣으면 자동으로 저장/복원된다 -- 아래 참고.
     }
@@ -75,6 +81,7 @@ def save_episode(path: str, episode: dict[str, Any]) -> None:
     kwargs: dict[str, Any] = {
         "task": np.array(episode.get("task", "peg_in_hole")),
         "right_arm_traj": np.asarray(right["traj"], dtype=np.float32),
+        "right_arm_action": np.asarray(right.get("action", np.zeros((0, 1), dtype=np.float32)), dtype=np.float32),
         "right_arm_gain_names": np.array(json.dumps(list(gain_names))),
         "right_arm_gains": np.asarray(right["gains"], dtype=np.float32),
         "right_arm_force": np.asarray(right["force"], dtype=np.float32),
@@ -88,7 +95,12 @@ def save_episode(path: str, episode: dict[str, Any]) -> None:
     if episode.get("force_max") is not None:
         kwargs["force_max"] = np.array(episode["force_max"], dtype=np.float32)
     if episode.get("language") is not None:
-        kwargs["language"] = np.array(episode["language"])
+        # 5단계(ARD-VLA role classifier 학습용 role_labels 포함)부터
+        # language는 dict다 -- JSON 문자열로 직렬화해서 저장한다(scene_config와
+        # 같은 패턴). 옛 호출자가 plain string을 넘기는 경우도 그대로
+        # json.dumps하면 문자열의 JSON 인코딩이 되므로 load_episode()가
+        # json.loads로 똑같이 복원할 수 있어 하위호환된다.
+        kwargs["language"] = np.array(json.dumps(episode["language"]))
     # 3단계(Stabilizer, 왼팔): 있으면만 저장한다(단일팔 전용으로 생성된
     # 옛 에피소드/태스크와도 호환). right_arm과 달리 게인/force/torque가
     # 없다 -- Stabilizer는 게인 탐색도 힘 측정도 안 하는 순수 기하 제어라서.
@@ -114,6 +126,7 @@ def load_episode(path: str) -> dict[str, Any]:
         "task": str(data["task"]) if "task" in data.files else "peg_in_hole",
         "right_arm": {
             "traj": data["right_arm_traj"],
+            "action": data["right_arm_action"] if "right_arm_action" in data.files else np.zeros((0, 1), dtype=np.float32),
             "gain_names": gain_names,
             "gains": data["right_arm_gains"],
             "force": data["right_arm_force"],
@@ -128,7 +141,7 @@ def load_episode(path: str) -> dict[str, Any]:
     if "force_max" in data.files:
         episode["force_max"] = float(data["force_max"])
     if "language" in data.files:
-        episode["language"] = str(data["language"])
+        episode["language"] = json.loads(str(data["language"]))
     if "left_arm_traj" in data.files:
         episode["left_arm"] = {
             "traj": data["left_arm_traj"],
@@ -142,8 +155,9 @@ def load_episode(path: str) -> dict[str, Any]:
     return episode
 
 
-def save_language(path: str, language: str) -> None:
-    """기존 에피소드 npz를 읽어서 language 필드만 채워 다시 저장한다."""
+def save_language(path: str, language: dict[str, Any]) -> None:
+    """기존 에피소드 npz를 읽어서 language 필드(dict, 위 모듈 docstring
+    스키마)만 채워 다시 저장한다."""
     episode = load_episode(path)
     episode["language"] = language
     save_episode(path, episode)

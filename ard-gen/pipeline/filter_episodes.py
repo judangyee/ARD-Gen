@@ -1,14 +1,23 @@
-"""ARD-Gen 4단계: 궤적 실행 & 필터링 (태스크 무관, 지금은 Actuator 단독).
-
-Stabilizer(왼팔)는 이번 검증 범위에서 완전히 제외한다 -- PIPELINE.md
-"지금은 Actuator 단일 팔로만 파이프라인 검증 중" 참고. 원래 4단계는
-"Actuator + Stabilizer 궤적을 같은 시뮬레이션에서 동시에 재생"하는
-단계지만, 왼팔이 아직 없으므로 지금은 Actuator 궤적만 실행한다.
+"""ARD-Gen 4단계: 궤적 실행 & 필터링 (태스크 무관, 3단계 완료 후 양팔).
 
 흐름: 1단계(태스크의 sample_scene_config)로 씬을 뽑고 -> 2-B(diffusion_gains)
-로 그 씬에 맞는 게인을 생성 -> env.run_episode()로 Actuator를 실행 ->
-성공 여부(run_episode가 이미 판정)로 필터링 -> 성공한 에피소드만
-data/episodes/에 개별 npz로 저장한다.
+로 그 씬에 맞는 Actuator 게인을 생성 -> env.run_episode()가 같은 물리
+시뮬레이션 안에서 Stabilizer(3단계, tasks/*.yaml에 stabilizer 절이 있으면
+sim.task_registry.TaskConfig.make_env()가 자동으로 붙임)와 Actuator를
+동시에 실행 -> 성공 여부로 필터링 -> 성공한 에피소드만 저장한다.
+
+## success 판정은 Actuator 것 하나뿐이고, 그걸로 충분한 이유
+
+`env.run_episode()`가 돌려주는 `success`는 Actuator(right_arm)의 자체
+판정(예: insertion_depth>=target, 회전 목표 도달)이다 -- Stabilizer
+전용 성공 조건은 따로 없고 필요도 없다. 왼팔과 오른팔이 **같은
+MjModel/MjData를 공유**해서 물리적으로 이미 하나로 얽혀 있기 때문에,
+Stabilizer가 물체를 제대로 못 붙잡으면 물체가 밀리거나 같이 돌아가고,
+그 결과가 곧바로 Actuator 쪽 성공 판정(삽입 깊이/회전 진행도)에 반영된다
+-- 3단계 검증에서 실측으로 확인한 그대로다(자유물체 전환만으로 성공률이
+떨어지고 Stabilizer를 붙이면 다시 올라가는 걸 직접 측정했다, PIPELINE.md
+3단계 참고). 즉 "Stabilizer 실패로 인한 간접 실패"를 따로 코드로 챙길
+필요가 없다 -- 이미 물리를 통해 자연스럽게 반영된다.
 
 --task로 태스크를 고른다(sim/task_registry.py) -- 게인 이름/개수, sim
 모듈 어느 것도 이 파일에 하드코딩돼 있지 않다.
@@ -17,10 +26,17 @@ data/episodes/에 개별 npz로 저장한다.
 5단계(언어 라벨링)의 출력물이 VLA 학습 데이터 자체이므로, 실패한 시도를
 남겨봐야 학습에 쓸 수 없어서다.
 
+## 태스크별 디렉터리로 분리하는 이유
+
+`--out-dir`를 안 주면 `./data/episodes/{task}/`에 저장한다(태스크별로
+섞이지 않게) -- 여러 태스크를 순서대로 돌려서 하나의 데이터셋을 만들 때,
+이전 태스크의 episode_*.npz가 다음 태스크 실행 때 지워지는(아래 "매
+실행마다 out-dir을 비운다" 참고) 사고를 막는다.
+
 사용 예:
-    python pipeline/filter_episodes.py --task peg_in_hole --n-scenes 100 --scene-seed 42 \
-        --diffusion-path ./data/bootstrap/diffusion_gains.pt \
-        --out-dir ./data/episodes
+    python pipeline/filter_episodes.py --task peg_in_hole --n-scenes 260 --scene-seed 42 \
+        --diffusion-path ./data/bootstrap/diffusion_gains.pt
+    # -> ./data/episodes/peg_in_hole/episode_*.npz
 """
 from __future__ import annotations
 
@@ -63,18 +79,22 @@ def parse_args() -> argparse.Namespace:
         "매 실행마다 뽑히는 게인이 달라져 성공/실패 결과가 재현되지 않는다",
     )
     parser.add_argument("--diffusion-path", type=str, default="./data/bootstrap/diffusion_gains.pt")
-    parser.add_argument("--out-dir", type=str, default="./data/episodes")
+    parser.add_argument(
+        "--out-dir", type=str, default=None,
+        help="생략하면 ./data/episodes/{task}/ (태스크별 분리, 위 docstring 참고)",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     task = load_task_config(args.task)
-    os.makedirs(args.out_dir, exist_ok=True)
+    out_dir = args.out_dir or os.path.join("./data/episodes", args.task)
+    os.makedirs(out_dir, exist_ok=True)
 
     # 이전 실행의 episode_*.npz가 남아있으면 이번 결과와 섞여서 개수/내용이
     # 헷갈리므로, 매 실행마다 out-dir을 비우고 새로 채운다.
-    for stale in glob.glob(os.path.join(args.out_dir, "episode_*.npz")):
+    for stale in glob.glob(os.path.join(out_dir, "episode_*.npz")):
         os.remove(stale)
 
     torch.manual_seed(args.sample_seed)
@@ -100,6 +120,7 @@ def main() -> None:
             "task": task.name,
             "right_arm": {
                 "traj": result.get("ee_poses", np.zeros((0,), dtype=np.float32)),
+                "action": result.get("actions", np.zeros((0, 1), dtype=np.float32)),
                 "gain_names": task.gain_names,
                 "gains": task.gains_to_vector(gains),
                 "force": result.get("forces", np.zeros((0, 3), dtype=np.float32)),
@@ -130,13 +151,13 @@ def main() -> None:
             if isinstance(value, (int, float, bool, str)):
                 episode[key] = value
 
-        out_path = os.path.join(args.out_dir, f"episode_{n_success:04d}.npz")
+        out_path = os.path.join(out_dir, f"episode_{n_success:04d}.npz")
         save_episode(out_path, episode)
         n_success += 1
 
     print(
         f"[filter_episodes] task={task.name} 씬 {args.n_scenes}개 중 {n_success}개 성공 "
-        f"({n_success / args.n_scenes:.1%}) -> {args.out_dir}"
+        f"({n_success / args.n_scenes:.1%}) -> {out_dir}"
     )
 
 

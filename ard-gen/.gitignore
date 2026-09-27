@@ -7,6 +7,9 @@ bootstrap/demonstrations.npz
 bootstrap/policy.pt
 data/bootstrap/*.npz
 data/bootstrap/*.pt
+data/bootstrap/*.png
 data/episodes/*.npz
+data/episodes/*/*.npz
+data/lerobot/
 screw_driving_*.mp4
 assets/_gain_search_tmp_*.xml

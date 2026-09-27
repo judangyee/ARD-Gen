@@ -318,83 +318,138 @@ kp 버그 수정 참고. 게인 탐색을 씬 60개로 늘려 돌린 값이라 �
 > 아니다 — "2단계 리팩토링 결과물이 그 사이 추가로 안 깨졌다"만 보증한다
 > (자세한 설명은 그 파일 docstring에 추가해뒀다).
 
-### 4단계 — 동시 실행 & 필터링 ✅ 완료 (3단계 이후 Actuator+Stabilizer 동시 실행)
+### 4단계 — 동시 실행 & 필터링 ✅ 완료 (규모를 키워 정식 데이터셋 생성까지 완료)
 
 설계대로 "Actuator + Stabilizer 궤적을 같은 시뮬레이션에서 동시에 재생"한다
-(3단계 완료로 실현됨, 위 3단계의 "4. 양팔 통합" 절 참고). 아래는 3단계
-이전(Actuator 단독) 시절 최초 실행 기록으로, 재현성 이슈 발견/수정
-경위 등은 여전히 유효해 남겨둔다.
+(3단계 완료로 실현됨, 위 3단계의 "4. 양팔 통합" 절 참고). 이번에 200개+
+규모로 다시 돌려서 실제로 쓸 만한 학습 데이터셋을 만들었다.
 
 - 구현 위치: `pipeline/filter_episodes.py`
-- 흐름: 1단계로 씬 샘플링 → 2-B diffusion으로 그 씬의 게인 생성 →
-  `sim/peg_in_hole_sim.py`의 `run_episode()`로 Actuator 실행 →
-  `insertion_depth` 기준 성공 여부(`run_episode()`가 이미 판정)로 필터링
-  → 성공한 것만 저장.
-- 저장 포맷: `LeRobotDataset`이 아니라 지금도 `pipeline/episode_io.py`가
-  정의한 단순 npz 포맷(`data/episodes/episode_NNNN.npz`)이다 — 3단계
-  완료로 이제 `{"left_arm": {"traj","role":"stabilizer"}, "right_arm":
-  {"traj","gains","force","torque","role":"actuator"}, "scene_config",
-  "success", "insertion_depth", "force_max"}` 구조(왼팔은 stabilizer 절이
-  있는 태스크만)를 평탄화해서 저장한다. 진짜 LeRobotDataset 변환 자체는
-  여전히 별도 작업으로 남아있다(이번 3단계 요청 범위 밖).
+- 흐름: 1단계로 씬 샘플링 → 2-B diffusion으로 그 씬의 Actuator 게인 생성
+  → `env.run_episode()`가 같은 물리에서 Stabilizer(3단계)와 Actuator를
+  동시 실행 → **Actuator 자체의 성공 판정 하나로 필터링**(Stabilizer
+  전용 판정은 따로 두지 않는다 -- 두 팔이 같은 MjModel/MjData를 공유해서
+  물리적으로 이미 하나로 얽혀 있으므로, Stabilizer가 못 버티면 그 결과가
+  곧바로 Actuator의 성공 판정에 반영된다는 걸 3단계에서 실측으로 이미
+  확인했다) → 성공한 것만 저장.
+- **태스크별 디렉터리 분리**: `--out-dir`를 생략하면 이제
+  `./data/episodes/{task}/`에 저장한다(이전엔 `./data/episodes/`
+  플랫 구조라 여러 태스크를 순서대로 돌리면 서로 지워졌다).
+- **cap_twist의 실제 스텝별 궤적이 비어 있던 문제를 이번에 고쳤다**:
+  `sim/cap_twist_env.py`의 `run_episode()`가 스칼라 요약값만 반환해서,
+  `right_arm.traj/action/torque`가 전부 빈 배열로 저장되고 있었다(오른팔
+  학습 데이터가 사실상 없는 셈이었음) -- peg_in_hole과 같은 키 이름
+  (`ee_poses`/`actions`/`torques`)으로 매 스텝 cap 각도/각속도 명령/토크를
+  기록하도록 고쳤다. `pipeline/filter_episodes.py`/`episode_io.py`도
+  `right_arm.action`(매 스텝 실제 제어 명령, LeRobotDataset의
+  `action`에 대응)을 새로 저장/복원하도록 확장했다 -- 이것도 이전엔
+  아예 저장되지 않고 있었다.
+- 저장 포맷은 여전히 `pipeline/episode_io.py`가 정의한 npz 구조다:
+  `{"task", "left_arm": {"traj","role":"stabilizer"} (있으면만),
+  "right_arm": {"traj","action","gains","force","torque","role":"actuator"},
+  "scene_config", "success", "language": {...} (5단계에서 채움)}`.
 - 실패 에피소드는 2-A/2-B와 달리 **보관하지 않는다**(완성 데이터로 못
   쓰므로).
-- **재현성 이슈 발견 및 수정**: 처음 실행에서 같은 `--scene-seed`인데도
-  실행할 때마다 성공률이 81%/85%로 달라지는 걸 발견했다 — 원인은
-  diffusion의 reverse sampling이 torch의 전역 RNG를 시드 고정 없이
-  써서, 씬은 같아도 매번 다른 게인이 뽑혔기 때문. `--sample-seed`
-  인자를 추가해 `torch.manual_seed()`로 고정한 뒤 동일 시드로 두 번
-  실행해 84%/84%로 재현되는 걸 확인했다.
-- **실제 실행 결과** (`--n-scenes 100 --scene-seed 42 --sample-seed 0`):
-  **84/100 성공 (84.0%)** — 2-B 검증 때의 84~86%와 일치하는 범위.
 
-### 5단계 — LLM 기반 언어 라벨링 ⚠️ 부분 구현 (템플릿 기반)
+**실제 실행 결과** (`--scene-seed 42 --sample-seed 0`, 재현성 고정):
+
+| | peg_in_hole | cap_twist |
+|---|---|---|
+| 시도한 씬 | 280 | 210 |
+| 성공(=최종 에피소드 수) | **232개** (82.9%) | **209개** (99.5%) |
+| 저장 위치 | `data/episodes/peg_in_hole/` | `data/episodes/cap_twist/` |
+
+### 5단계 — LLM 기반 언어 라벨링 ✅ 완료 (템플릿 기반, role_labels 포함으로 확장)
 
 원래 설계는 "성공한 궤적의 force/torque profile을 LLM에 넘겨 자연어
-지시문으로 변환(토크 부호→회전 방향, 회전수→수량, 최대 접촉력→강도)"이지만,
-지금은 **템플릿 기반**으로 구현했다. 강도(intensity)/방향(direction)/
-수량(quantity) 세 어휘 축 모두 지원하지만, 실제로 어느 축을 쓰는지는
-`tasks/{name}.yaml`의 `language` 절이 정한다 -- peg_in_hole은 강도만
-(direction_words/quantity_words가 비어 있음), cap_twist는 방향+수량만
-(intensity_words가 비어 있음, force/torque가 아니라 목표 회전각 부호/
-크기로 정해지므로) 쓴다.
+지시문으로 변환"이지만, 지금도 **템플릿 기반**으로 구현돼 있다(이유는
+아래). 이번에 `episode["language"]`를 문자열이 아니라 dict로 확장했다
+-- ARD-VLA의 role classifier(어느 팔이 Actuator/Stabilizer인지 구분하는
+모델) 학습에 `role_labels`가 필요해서다:
+
+```python
+episode["language"] = {
+    "task_instruction": "오른손으로 peg를 구멍에 살짝 삽입하라.",
+    "role_labels": {"right_arm": "actuator", "left_arm": "stabilizer"},
+    "quantity_target": 2.0,   # cap_twist만(회전수), peg_in_hole은 None
+    "direction": "cw",         # cap_twist만, peg_in_hole은 None
+}
+```
+
+`role_labels`는 `episode`에 `left_arm`이 있는지(3단계 Stabilizer 지원
+태스크인지)로 자동 결정되므로 태스크마다 따로 지정할 필요가 없다.
+`pipeline/episode_io.py`는 이 dict를 JSON 문자열로 직렬화해서 저장한다
+(scene_config와 같은 패턴).
 
 - 구현 위치: `pipeline/language_labeling.py`
-- **Claude API 대신 템플릿을 쓴 이유**:
-  1. 지금은 "지시문이 자연스러운가"가 아니라 "language 필드가 파이프라인
-     끝까지 채워져서 나오는가"를 확인하는 단계라 템플릿으로 충분하다.
-  2. 오프라인/재현 가능해야 하는데(설계 원칙 2: 계산 비용이 싼 방법부터),
-     지금 단계에서 API 호출은 과한 비용이다.
-  3. 지금 두 태스크가 표현할 정보 조합(강도 하나, 또는 방향+수량)이
-     여전히 단순하다 -- 조합이 훨씬 다양해지는 태스크가 생기면 그때
-     Claude API로 바꾸는 게 맞다고 본다.
+- **Claude API 대신 템플릿을 쓴 이유**(유지): 두 태스크가 표현할 정보
+  조합(강도 하나, 또는 방향+수량)이 여전히 단순해서 템플릿으로 충분하고,
+  오프라인/재현 가능해야 하기 때문 -- 조합이 훨씬 다양해지는 태스크가
+  생기면 그때 바꾸는 게 맞다고 본다.
 - 강도어(살짝/적당한 힘으로/힘있게)는 **그때그때 episodes의 force_max
-  33/66 백분위수**로 정한다(하드코딩된 절대값이 아님) — 씬/게인 분포가
-  바뀌면 force_max 스케일 자체가 달라지므로.
-- **peg_in_hole 실제 실행 결과**(단일팔 시절, 84개 에피소드): force_max 범위 [0.5, 480.4]N,
-  강도 경계 44.2N/86.7N, 강도 분포 gentle 28 / normal 27 / firm 29건
-  (거의 균등 — 백분위수 기반이라 당연한 결과). 생성된 문장 예:
-  "오른손으로 peg를 구멍에 살짝 삽입하라.", "오른팔을 이용해 페그를
-  구멍 안으로 힘있게 밀어 넣어라."
+  33/66 백분위수**로 정한다.
 
-최종 산출물(3단계 완료 후 현재 버전): **왼팔(left_arm, Stabilizer 궤적) +
-오른팔(right_arm 궤적/게인) + force/torque + 언어**가 모두 포함된 양팔
-에피소드(`data/episodes/episode_*.npz`) — 위 실측 수치는 아래 3단계
-절의 최신(양팔) 결과를 참고. 이 문단의 84개는 3단계 이전(단일팔) 시절
-기록으로 남겨둔다.
+**실제 실행 결과**:
+
+| | peg_in_hole (232개) | cap_twist (209개) |
+|---|---|---|
+| force_max 범위 | [0.5, 148.7]N | (없음 -- 이 태스크는 강도어를 안 씀) |
+| 강도 경계(33/66 백분위) | 22.1N / 53.1N | — |
+| 강도/방향 분포 | gentle 77 / normal 76 / firm 79 | direction/quantity 조합별로 분산 |
+| 샘플 | "오른손으로 peg를 구멍에 힘있게 삽입하라." | "뚜껑을 시계방향으로 2.0바퀴 돌려라." |
+| role_labels | `{"right_arm":"actuator","left_arm":"stabilizer"}` (전체 232개 동일) | 〃 (전체 209개 동일) |
+
+두 태스크 다 **232/232, 209/209 전부 언어 라벨링까지 완성**됐다(5단계
+에서는 탈락이 없다 -- 이미 성공한 에피소드만 들어오므로 당연함).
+
+### LeRobotDataset 변환 — `pipeline/to_lerobot.py` (신규)
+
+완성된 에피소드를 LeRobotDataset 호환 포맷으로 변환한다. **"호환"이지
+"동일"은 아니다**(정직하게 밝힘) -- 이 환경엔 `lerobot`/`pandas`/`pyarrow`
+가 없어서, 실제 parquet 대신 **같은 컬럼/메타데이터 스키마를 가진
+npz**로 프레임 데이터를 저장한다. 디렉터리 레이아웃(`meta/info.json`,
+`meta/episodes.jsonl`, `meta/tasks.jsonl`, `data/chunk-000/episode_*.npz`)
+과 필드 이름(`observation.state`, `action`, `episode_index`,
+`frame_index`, `timestamp`, `task_index`)은 LeRobotDataset v2.x를
+최대한 따랐다 -- pyarrow가 있는 환경으로 옮기면 이 npz들을 데이터프레임화
+해서 parquet으로 다시 쓰기만 하면 된다.
+
+- **태스크별 별도 데이터셋**: peg_in_hole/cap_twist는 관측/행동 차원
+  자체가 달라서(전자 7/3차원, 후자 4/1차원) `data/lerobot/{task}/`에
+  독립 데이터셋을 만든다.
+- **state/action 구성**: state = 오른팔 관측(right_arm.traj) + 왼팔
+  관측(left_arm.traj, 있으면) 이어붙인 벡터. 왼팔 궤적은 접근 단계가 있어
+  더 기므로, 오른팔과 동시에 기록된 **뒤쪽 구간만 잘라서** 길이를 맞춘다.
+  action = right_arm.action(매 스텝 실제 제어 명령).
+- **fps=100**: 두 태스크 다 제어 주기 DT=N_SUBSTEPS(5)×timestep(0.002s)
+  =0.01s로 동일(실측 확인).
+
+**실제 변환/검증 결과**:
+
+| | peg_in_hole | cap_twist |
+|---|---|---|
+| 총 에피소드 | 232 | 209 |
+| 총 프레임 | 30,842 | 82,758 |
+| state_dim (names) | 7 (`right_ee_x/y/z`, `right_wrist_rotate`, `left_ee_x/y/z`) | 4 (`cap_angle_rad`, `left_ee_x/y/z`) |
+| action_dim (names) | 3 (`delta_x/y/z`) | 1 (`omega_command_rad_s`) |
+| 고유 task_instruction 수 | 9 | 16 |
+
+episode 0/중간/마지막을 `load_lerobot_episode()`로 직접 로드해서 shape이
+`(length, state_dim)`/`(length, action_dim)`으로, `meta/episodes.jsonl`의
+`length`와 정확히 일치하는 것까지 실측 확인했다.
 
 ### 파이프라인 오케스트레이션: `run_pipeline.py`
 
 0→1→2-A→2-B→4→5단계를 한 번에 실행하는 드라이버. 0/2단계 산출물(seed,
 bootstrap dataset, diffusion 체크포인트)은 이미 있으면 재사용하고
-`--force-seed`/`--force-bootstrap`/`--force-diffusion`로만 다시 만든다
-(비용이 드는 단계라서). 4/5단계(episode 생성 + 라벨링)는 지금 실제로
-검증하려는 부분이라 매번 새로 실행한다. 마지막에 최종 에피소드 수와
-샘플 몇 개를 자세히 출력한다.
+`--force-seed`/`--force-bootstrap`/`--force-diffusion`로만 다시 만든다.
+`pipeline/to_lerobot.py`는 아직 이 드라이버에 편입하지 않았다(4/5단계
+출력을 그대로 입력받는 후처리 단계라 필요할 때 따로 돌리면 된다).
 
-**실제 실행 결과**: 씬 100개 시도 → 84개 성공(4단계) → 84개 전부
-언어 라벨링까지 완성(5단계에서 탈락 없음, 이미 성공한 것만 넘기므로
-당연함) → **최종 84개의 완성된 에피소드**.
+**최종 산출물**: peg_in_hole **232개**, cap_twist **209개**, 총 441개의
+`left_arm`+`right_arm`+`language`(role_labels 포함)가 모두 채워진 완성
+에피소드 (`data/episodes/{task}/episode_*.npz`), 그리고 각각의
+LeRobotDataset 호환 변환본(`data/lerobot/{task}/`).
 
 ## 검증 태스크
 
@@ -424,15 +479,18 @@ bootstrap dataset, diffusion 체크포인트)은 이미 있으면 재사용하�
 | 2-A (게인 부트스트래핑) | `pipeline/bootstrap.py`, `data/bootstrap/` | ✅ 완료 |
 | 2-B (diffusion) | `pipeline/diffusion_gains.py`, `data/bootstrap/diffusion_gains.pt` | ✅ 완료 |
 | 3단계 (Stabilizer 기하 변환) | `sim/stabilizer.py`, `pipeline/stabilizer_augment.py` | ✅ 완료 |
-| 4단계 (동시 실행 & 필터링) | `pipeline/filter_episodes.py`, `pipeline/episode_io.py`, `data/episodes/` | ✅ 완료 (양팔 동시 실행, `left_arm`+`right_arm`) |
-| 5단계 (언어 라벨링) | `pipeline/language_labeling.py` | ⚠️ 부분 구현 (템플릿 기반, LLM 아님 -- 이유는 해당 절 참고) |
-| 파이프라인 오케스트레이션 | `run_pipeline.py` | ✅ 완료 (--task로 태스크 선택) |
+| 4단계 (동시 실행 & 필터링) | `pipeline/filter_episodes.py`, `pipeline/episode_io.py`, `data/episodes/{task}/` | ✅ 완료 (양팔 동시 실행, 232+209개 정식 데이터셋) |
+| 5단계 (언어 라벨링) | `pipeline/language_labeling.py` | ✅ 완료 (템플릿 기반 + role_labels, LLM 전환은 보류 -- 이유는 해당 절 참고) |
+| LeRobotDataset 변환 | `pipeline/to_lerobot.py`, `data/lerobot/{task}/` | ✅ 완료 (npz 기반 호환 스키마 -- 정확한 범위는 해당 절 참고) |
+| 파이프라인 오케스트레이션 | `run_pipeline.py` | ✅ 완료 (--task로 태스크 선택, to_lerobot은 미편입) |
 
 지금 저장소(`ard-gen/`)는 peg_in_hole/cap_twist 두 태스크 모두 **왼팔
 (Stabilizer)+오른팔(Actuator)이 같은 물리 시뮬레이션에서 동시에 실행되는
-0→1→2-A→2-B→4→5단계 전체**가 끝까지 도는 것까지 검증 완료한 상태다.
-남은 것: 5단계를 실제 LLM 기반으로 바꾸는 것(현재는 표현할 정보 조합이
-단순해 템플릿으로 충분하다고 판단해 보류 중), `LeRobotDataset` 형식으로의
-최종 변환, 그리고 peg_in_hole 3단계에서 발견된 "고부하 경계선 케이스
-4/28건" 잔여 실패의 근본 개선(현재는 정직하게 실패로 남겨둠, 위 3단계
+0→1→2-A→2-B→4→5단계 + LeRobotDataset 변환까지** 정식 규모(232/209개
+에피소드)로 끝까지 도는 것을 검증 완료한 상태다. 남은 것: 5단계를 실제
+LLM 기반으로 바꾸는 것(현재는 표현할 정보 조합이 단순해 템플릿으로
+충분하다고 판단해 보류 중), 진짜 `lerobot`/`pandas`/`pyarrow` 패키지가
+있는 환경에서의 parquet 변환 검증(지금은 스키마만 호환, 위 LeRobotDataset
+절 참고), 그리고 peg_in_hole 3단계에서 발견된 "고부하 경계선 케이스
+11/142건" 잔여 실패의 근본 개선(현재는 정직하게 실패로 남겨둠, 위 3단계
 절 참고).
