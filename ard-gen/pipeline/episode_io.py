@@ -1,10 +1,17 @@
 """4/5단계 에피소드 저장 포맷(data/episodes/*.npz) 공통 입출력.
 
-에피소드는 논리적으로 다음 구조를 가진다 (지금은 Stabilizer가 없으므로
-right_arm만 채워진다 -- PIPELINE.md의 "지금은 Actuator 단일 팔" 참고):
+에피소드는 논리적으로 다음 구조를 가진다 (3단계 완료 후 left_arm이
+추가됐다 -- tasks/*.yaml에 `stabilizer` 절이 있는 태스크는 env.run_episode()
+가 "left_arm_traj"를 돌려주고, pipeline/filter_episodes.py가 이를
+left_arm으로 실어 나른다. stabilizer 절이 없는 태스크는 여전히 right_arm만
+있는 단일팔 에피소드가 나온다 -- 하위호환):
 
     {
         "task": "peg_in_hole",           # sim.task_registry.TASK_REGISTRY 키
+        "left_arm": {                    # 있으면만(Stabilizer 지원 태스크)
+            "traj": (T', 3) ndarray,     # world-frame EE 위치(접근+유지 전체)
+            "role": "stabilizer",
+        },
         "right_arm": {
             "traj": (T+1, D) ndarray,    # ee_poses
             "gain_names": ["Kp_xy", "Kd_xy"],  # 태스크마다 개수/이름이 다름
@@ -21,6 +28,12 @@ right_arm만 채워진다 -- PIPELINE.md의 "지금은 Actuator 단일 팔" 참�
         # 그 외 태스크별 스칼라 필드(예: 회전 태스크의 "direction", "quantity")도
         # 최상위에 그대로 넣으면 자동으로 저장/복원된다 -- 아래 참고.
     }
+
+    left_arm.traj와 right_arm.traj의 길이(T', T+1)가 다를 수 있다 -- 왼팔은
+    approach 단계가 있고 오른팔은 처음부터 제어를 시작하기 때문이다(자세한
+    이유는 sim/stabilizer.py의 run_approach_phase() docstring 참고). 둘 다
+    "같은 물리 시뮬레이션 안에서 동시에" 기록됐다는 사실은 변하지 않는다
+    -- 시간 정렬이 필요하면 오른팔 쪽 스텝 수(step_count)를 기준으로 삼는다.
 
 리팩토링 이전에는 right_arm_gains가 항상 [Kp_xy, Kd_xy] 고정 2원소
 배열이었다(태스크가 하나뿐이라 이름 없이 순서로만 구분해도 됐음) -- 이제
@@ -48,7 +61,9 @@ from typing import Any
 
 import numpy as np
 
-_FIXED_TOP_LEVEL_KEYS = {"task", "right_arm", "scene_config", "success", "insertion_depth", "force_max", "language"}
+_FIXED_TOP_LEVEL_KEYS = {
+    "task", "right_arm", "left_arm", "scene_config", "success", "insertion_depth", "force_max", "language",
+}
 
 
 def save_episode(path: str, episode: dict[str, Any]) -> None:
@@ -74,6 +89,13 @@ def save_episode(path: str, episode: dict[str, Any]) -> None:
         kwargs["force_max"] = np.array(episode["force_max"], dtype=np.float32)
     if episode.get("language") is not None:
         kwargs["language"] = np.array(episode["language"])
+    # 3단계(Stabilizer, 왼팔): 있으면만 저장한다(단일팔 전용으로 생성된
+    # 옛 에피소드/태스크와도 호환). right_arm과 달리 게인/force/torque가
+    # 없다 -- Stabilizer는 게인 탐색도 힘 측정도 안 하는 순수 기하 제어라서.
+    if episode.get("left_arm") is not None:
+        left = episode["left_arm"]
+        kwargs["left_arm_traj"] = np.asarray(left["traj"], dtype=np.float32)
+        kwargs["left_arm_role"] = np.array(left.get("role", "stabilizer"))
     for key, value in episode.items():
         if key in _FIXED_TOP_LEVEL_KEYS or value is None:
             continue
@@ -107,6 +129,11 @@ def load_episode(path: str) -> dict[str, Any]:
         episode["force_max"] = float(data["force_max"])
     if "language" in data.files:
         episode["language"] = str(data["language"])
+    if "left_arm_traj" in data.files:
+        episode["left_arm"] = {
+            "traj": data["left_arm_traj"],
+            "role": str(data["left_arm_role"]) if "left_arm_role" in data.files else "stabilizer",
+        }
     for key in data.files:
         if not key.startswith("extra_"):
             continue

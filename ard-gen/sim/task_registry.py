@@ -67,6 +67,15 @@ class TaskConfig:
 
     # -- Env 생성 ---------------------------------------------------------
     def make_env(self, **kwargs) -> Any:
+        """tasks/{name}.yaml에 최상위 `stabilizer` 절이 있으면(3단계, 왼팔
+        지원 태스크), Env 생성자에 stabilizer_config로 자동 전달한다 --
+        호출자(cma_search.py 등)가 그 존재를 몰라도 된다. `stabilizer` 절이
+        없는 태스크(향후 단일팔 전용 태스크)의 Env는 이 kwarg를 아예 안
+        받으므로 영향이 없다. 호출자가 명시적으로 stabilizer_config나
+        use_stabilizer를 kwargs로 넘기면 그걸 그대로 쓴다(setdefault)."""
+        stabilizer_cfg = self.raw.get("stabilizer")
+        if stabilizer_cfg is not None:
+            kwargs.setdefault("stabilizer_config", stabilizer_cfg)
         return self.env_class(**kwargs)
 
     # -- 게인 벡터 <-> dict -------------------------------------------------

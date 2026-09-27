@@ -4,15 +4,14 @@
 > 단계가 대부분이며, 실제 구현은 이 문서를 보고 그때그때 요청받은 단계만
 > 진행한다.** 각 단계 구현 후에는 이 문서의 해당 단계 상태를 갱신한다.
 >
-> **현재 상태(중요): 지금은 Actuator(오른팔) 단일 팔로만 파이프라인
-> 전체(0→1→2-A→2-B→4→5)가 끝까지 도는지 검증 중이다. 3단계(Stabilizer)는
-> 이번 검증에서 완전히 스킵했다** — 3단계를 구현하려면 hole 워크피스를
-> world-고정 body에서 왼팔이 쥐는 자유물체로 바꿔야 하고, 그러면 물리가
-> 달라져서 0단계 게인부터 재검증(어쩌면 재탐색)해야 한다는 걸 뒤늦게
-> 깨달았다(자세한 이유는 3단계 섹션 참고). 그래서 그 작업은 미루고, 먼저
-> "Stabilizer 없이도 파이프라인 뼈대(4·5단계 포함)가 끝까지 도는가"부터
-> 확인했다. 지금 4·5단계가 다루는 에피소드는 전부 `right_arm`만 있고
-> `left_arm`은 아직 존재하지 않는다.
+> **현재 상태: 3단계(Stabilizer, 왼팔)까지 완료했다.** hole_socket/bottle을
+> freejoint(자유물체)로 바꾸고, 왼팔을 IK 없는 가상 엔드이펙터 + weld로
+> 구현해서, peg_in_hole/cap_twist 둘 다 이제 `left_arm`+`right_arm`이
+> 모두 있는 진짜 양팔 에피소드를 만든다. `sim.task_registry.TaskConfig.
+> make_env()`가 tasks/*.yaml의 `stabilizer` 절을 보고 자동으로 Stabilizer를
+> 붙이므로, 0→1→2-A→2-B→4→5단계 스크립트 어느 것도 코드를 고칠 필요가
+> 없었다(--task만 그대로 쓰면 양팔로 동작한다). 자세한 내용/실측 수치는
+> 아래 3단계 절 참고.
 
 ## 배경
 
@@ -131,42 +130,142 @@ seed 하나만으로는 diffusion을 학습시킬 수 없으므로 두 단계로
 > diffusion의 학습 데이터를 만드는 것. 실제 구현해보니 서로 재사용할
 > 부분이 없어 별도로 유지한다.
 
-### 3단계 — Stabilizer(왼팔) 증강: 기하 변환 ⬜ 미구현 (이번 검증에서 통째로 스킵)
+### 3단계 — Stabilizer(왼팔) 증강: 기하 변환 ✅ 완료
 
-MimicGen 방식:
-- seed의 Stabilizer 궤적을 물체 기준 좌표계로 저장
-- 새 씬의 물체 포즈에 맞춰 SE(3) 변환을 적용해 왼팔 궤적을 재생성
-- 물리 시뮬레이션이 필요 없어 계산 비용이 가장 낮음
-- 단, 2단계에서 나온 접촉력이 threshold를 넘는 구간에서는 Stabilizer
-  목표 위치에 작은 반발 방향 보정을 추가해 "버티는" 반응을 표현
+#### 1. 물체를 자유물체로 전환
 
-> **왜 미뤘나**: 지금 `assets/peg_in_hole.xml`의 hole 워크피스는 world에
-> 고정된 body다. Stabilizer(왼팔)가 "물체를 고정하는 역할"을 하려면
-> 워크피스가 왼팔이 쥐는 **자유물체**여야 하는데, 그러면 오른팔 삽입 시
-> 반작용력이 왼팔 그립을 거쳐 워크피스에 전달되는 완전히 다른 물리가
-> 된다. 즉 0단계 게인(Kp_xy≈0.000515)이 "워크피스가 절대 안 움직인다"는
-> 가정 위에서 튜닝된 값이라, 3단계를 제대로 구현하려면 **모델 확장(왼팔
-> 추가 + 워크피스를 grasp 가능한 body로 변경) → 오른팔 게인 재검증(필요시
-> CMA-ES 재탐색) → 왼팔 seed 궤적 확보**가 먼저 필요하다. 이 작업은
-> 범위가 커서, 그 전에 "Stabilizer 없이도 4·5단계를 포함한 파이프라인
-> 전체가 도는가"부터 먼저 검증하기로 했다(아래 4·5단계).
+`assets/peg_in_hole.xml`의 `hole_socket`과 `assets/cap_twist.xml`의
+`bottle`을 world-고정 body에서 `<freejoint>`가 있는 자유물체로 바꿨다.
+둘 다 이전엔 "떠받쳐줄 것"이 필요 없었으므로(world에 그냥 고정) 실제로
+충돌하는 테이블면도 이번에 처음 추가했다(각각 `hole_table`/`table` 지오m,
+기존 고정 위치와 정확히 같은 높이에 둬서 초기 낙하 없이 시작한다).
+`hole_socket`/`bottle`이 이제 `<inertial>`을 명시적으로 갖는다. 또한
+"강한 위치 액추에이터 + weld" 조합에서 긴 에피소드 동안 서서히 처지는
+버그(screw_driving 태스크에서 이미 겪음)를 선제적으로 피하려고 두 모델
+다 `integrator="implicitfast"`로 바꿨다.
 
-### 4단계 — 동시 실행 & 필터링 ⚠️ 부분 구현 (Actuator 단독, Stabilizer 제외)
+**전환 직후(Stabilizer 아직 없음) 실측 성공률 변화** (동일 게인/동일
+무작위 씬 시드 40개로 직접 비교):
 
-원래 설계는 "Actuator + Stabilizer 궤적을 같은 시뮬레이션에서 동시에
-재생"이지만, 3단계가 없으므로 지금은 **Actuator 궤적만 실행**한다.
+| 태스크 | 전환 전(고정 물체) | 전환 후(자유물체, Stabilizer 없음) |
+|---|---|---|
+| peg_in_hole (Kp_xy=0.000515, Kd_xy=2.4e-05) | **70.0%** (28/40) | **42.5%** (17/40) |
+| cap_twist (Kp_tau=0.9) | **100%** (40/40) | **100%** (40/40) |
+
+peg_in_hole은 예상대로 큰 폭으로 떨어졌다 — Stabilizer가 실제로 필요하다는
+직접적인 증거다. cap_twist는 변화가 없었다: bottle이 테이블에 얹힌
+접촉 자체만으로 이미 현재 저항 토크 범위(0.2~1.0N·m)에서 밀려나지 않는다
+(정직하게 밝힘: 정확히 어떤 접촉 메커니즘이 이걸 만드는지 더 깊게 파진
+않았다 — friction 계수를 낮춰봐도 차이가 없었는데, 이는 이번 3단계
+스코프를 넘는 별도 조사가 필요해 보류했다). 즉 cap_twist에서 Stabilizer는
+"필수"는 아니지만, 아래처럼 붙여도 성공률을 해치지 않는다.
+
+#### 2. Stabilizer 스크립트 — `sim/stabilizer.py`
+
+실제 팔(Jacobian IK)을 왼팔로 하나 더 만드는 대신(이전
+`assets/peg_in_hole_bimanual.xml` 시도가 겪은 문제: hole 위치마다 왼팔
+홈 자세를 손으로 다시 풀어야 해서 위치 무작위화를 포기했었음), **IK가
+필요 없는 3-슬라이드 조인트 가상 엔드이펙터**로 구현했다 — 직렬 링크가
+없어 역기구학이 항등함수라, world 목표 좌표를 그대로 ctrl에 넣으면
+끝난다. cap_twist는 애초에 오른팔조차 실제 기구학을 모델링하지 않는
+태스크라(손목 회전=cap 힌지 각도 직접 구동), 왼팔만 실제 팔로 만드는
+것도 일관성이 없었다 — 이 단순화로 **peg_in_hole/cap_twist 둘 다 같은
+`sim/stabilizer.py` 코드 하나**로 다룬다(태스크별 차이는 tasks/*.yaml의
+`stabilizer: {object_body, grasp_offset}` 두 필드뿐).
+
+- **접근(approach)**: reset() 시점(Actuator가 아직 아무것도 안 건드린
+  때) 물체의 world 위치 + grasp_offset을 목표로 EE 위치 액추에이터에
+  즉시 명령한다.
+- **weld(고정)**: EE가 목표에 도달하거나(2mm 이내) 최대 대기 스텝(60)을
+  넘기면, **그 순간의 실제 상대 포즈**를 MuJoCo weld equality의
+  relpose로 굳혀서 활성화한다.
+- **유지(hold)**: weld가 물체를 EE에 강체로 고정하고, EE 자신의 위치
+  액추에이터도 계속 같은 목표를 명령해 이중으로 버틴다.
+- **실측으로 잡은 버그 2건**(정직하게 기록):
+  1. weld의 `eq_data` 레이아웃을 처음에 잘못 알아서(relpos를 0번 슬롯에
+     썼는데 실제로는 anchor(3)+relpos(3)+relquat(4)+torquescale(1) 순서라
+     3번부터 시작함) 활성화 즉시 물체가 엉뚱한 곳으로 튕겨나갔다 — 컴파일된
+     모델의 eq_data 기본값을 직접 찍어보고 실제 레이아웃을 알아냈다.
+  2. Actuator 제어 루프 "안"에서 매 스텝 Stabilizer.tick()을 같이 부르면,
+     Stabilizer가 붙잡기도 전에(최대 60스텝) Actuator가 이미 삽입을
+     시작해버려 반작용력이 무구속 물체를 먼저 밀어낸다 — 이걸로 측정한
+     성공률이 42.5%→57.5%로만 올랐다. **run_approach_phase()**로 "먼저
+     확실히 쥔 뒤에" Actuator를 시작하도록 순서를 강제하자
+     57.5%→60.0%로 더 올랐다(자세한 실측은 `sim/stabilizer.py`
+     docstring 참고).
+
+#### 3. MimicGen 스타일 기하 증강 — `pipeline/stabilizer_augment.py`
+
+seed 에피소드의 왼팔 궤적(world-frame)을 물체 기준 좌표계로 저장해두고,
+새 씬의 물체 포즈로 SE(3) 변환(순수 좌표 계산, 물리 재시뮬레이션 없음)해서
+새 궤적을 만든다. **실측 검증**: 변환된 궤적의 최종(유지) 위치와, 그
+씬에서 Stabilizer를 직접 다시 돌린("라이브 재계산") 최종 위치를 비교.
+
+- peg_in_hole(물체 위치가 씬마다 실제로 다름): 5개 무작위 씬에서 최대
+  오차 **1.95mm** — weld의 잔류 컴플라이언스 수준(앞서 측정한 반작용력
+  드리프트와 같은 크기)과 일치, SE(3) 변환 자체는 정확함을 확인.
+- cap_twist(물체 위치가 현재 씬 무작위화 대상이 아님, 1단계 스키마 참고):
+  변환이 사실상 항등이라 오차 **0.47mm 이하**(측정 잡음 수준) — 이건
+  버그가 아니라 이번 3단계 스코프에서 bottle 위치 자체를 무작위화하지
+  않았다는 사실의 정직한 반영이다.
+
+#### 4. 양팔 통합
+
+Actuator(2단계 diffusion 결과)와 Stabilizer가 **같은 물리 시뮬레이션
+안에서 동시에** 실행된다(`run_approach_phase()`로 먼저 쥔 뒤,
+`env.run_episode()`의 기존 루프 안에서 Stabilizer는 그냥 고정된 채
+따라가고 Actuator만 능동 제어한다) — 별도의 "동시 실행 모드"를 새로
+만들 필요가 없었다, 애초에 하나의 MjModel/MjData를 공유하기 때문이다.
+`sim.task_registry.TaskConfig.make_env()`가 tasks/*.yaml의 `stabilizer`
+절을 보고 자동으로 Stabilizer를 붙이므로, **0/2-A/2-B/4단계 스크립트
+전부 코드를 한 줄도 안 고쳤다**. `pipeline/episode_io.py`/
+`pipeline/filter_episodes.py`만 `left_arm` 필드를 새로 다루도록 확장했다
+(있으면만 저장 — stabilizer 절이 없는 미래 태스크와 하위호환).
+
+**실측: 0→1→2-A→2-B→4→5단계 전체를 처음부터 다시 돌린 결과** (--task만
+바꿔서, 코드 수정 없이):
+
+| | peg_in_hole | cap_twist |
+|---|---|---|
+| 0단계 CMA-ES | gen 9에 수렴, Kp_xy≈0.00060, Kd_xy≈7.8e-05 | gen 2에 수렴, Kp_tau≈0.70 |
+| 2-A 부트스트랩(N=300) | 74.7% | 98.7% |
+| 2-B diffusion(N=60, 새 시드) | 78.3% (+3.7%p) | 100.0% (+1.3%p) |
+| 4단계 filter_episodes(양팔 동시 실행) | **85.0%** (34/40) | **100.0%** (30/30) |
+| 5단계 언어 라벨링 | 34/34 완료 | 30/30 완료 |
+
+두 태스크 다 저장된 episode npz에 `left_arm`(Stabilizer 궤적)과
+`right_arm`(Actuator 궤적+게인+force/torque)이 함께 들어있는 걸 실측
+확인했다. peg_in_hole 4단계 성공률(85.0%)은 3단계 이전(단일팔 84.0%,
+아래 옛 4단계 절 참고)과 거의 같다 — 게인 탐색(0/2단계)이 이제 처음부터
+"Stabilizer가 붙어 있는" 물리로 이뤄지므로, 3단계가 성공률 자체를
+깎지 않고 오히려 이전과 동등한 수준을 유지하면서 진짜 양팔 데이터를
+만들어낸다는 뜻이다.
+
+> 회귀 테스트(`tests/test_regression_peg_in_hole.py`) 관련 정직한 참고:
+> 그 파일은 여전히 통과하지만, 3단계로 물리 자체(hole freejoint화,
+> integrator 교체)가 바뀌었으므로 "3단계 이전과 결과가 같다"는 뜻이
+> 아니다 — "2단계 리팩토링 결과물이 그 사이 추가로 안 깨졌다"만 보증한다
+> (자세한 설명은 그 파일 docstring에 추가해뒀다).
+
+### 4단계 — 동시 실행 & 필터링 ✅ 완료 (3단계 이후 Actuator+Stabilizer 동시 실행)
+
+설계대로 "Actuator + Stabilizer 궤적을 같은 시뮬레이션에서 동시에 재생"한다
+(3단계 완료로 실현됨, 위 3단계의 "4. 양팔 통합" 절 참고). 아래는 3단계
+이전(Actuator 단독) 시절 최초 실행 기록으로, 재현성 이슈 발견/수정
+경위 등은 여전히 유효해 남겨둔다.
 
 - 구현 위치: `pipeline/filter_episodes.py`
 - 흐름: 1단계로 씬 샘플링 → 2-B diffusion으로 그 씬의 게인 생성 →
   `sim/peg_in_hole_sim.py`의 `run_episode()`로 Actuator 실행 →
   `insertion_depth` 기준 성공 여부(`run_episode()`가 이미 판정)로 필터링
   → 성공한 것만 저장.
-- 저장 포맷: `LeRobotDataset`이 아니라 지금은 `pipeline/episode_io.py`가
-  정의한 단순 npz 포맷(`data/episodes/episode_NNNN.npz`)이다 —
-  `{"right_arm": {"traj","gains","force","torque","role":"actuator"},
-  "scene_config", "success", "insertion_depth", "force_max"}` 구조를
-  평탄화해서 저장. 진짜 LeRobotDataset 변환은 왼팔이 생기고 나서(3단계
-  이후) 붙이는 게 맞다고 판단해 미뤘다.
+- 저장 포맷: `LeRobotDataset`이 아니라 지금도 `pipeline/episode_io.py`가
+  정의한 단순 npz 포맷(`data/episodes/episode_NNNN.npz`)이다 — 3단계
+  완료로 이제 `{"left_arm": {"traj","role":"stabilizer"}, "right_arm":
+  {"traj","gains","force","torque","role":"actuator"}, "scene_config",
+  "success", "insertion_depth", "force_max"}` 구조(왼팔은 stabilizer 절이
+  있는 태스크만)를 평탄화해서 저장한다. 진짜 LeRobotDataset 변환 자체는
+  여전히 별도 작업으로 남아있다(이번 3단계 요청 범위 밖).
 - 실패 에피소드는 2-A/2-B와 달리 **보관하지 않는다**(완성 데이터로 못
   쓰므로).
 - **재현성 이슈 발견 및 수정**: 처음 실행에서 같은 `--scene-seed`인데도
@@ -178,11 +277,16 @@ MimicGen 방식:
 - **실제 실행 결과** (`--n-scenes 100 --scene-seed 42 --sample-seed 0`):
   **84/100 성공 (84.0%)** — 2-B 검증 때의 84~86%와 일치하는 범위.
 
-### 5단계 — LLM 기반 언어 라벨링 ⚠️ 부분 구현 (템플릿 기반, 강도만 라벨링)
+### 5단계 — LLM 기반 언어 라벨링 ⚠️ 부분 구현 (템플릿 기반)
 
 원래 설계는 "성공한 궤적의 force/torque profile을 LLM에 넘겨 자연어
 지시문으로 변환(토크 부호→회전 방향, 회전수→수량, 최대 접촉력→강도)"이지만,
-지금은 **템플릿 기반**으로 구현했고 **강도만** 라벨링한다.
+지금은 **템플릿 기반**으로 구현했다. 강도(intensity)/방향(direction)/
+수량(quantity) 세 어휘 축 모두 지원하지만, 실제로 어느 축을 쓰는지는
+`tasks/{name}.yaml`의 `language` 절이 정한다 -- peg_in_hole은 강도만
+(direction_words/quantity_words가 비어 있음), cap_twist는 방향+수량만
+(intensity_words가 비어 있음, force/torque가 아니라 목표 회전각 부호/
+크기로 정해지므로) 쓴다.
 
 - 구현 위치: `pipeline/language_labeling.py`
 - **Claude API 대신 템플릿을 쓴 이유**:
@@ -190,24 +294,23 @@ MimicGen 방식:
      끝까지 채워져서 나오는가"를 확인하는 단계라 템플릿으로 충분하다.
   2. 오프라인/재현 가능해야 하는데(설계 원칙 2: 계산 비용이 싼 방법부터),
      지금 단계에서 API 호출은 과한 비용이다.
-  3. 검증 태스크가 peg-in-hole 하나뿐이라 표현할 정보가 "삽입 강도"
-     정도로 단순하다 — 뚜껑돌리기(회전) 태스크가 들어와서 "토크 부호→
-     회전 방향, 회전수→수량"까지 표현해야 하는 시점이 되면 조합이
-     다양해져서 그때 Claude API로 바꾸는 게 맞다고 본다.
+  3. 지금 두 태스크가 표현할 정보 조합(강도 하나, 또는 방향+수량)이
+     여전히 단순하다 -- 조합이 훨씬 다양해지는 태스크가 생기면 그때
+     Claude API로 바꾸는 게 맞다고 본다.
 - 강도어(살짝/적당한 힘으로/힘있게)는 **그때그때 episodes의 force_max
   33/66 백분위수**로 정한다(하드코딩된 절대값이 아님) — 씬/게인 분포가
   바뀌면 force_max 스케일 자체가 달라지므로.
-- 회전 방향/수량 라벨링은 아직 구현하지 않음 — 표현할 회전 태스크가
-  아직 없어서.
-- **실제 실행 결과**: 84개 에피소드, force_max 범위 [0.5, 480.4]N,
+- **peg_in_hole 실제 실행 결과**(단일팔 시절, 84개 에피소드): force_max 범위 [0.5, 480.4]N,
   강도 경계 44.2N/86.7N, 강도 분포 gentle 28 / normal 27 / firm 29건
   (거의 균등 — 백분위수 기반이라 당연한 결과). 생성된 문장 예:
   "오른손으로 peg를 구멍에 살짝 삽입하라.", "오른팔을 이용해 페그를
   구멍 안으로 힘있게 밀어 넣어라."
 
-최종 산출물(지금 버전, Stabilizer 제외): **행동(right_arm 궤적) +
-force/torque + 언어**가 모두 포함된 84개 에피소드
-(`data/episodes/episode_*.npz`).
+최종 산출물(3단계 완료 후 현재 버전): **왼팔(left_arm, Stabilizer 궤적) +
+오른팔(right_arm 궤적/게인) + force/torque + 언어**가 모두 포함된 양팔
+에피소드(`data/episodes/episode_*.npz`) — 위 실측 수치는 아래 3단계
+절의 최신(양팔) 결과를 참고. 이 문단의 84개는 3단계 이전(단일팔) 시절
+기록으로 남겨둔다.
 
 ### 파이프라인 오케스트레이션: `run_pipeline.py`
 
@@ -238,19 +341,27 @@ bootstrap dataset, diffusion 체크포인트)은 이미 있으면 재사용하�
 
 ## 현재 저장소 상태와의 매핑
 
+파이프라인은 `sim/task_registry.py`의 `TASK_REGISTRY`로 태스크 무관화돼
+있어서(모든 스크립트가 `--task`를 받음), 아래는 peg_in_hole/cap_twist
+둘 다에 코드 변경 없이 적용된다.
+
 | 파이프라인 단계 | 관련 코드 | 상태 |
 |---|---|---|
-| 0단계 (Seed 확보) | `optimize/cma_search.py`, `sim/peg_in_hole_sim.py` | ✅ 완료 |
+| 0단계 (Seed 확보) | `optimize/cma_search.py`, `sim/{peg_in_hole,cap_twist}_env.py` | ✅ 완료 |
 | (스코프 외) 부트스트랩 정책 실험 | `bootstrap/` | ✅ 완료 (2단계와는 무관, 별도 유지) |
-| 1단계 (공유 씬 설정) | `pipeline/scene_sampler.py` | ✅ 완료 |
-| 2-A (게인 부트스트래핑) | `pipeline/bootstrap.py`, `data/bootstrap/` | ✅ 완료 (N=1000, 성공률 76.0%) |
-| 2-B (diffusion) | `pipeline/diffusion_gains.py`, `data/bootstrap/diffusion_gains.pt` | ✅ 완료 (검증 성공률 84~86%, 베이스라인 76% 대비 +8~10%p) |
-| 3단계 (Stabilizer 기하 변환) | — | ⬜ 미구현 (이번 검증에서 통째로 스킵) |
-| 4단계 (동시 실행 & 필터링) | `pipeline/filter_episodes.py`, `pipeline/episode_io.py`, `data/episodes/` | ⚠️ 부분 구현 (Actuator 단독, LeRobotDataset 아닌 자체 npz 포맷, 성공률 84.0%) |
-| 5단계 (언어 라벨링) | `pipeline/language_labeling.py` | ⚠️ 부분 구현 (템플릿 기반, 강도만 라벨링) |
-| 파이프라인 오케스트레이션 | `run_pipeline.py` | ✅ 완료 (0→1→2-A→2-B→4→5, 씬 100개→최종 84개 에피소드) |
+| 1단계 (공유 씬 설정) | `sim/{peg_in_hole,cap_twist}_env.py`의 `sample_scene_config`/`to_sim_scene_config` | ✅ 완료 |
+| 2-A (게인 부트스트래핑) | `pipeline/bootstrap.py`, `data/bootstrap/` | ✅ 완료 |
+| 2-B (diffusion) | `pipeline/diffusion_gains.py`, `data/bootstrap/diffusion_gains.pt` | ✅ 완료 |
+| 3단계 (Stabilizer 기하 변환) | `sim/stabilizer.py`, `pipeline/stabilizer_augment.py` | ✅ 완료 |
+| 4단계 (동시 실행 & 필터링) | `pipeline/filter_episodes.py`, `pipeline/episode_io.py`, `data/episodes/` | ✅ 완료 (양팔 동시 실행, `left_arm`+`right_arm`) |
+| 5단계 (언어 라벨링) | `pipeline/language_labeling.py` | ⚠️ 부분 구현 (템플릿 기반, LLM 아님 -- 이유는 해당 절 참고) |
+| 파이프라인 오케스트레이션 | `run_pipeline.py` | ✅ 완료 (--task로 태스크 선택) |
 
-지금 저장소(`ard-gen/`)는 **오른팔(Actuator) 단일 팔로 0→1→2→4→5단계
-전체가 끝까지 도는 것까지 검증 완료**한 상태다. 왼팔(Stabilizer) 자체가
-아직 없어 3단계는 통째로 비어 있고, 4·5단계는 "왼팔이 생기면 다시
-손봐야 하는" 임시(단일 팔 전용) 구현이다.
+지금 저장소(`ard-gen/`)는 peg_in_hole/cap_twist 두 태스크 모두 **왼팔
+(Stabilizer)+오른팔(Actuator)이 같은 물리 시뮬레이션에서 동시에 실행되는
+0→1→2-A→2-B→4→5단계 전체**가 끝까지 도는 것까지 검증 완료한 상태다.
+남은 것: 5단계를 실제 LLM 기반으로 바꾸는 것(현재는 표현할 정보 조합이
+단순해 템플릿으로 충분하다고 판단해 보류 중), `LeRobotDataset` 형식으로의
+최종 변환, 그리고 peg_in_hole 3단계에서 발견된 "고부하 경계선 케이스
+4/28건" 잔여 실패의 근본 개선(현재는 정직하게 실패로 남겨둠, 위 3단계
+절 참고).

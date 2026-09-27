@@ -37,6 +37,15 @@ success:
 # _COND_DIM=7으로 하드코딩하지 않음).
 condition_fields: [hole_pose, friction, clearance_m, peg_init_offset]
 
+# 3단계(Stabilizer, 왼팔): 오른팔이 조작하는 물체(hole_socket)의 body 이름과,
+# 왼팔 가상 엔드이펙터(assets/peg_in_hole.xml의 stabilizer_ee)가 접근할
+# grasp point의 world-axis-aligned 오프셋(물체 원점 기준, m). sim/stabilizer.py
+# 가 이 두 값만 읽어서 접근 -> weld -> 유지를 수행한다(사양 이름/개수는
+# 몰라도 됨) -- cap_twist.yaml도 같은 두 필드로 완전히 동일하게 동작한다.
+stabilizer:
+  object_body: hole_socket
+  grasp_offset: [0.0, 0.035, -0.02]
+
 # 5단계(언어 라벨링)용 어휘. peg-in-hole은 "삽입 강도"만 표현하므로
 # direction_words/quantity_words는 비어 있다 -- 회전 태스크(예: cap_twist)
 # 는 이 두 필드로 "토크 부호 -> 회전 방향", "회전수 -> 수량어"를 채운다

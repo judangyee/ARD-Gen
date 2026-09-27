@@ -46,6 +46,7 @@ _KNOWN_RESULT_FIELDS = {
     "trajectory", "ee_poses", "actions", "force_profile", "torque_profile",
     "forces", "torques", "insertion_depth", "final_distance", "max_force",
     "step_count", "success", "reward", "gains", "scene_config",
+    "left_arm_traj",  # 3단계(Stabilizer) -- 위에서 episode["left_arm"]로 이미 옮김
 }
 
 
@@ -108,6 +109,12 @@ def main() -> None:
             "scene_config": scene_cfg,
             "success": True,
         }
+        # 3단계(Stabilizer, 왼팔): env.run_episode()가 "left_arm_traj"를
+        # 돌려줬으면(tasks/*.yaml에 stabilizer 절이 있는 태스크) 그대로
+        # left_arm으로 실어 나른다 -- 같은 물리 시뮬레이션 안에서 오른팔과
+        # 동시에 기록된 궤적이다(sim/stabilizer.py 참고).
+        if result.get("left_arm_traj") is not None:
+            episode["left_arm"] = {"traj": result["left_arm_traj"], "role": "stabilizer"}
         if result.get("insertion_depth") is not None:
             episode["insertion_depth"] = result["insertion_depth"]
         if result.get("forces") is not None and len(result["forces"]) > 0:

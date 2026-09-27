@@ -36,6 +36,8 @@ import numpy as np
 from sim.base_task_env import BaseTaskEnv
 from sim.peg_in_hole_sim import DT, MAX_STEPS, Z_RATE, PegInHoleSim
 from sim.peg_in_hole_sim import _default_scene_config as _sim_default_scene_config
+from sim.peg_in_hole_sim import N_SUBSTEPS
+from sim.stabilizer import Stabilizer, run_approach_phase
 
 # 1단계(공유 씬) 무작위화 범위 -- pipeline/scene_sampler.py에서 그대로 옮겨옴.
 _BASE_FRICTION = 0.5
@@ -84,15 +86,35 @@ def to_sim_scene_config(shared_cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 class PegInHoleEnv(BaseTaskEnv):
-    def __init__(self, xml_path: str | None = None):
+    """stabilizer_config/use_stabilizer: 3단계(Stabilizer, 왼팔) 지원.
+    tasks/peg_in_hole.yaml에 `stabilizer` 절이 있으면 sim/task_registry.py의
+    TaskConfig.make_env()가 stabilizer_config를 자동으로 넘겨준다 -- 호출자가
+    직접 신경 쓸 필요 없음. use_stabilizer=False로 명시하면(자유물체 전환
+    전후 성공률 비교 등) 물체는 여전히 freejoint(자유물체)지만 Stabilizer가
+    붙지 않아 순수히 중력+테이블 마찰만으로 버티는 상태를 시험할 수 있다."""
+
+    def __init__(
+        self,
+        xml_path: str | None = None,
+        stabilizer_config: dict[str, Any] | None = None,
+        use_stabilizer: bool = True,
+    ):
         self._sim = PegInHoleSim(xml_path=xml_path)
         self._outer_half = 0.0
         self._target_depth = 0.0
+        self._stabilizer: Stabilizer | None = None
+        if use_stabilizer and stabilizer_config is not None:
+            self._stabilizer = Stabilizer(
+                self._sim.model, self._sim.data,
+                stabilizer_config["object_body"], stabilizer_config["grasp_offset"],
+            )
 
     # ------------------------------------------------------------------
     def reset(self, scene_config: dict[str, Any]) -> float:
         self._outer_half = self._sim.reset(scene_config)
         self._target_depth = scene_config["target_insertion_depth"]
+        if self._stabilizer is not None:
+            self._stabilizer.reset()
         return self._outer_half
 
     def step(self, action: np.ndarray) -> None:
@@ -126,6 +148,14 @@ class PegInHoleEnv(BaseTaskEnv):
         kp_xy = float(gains["Kp_xy"])
         kd_xy = float(gains["Kd_xy"])
 
+        # Stabilizer가 있으면, Actuator 루프를 시작하기 전에 먼저 확실히
+        # 쥐게 한다(run_approach_phase() docstring 참고 -- 루프 안에서
+        # tick()을 부르면 붙잡기 전에 반작용력이 먼저 hole을 밀어내는
+        # 경쟁이 생겨서 성공률이 덜 회복됐다, 실측 확인).
+        left_arm_traj: list[np.ndarray] = run_approach_phase(
+            self._stabilizer, sim.model, sim.data, N_SUBSTEPS
+        )
+
         ee_poses = [sim.get_ee_pose()]
         actions: list[np.ndarray] = []
         forces: list[np.ndarray] = []
@@ -150,6 +180,8 @@ class PegInHoleEnv(BaseTaskEnv):
             delta = np.array([delta_xy[0], delta_xy[1], -Z_RATE])
 
             self.step(delta)
+            if self._stabilizer is not None:
+                left_arm_traj.append(self._stabilizer.ee_pos)
 
             actions.append(delta.copy())
             forces.append(force)
@@ -181,7 +213,7 @@ class PegInHoleEnv(BaseTaskEnv):
         }
         reward = self.compute_reward(episode_result)
 
-        return {
+        result = {
             "trajectory": {"ee_poses": np.stack(ee_poses).astype(np.float32)},
             "ee_poses": np.stack(ee_poses).astype(np.float32),
             "actions": np.stack(actions).astype(np.float32),
@@ -197,4 +229,8 @@ class PegInHoleEnv(BaseTaskEnv):
             "reward": reward,
             "gains": dict(gains),
             "scene_config": scene_config,
+            "stabilizer_grasped": bool(self._stabilizer.grasped) if self._stabilizer is not None else None,
         }
+        if self._stabilizer is not None:
+            result["left_arm_traj"] = np.stack(left_arm_traj).astype(np.float32)
+        return result

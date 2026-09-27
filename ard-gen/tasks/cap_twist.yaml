@@ -39,6 +39,13 @@ success:
 # 지점의 비율).
 condition_fields: [target_turns, resistance_torque, disengage_ratio]
 
+# 3단계(Stabilizer, 왼팔): tasks/peg_in_hole.yaml과 완전히 같은 두 필드
+# (object_body/grasp_offset)만으로 sim/stabilizer.py가 동일하게 동작한다.
+# bottle 반지름 0.03m보다 살짝 바깥, cap과 안 겹치도록 중간 높이(z=0.06)를 잡았다.
+stabilizer:
+  object_body: bottle
+  grasp_offset: [0.04, 0.0, 0.06]
+
 # direction_words/quantity_words가 채워진 예시(peg_in_hole.yaml은 이 둘이
 # 비어 있었다) -- sim/cap_twist_env.py의 run_episode()가 채우는
 # "direction"("cw"/"ccw")과 "quantity"(반바퀴 단위) 필드에 대응한다.

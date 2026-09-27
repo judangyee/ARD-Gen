@@ -19,6 +19,23 @@ pytest 없이 plain assert로 짰다 -- 이 저장소의 다른 스크립트들�
 출력**(RNG 시드가 같으면 결정론적) -- 이 리팩토링 전후로 정확히 같은지를
 확인한다. 이게 실제로 파이프라인 산출물의 재현성을 좌우하는 부분이다.
 
+## 3단계(Stabilizer) 이후: 이 테스트가 더 이상 "물리가 전혀 안 바뀌었다"를
+## 보장하지 않는다는 점 (정직하게 밝힘)
+
+3단계에서 hole_socket이 world-고정 body에서 freejoint(자유물체)로
+바뀌면서, sim/peg_in_hole_sim.py의 물리 자체가 실제로 달라졌다(테이블
+접촉 추가, integrator를 implicitfast로 교체 등) -- 이 파일이 비교하는
+"원본"(sim.peg_in_hole_sim._run_episode_with_sim, 아래 import)과 "리팩토링
+후"(sim.peg_in_hole_env.PegInHoleEnv, 이하 use_stabilizer 없이 생성해서
+Stabilizer 미부착) 양쪽 다 **같은(이미 3단계로 수정된) sim/peg_in_hole_sim.py
+모듈**을 부른다. 즉 이 테스트가 여전히 통과하는 건 "2단계 리팩토링이 그
+사이에 추가로 뭔가를 깨지 않았다"(PegInHoleEnv가 여전히 저수준
+_run_episode_with_sim과 정확히 같은 루프를 재현한다)는 걸 보증하는
+것이지, "3단계 물리 변경 전과 결과가 같다"는 뜻이 아니다 -- 3단계
+전후의 실제 성공률 비교(고정 hole 70.0% -> 자유물체+Stabilizer 없음
+42.5% -> Stabilizer 있음 60.0%, N=40 무작위 씬)는 PIPELINE.md 3단계
+절에 별도로 기록했다.
+
 사용법:
     python tests/test_regression_peg_in_hole.py
 """

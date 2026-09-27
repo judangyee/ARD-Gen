@@ -52,12 +52,21 @@
 
   <worldbody>
     <light pos="0 0 1" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
-    <geom name="ground" type="plane" size="0.3 0.3 0.02" pos="0 0 -0.05" rgba="0.9 0.9 0.9 1"/>
+    <!-- 3단계(Stabilizer)부터 실제로 충돌하는 테이블면이다(이전엔 bottle이
+         world-고정이라 아무것도 받쳐줄 필요가 없었음) -- bottle 바닥이
+         정확히 z=0(기존 고정 위치)에 오도록 여기 둔다. -->
+    <geom name="table" type="plane" size="0.3 0.3 0.02" pos="0 0 0" contype="1" conaffinity="1"
+          friction="1.0 0.005 0.0001" rgba="0.9 0.9 0.9 1"/>
 
+    <!-- bottle: 3단계부터 freejoint(자유물체)다 -- 왼팔(Stabilizer)이 이
+         물체를 쥐는 역할을 하려면 cap을 돌릴 때 생기는 반작용 토크에
+         밀리거나 같이 돌 수 있어야 하기 때문(world-고정이면 Stabilizer가
+         있으나 없으나 물리가 똑같아서 존재 의미가 없다). -->
     <body name="bottle" pos="0 0 0">
-      <!-- world에 고정 (joint 없음) -->
+      <freejoint name="bottle_free"/>
+      <inertial pos="0 0 0.06" mass="0.3" diaginertia="1.5e-4 1.5e-4 1.5e-4"/>
       <geom name="bottle_body" type="cylinder" size="0.03 0.06" pos="0 0 0.06"
-            contype="0" conaffinity="0" rgba="0.25 0.45 0.7 1"/>
+            contype="1" conaffinity="1" friction="1.0 0.005 0.0001" rgba="0.25 0.45 0.7 1"/>
 
       <body name="cap" pos="0 0 0.12">
         <joint name="cap_hinge" type="hinge" axis="0 0 1" pos="0 0 0"
@@ -68,13 +77,35 @@
         <site name="cap_grip_site" pos="0 0 0.015" size="0.005"/>
       </body>
     </body>
+
+    <!-- Stabilizer(왼팔) 가상 엔드이펙터: assets/peg_in_hole.xml과 완전히 같은
+         패턴/명명(stab_x/y/z, stabilizer_ee, stabilizer_weld) -- 두 태스크
+         모두 sim/stabilizer.py 하나로 동일하게 다룰 수 있는 이유가 이것이다.
+         자세한 설계 근거는 assets/peg_in_hole.xml의 같은 블록 주석 참고. -->
+    <body name="stabilizer_ee" pos="0 0 0">
+      <joint name="stab_x" type="slide" axis="1 0 0" damping="15"/>
+      <joint name="stab_y" type="slide" axis="0 1 0" damping="15"/>
+      <joint name="stab_z" type="slide" axis="0 0 1" damping="15"/>
+      <inertial pos="0 0 0" mass="0.1" diaginertia="1e-5 1e-5 1e-5"/>
+      <geom name="stabilizer_ee_geom" type="sphere" size="0.012" contype="0" conaffinity="0" rgba="0.2 0.8 0.3 1"/>
+      <site name="stabilizer_ee_site" pos="0 0 0" size="0.005"/>
+    </body>
   </worldbody>
+
+  <equality>
+    <weld name="stabilizer_weld" body1="stabilizer_ee" body2="bottle"
+          solref="0.002 1" solimp="0.95 0.99 0.0001 0.5 2" active="false"/>
+  </equality>
 
   <actuator>
     <!-- kp: 목표각 추종 강성. forcerange: 그립이 슬립 없이 낼 수 있는 최대 토크
          (sim/cap_twist_env.py의 TAU_STUCK_THRESHOLD보다 커야, 스턱 감지가
          이 한계에 도달하기 전에 먼저 트리거된다). -->
     <position name="cap_drive" joint="cap_hinge" kp="8.0" forcerange="-1.2 1.2"/>
+
+    <position name="stab_x" joint="stab_x" kp="400" forcerange="-500 500"/>
+    <position name="stab_y" joint="stab_y" kp="400" forcerange="-500 500"/>
+    <position name="stab_z" joint="stab_z" kp="400" forcerange="-500 500"/>
   </actuator>
 
   <sensor>

@@ -66,6 +66,7 @@ import mujoco
 import numpy as np
 
 from sim.base_task_env import BaseTaskEnv
+from sim.stabilizer import Stabilizer, run_approach_phase
 
 _DEFAULT_XML = os.path.join(os.path.dirname(__file__), "..", "assets", "cap_twist.xml")
 
@@ -84,6 +85,10 @@ TORQUE_DROP_THRESHOLD = 0.05  # N*m, disengage 이후 이 아래로 떨어지면
 _LOOSE_DAMPING = 0.01  # disengage 후 남는 잔여 저항(수치 안정성용, 거의 0)
 
 _SAFE_TORQUE = 0.5  # N*m, 이 이상 토크에는 리워드 페널티(과도한 힘 사용)
+
+# 3단계(Stabilizer): bottle이 freejoint가 되면서, reset() 때 테이블 접촉
+# 침투를 해소하기 위해 짧게 물리를 돌려 정착시킨다.
+_BOTTLE_SETTLE_STEPS = 20
 
 
 def default_scene_config() -> dict[str, Any]:
@@ -134,6 +139,7 @@ class CapTwistSim:
         self._hinge_dofadr = self.model.joint("cap_hinge").dofadr[0]
         self._actuator_id = self.model.actuator("cap_drive").id
         self._torque_adr = self.model.sensor("cap_torque").adr[0]
+        self._bottle_body_id = self.model.body("bottle").id
 
     def reset(self, scene_config: dict[str, Any]) -> None:
         mujoco.mj_resetData(self.model, self.data)
@@ -146,6 +152,13 @@ class CapTwistSim:
         self.data.qpos[self._hinge_qposadr] = init_angle
         self.data.ctrl[self._actuator_id] = init_angle
         mujoco.mj_forward(self.model, self.data)
+
+        # 3단계(Stabilizer): bottle이 freejoint라 테이블 접촉 침투를 해소하기
+        # 위해 짧게 물리를 돌려 정착시킨다(cap_hinge는 상대 조인트라 이 동안
+        # 안 바뀐다). Stabilizer가 붙는 경우 이 정착 이후에 접근을 시작한다
+        # (CapTwistEnv.reset() 참고).
+        for _ in range(_BOTTLE_SETTLE_STEPS):
+            mujoco.mj_step(self.model, self.data)
 
     def get_torque(self) -> float:
         return float(self.data.sensordata[self._torque_adr])
@@ -162,14 +175,30 @@ class CapTwistSim:
 
 
 class CapTwistEnv(BaseTaskEnv):
-    def __init__(self, xml_path: str | None = None):
+    """stabilizer_config/use_stabilizer: sim/peg_in_hole_env.py:PegInHoleEnv와
+    동일한 규약(3단계, 왼팔 지원) -- 자세한 설명은 그 클래스 docstring 참고."""
+
+    def __init__(
+        self,
+        xml_path: str | None = None,
+        stabilizer_config: dict[str, Any] | None = None,
+        use_stabilizer: bool = True,
+    ):
         self._sim = CapTwistSim(xml_path=xml_path)
         self._target_rotation = 0.0
+        self._stabilizer: Stabilizer | None = None
+        if use_stabilizer and stabilizer_config is not None:
+            self._stabilizer = Stabilizer(
+                self._sim.model, self._sim.data,
+                stabilizer_config["object_body"], stabilizer_config["grasp_offset"],
+            )
 
     # ------------------------------------------------------------------
     def reset(self, scene_config: dict[str, Any]) -> None:
         self._sim.reset(scene_config)
         self._target_rotation = float(scene_config["target_rotation"])
+        if self._stabilizer is not None:
+            self._stabilizer.reset()
 
     def step(self, action: float) -> None:
         """action: 이번 틱의 목표 회전각(rad, 절대값 -- 위치 액추에이터
@@ -238,6 +267,13 @@ class CapTwistEnv(BaseTaskEnv):
         success = False
         step_count = 0
         forward_progress = 0.0
+        # Stabilizer가 있으면, cap 회전을 시작하기 전에 먼저 확실히 쥐게
+        # 한다(sim/stabilizer.py의 run_approach_phase() docstring 참고 --
+        # 루프 안에서 tick()을 부르면 붙잡기 전에 반작용 토크가 먼저
+        # bottle을 돌려버리는 경쟁이 생긴다).
+        left_arm_traj: list[np.ndarray] = run_approach_phase(
+            self._stabilizer, sim.model, sim.data, N_SUBSTEPS
+        )
 
         for step_count in range(1, MAX_STEPS + 1):
             tau = sim.get_torque()
@@ -256,6 +292,8 @@ class CapTwistEnv(BaseTaskEnv):
 
             target_angle += omega * DT
             self.step(target_angle)
+            if self._stabilizer is not None:
+                left_arm_traj.append(self._stabilizer.ee_pos)
 
             actual_angle = sim.get_angle()
             forward_progress = actual_angle * direction
@@ -287,7 +325,7 @@ class CapTwistEnv(BaseTaskEnv):
         reward = self.compute_reward(episode_result)
 
         turns = target_rotation / (2 * np.pi)
-        return {
+        result = {
             "accumulated_rotation": float(final_angle),
             "target_rotation": float(target_rotation),
             "forward_progress": float(forward_progress),
@@ -299,4 +337,8 @@ class CapTwistEnv(BaseTaskEnv):
             "scene_config": scene_config,
             "direction": "cw" if target_rotation >= 0 else "ccw",
             "quantity": round(abs(turns) * 2) / 2,  # 반바퀴 단위로 반올림
+            "stabilizer_grasped": bool(self._stabilizer.grasped) if self._stabilizer is not None else None,
         }
+        if self._stabilizer is not None:
+            result["left_arm_traj"] = np.stack(left_arm_traj).astype(np.float32)
+        return result

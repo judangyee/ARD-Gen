@@ -46,6 +46,11 @@ _WALL_CENTER_Z = -0.0275
 _FLOOR_HALF_THICKNESS = 0.002
 _NOMINAL_CLEARANCE_M = 0.003  # 총 지름 clearance (편측 1.5mm)
 
+# 3단계(Stabilizer): hole_socket이 freejoint가 되면서, reset() 때 테이블
+# 접촉 침투를 해소하기 위해 짧게 물리를 돌려 정착시킨다(실측상 20스텝이면
+# 수직 오차 1mm 이내로 충분히 정착됨).
+_HOLE_SETTLE_STEPS = 20
+
 # VX300s 6개 팔 조인트 (fingers 제외). Jacobian 열 순서/ctrl 매핑에 이 순서를 쓴다.
 _ARM_JOINTS = ["waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"]
 
@@ -133,6 +138,7 @@ class PegInHoleSim:
         self._torque_slice = slice(torque_adr, torque_adr + 3)
 
         self._nominal_hole_pos = self.model.body_pos[self._hole_body_id].copy()
+        self._hole_free_qposadr = self.model.joint("hole_socket_free").qposadr[0]
 
         self._jacp = np.zeros((3, self.model.nv))
         self._jacr = np.zeros((3, self.model.nv))
@@ -197,15 +203,30 @@ class PegInHoleSim:
         footprint half-width(outer_half)를 반환한다 (reward 게이팅에 사용)."""
         mujoco.mj_resetData(self.model, self.data)
 
+        # 3단계(Stabilizer)부터 hole_socket이 freejoint라, body_pos(컴파일 타임
+        # 상수)가 아니라 qpos(런타임 자유도)로 위치를 지정한다. body_pos는 이제
+        # "freejoint가 없을 때의 기준 프레임"일 뿐이라 안 건드린다.
         hole_pos = self._nominal_hole_pos.copy()
         hole_pos[0] += scene_config["hole_pos_xy"][0]
         hole_pos[1] += scene_config["hole_pos_xy"][1]
-        self.model.body_pos[self._hole_body_id] = hole_pos
+        qadr = self._hole_free_qposadr
+        self.data.qpos[qadr : qadr + 3] = hole_pos
+        self.data.qpos[qadr + 3 : qadr + 7] = [1.0, 0.0, 0.0, 0.0]
 
         for geom_id in self._peg_geom_ids:
             self.model.geom_friction[geom_id][0] = scene_config["friction"]
 
         outer_half = self._apply_clearance(scene_config["clearance_m"])
+
+        # hole_socket을 짧게 물리를 돌려 테이블 위에 안정시킨다(중력 + 접촉
+        # 침투 해소, 실측상 수직으로 ~1-2mm 이내 정착 -- 팔은 아직 홈 자세로
+        # 옮기기 전이라 qpos/ctrl이 둘 다 0이라 이 동안 움직이지 않는다).
+        # 이후 계산은 지정값이 아니라 정착 후 실측 위치를 쓴다 -- clearance
+        # 변경으로 벽 geom을 다시 썼으니 접촉을 다시 계산해야 해서 settle은
+        # _apply_clearance() 다음에 한다.
+        for _ in range(_HOLE_SETTLE_STEPS):
+            mujoco.mj_step(self.model, self.data)
+        hole_pos = self.data.xpos[self._hole_body_id].copy()
 
         # 목표 초기 peg tip 위치: hole 중심 + xy 오프셋, z는 "홈" 자세의 호버
         # 높이를 그대로 쓴다 (assets/peg_in_hole.xml 설계상 hole opening 위

@@ -46,7 +46,15 @@
         용접되듯 붙어 있어서 실제로 손가락이 peg를 쥐는 물리는 없음).
   -->
   <compiler angle="radian" meshdir="vx300s/assets" texturedir="vx300s/assets" autolimits="true"/>
-  <option cone="elliptic" impratio="10"/>
+  <!-- integrator="implicitfast": 3단계(Stabilizer)에서 hole_socket이 freejoint +
+       weld을 갖게 되면서 추가됐다. 다른 태스크(screw_driving_bimanual_openarm.xml)
+       에서 이미 겪은 문제 -- 기본 세미암시적 오일러 적분기는 "강한 위치
+       액추에이터 + weld" 조합에서 긴 에피소드 동안 서서히 에너지가 새서
+       처지는(drift) 버그가 있었다(그 태스크의 git log 참고) -- 를 여기서도
+       선제적으로 피한다. 오른팔 단독(Stabilizer 없음) 회귀 테스트로 이
+       적분기 교체 자체가 기존 성공률에 영향을 안 주는지 별도 확인함
+       (sim/peg_in_hole_env.py의 3단계 관련 검증 결과 참고).-->
+  <option cone="elliptic" impratio="10" integrator="implicitfast"/>
   <visual>
     <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6" specular="0.1 0.1 0.1"/>
   </visual>
@@ -124,15 +132,32 @@
     <light pos="0.4 0 1" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
     <light pos="0.7 -0.4 0.5" dir="-0.4 0.4 -0.7" diffuse="0.4 0.4 0.4"/>
 
-    <!-- 시각적 참조용 바닥/테이블 (충돌 없음) -->
+    <!-- 시각적 참조용 바닥 (충돌 없음, 아래 hole_table과 별개) -->
     <geom name="ground" type="plane" pos="0 0 -0.05" size="0.8 0.8 0.01" contype="0" conaffinity="0" rgba="0.5 0.5 0.52 1"/>
+
+    <!-- 3단계(Stabilizer): hole_socket을 freejoint로 바꾸면서 실제로 얹혀 쉴
+         충돌 가능한 테이블면이 필요해졌다(이전엔 world-고정 body라 아무것도
+         받쳐줄 필요가 없었음). z=-0.0152는 hole_socket이 기존 고정 위치
+         (0.10,0,0.0438)에 있을 때 hole_floor 바닥면의 world z 좌표와
+         정확히 같다(0.0438 + hole_floor pos.z(-0.057) - half_thickness(0.002))
+         -- 즉 이 테이블에 얹으면 기존 단일팔 검증에서 쓰던 것과 동일한
+         위치/높이에서 시작한다(초기 낙하/settling 없음, sim/peg_in_hole_sim.py
+         reset()이 짧게 물리를 재워 잔류 침투만 정리함). -->
+    <geom name="hole_table" type="plane" pos="0 0 -0.0152" size="0.8 0.8 0.01"
+          contype="1" conaffinity="1" friction="1.0 0.005 0.0001" rgba="0.6 0.5 0.4 1"/>
 
     <!-- 오블릭 탑 뷰 카메라: 로봇 정면(+x)에서 로봇 쪽을 마주보며 hole을
          내려다본다 (world 고정). 자세한 이유는 파일 상단 주석 참고. -->
     <camera name="top_cam" mode="targetbody" target="hole_socket" pos="0.28 0 0.32"/>
 
-    <!-- Hole: 조인트 없는 고정 소켓. clearance는 sim이 런타임에 geom_pos/geom_size를 덮어써서 바꾼다. -->
+    <!-- Hole: 3단계(Stabilizer)부터 freejoint(자유물체)다 -- 왼팔이 이 물체를
+         쥐는 역할을 하려면 물리적으로 밀리거나 돌아갈 수 있어야 하기 때문
+         (world-고정이면 Stabilizer가 있으나 없으나 물리가 똑같아서 존재
+         의미가 없다). clearance는 여전히 sim이 런타임에 geom_pos/geom_size를
+         덮어써서 바꾼다. -->
     <body name="hole_socket" pos="0.10 0 0.0438">
+      <freejoint name="hole_socket_free"/>
+      <inertial pos="0 0 -0.0275" mass="0.2" diaginertia="2e-4 2e-4 2e-4"/>
       <geom class="peg_contact" name="hole_wall_px" type="box" pos="0.0155 0 -0.0275" size="0.004 0.0195 0.0275" rgba="0.55 0.55 0.6 1"/>
       <geom class="peg_contact" name="hole_wall_nx" type="box" pos="-0.0155 0 -0.0275" size="0.004 0.0195 0.0275" rgba="0.55 0.55 0.6 1"/>
       <geom class="peg_contact" name="hole_wall_py" type="box" pos="0 0.0155 -0.0275" size="0.0195 0.004 0.0275" rgba="0.55 0.55 0.6 1"/>
@@ -210,11 +235,70 @@
         </body>
       </body>
     </body>
+
+    <!-- Stabilizer(왼팔) 가상 엔드이펙터: sim/stabilizer.py 공용 -- 실제 팔
+         기구학(Jacobian IK)을 모델링하지 않고, world에 직접 매인 3-슬라이드
+         조인트 점 하나로 표현한다. 이 프로젝트가 이미 grasp 물리 자체를
+         모델링하지 않는 것(peg-그리퍼 결합, cap_twist의 wrist=힌지 직접
+         구동)과 같은 선상의 단순화다 -- "IK 기반, 파라미터 탐색 불필요"를
+         만족하려면 직렬 링크가 없어야 역기구학이 항등함수가 돼서 매 태스크마다
+         홈 자세를 손으로 다시 풀 필요가 없어진다(assets/peg_in_hole_bimanual.xml
+         의 이전 시도가 겪은 문제 -- 왼팔 홈 자세를 hole 위치마다 다시 계산해야
+         해서 위치 무작위화를 포기했었음 -- 를 근본적으로 피한다).
+         회전(orientation)은 액추에이트하지 않는다(고정, 항등) -- 두 태스크
+         모두 물체를 특정 각도로 재배치할 필요가 없어서(hole_pose의 theta는
+         아직 물리에 반영되지 않음, PIPELINE.md 참고), weld 시점에 물체의
+         "현재" 방향을 그대로 굳히면 충분하다.
+         pos="0 0 0"인 이유: 조인트 좌표(qpos)가 곧 world 절대 위치가 되도록
+         (body 자체의 고정 오프셋이 있으면 qpos에 그 오프셋이 추가로 더해져서
+         ctrl에 world 목표 좌표를 그대로 못 넣는다 -- sim/stabilizer.py 개발
+         중 실측으로 확인한 버그, 자세한 내용은 그 파일 docstring 참고).
+         damping=15/kp=400은 이 몸체 질량(0.1kg)에서 진동 없이 빠르게
+         수렴하도록 실측으로 잡은 값이다(critical damping ~= 2*sqrt(kp*m)
+         =2*sqrt(400*0.1)=12.6 근방). forcerange는 넉넉하게 커서 실제
+         한계는 사실상 없다(가상 엔드이펙터라 실제 토크 제한이 의미 없음).
+
+         ## kp를 올려도 못 구하는 실패 4건 (실측, 3단계 검증 결과)
+
+         자유물체 전환 + Stabilizer 후 무작위 40씬 회귀에서, 원래(hole 완전
+         고정) 성공하던 28개 중 24개는 그대로 성공하고 4개만 새로 실패한다
+         (실패 원인: peg가 옆으로 크게 빗나가 벽 위에 걸린 채 400스텝 내내
+         Z_RATE로 계속 눌러 100N+까지 힘이 쌓이는 경계선 케이스). kp를
+         400->1500(거의 4배)으로 올려도 이 4건은 똑같이 실패했다 -- 위치
+         액추에이터는 F=kp*(목표-현재)라 정적 평형에서 오차가 kp에 반비례로
+         줄어들 뿐(약 110N/1500=73mm) 절대 0이 되지 않고, 이 정도로 큰 힘을
+         받는 경계선 케이스에서는 그 잔류 변위조차 삽입을 갈라놓기에 충분하다.
+         즉 이 4건의 실패는 Stabilizer/weld 강성 부족이 아니라, "hole이
+         완전 강체가 아니게 되면" 실제로 달라지는 정당한 물리(경계선
+         케이스의 미세한 wobble-in 동역학 변화)다 -- 실제 로봇에서도 아주
+         뻑뻑하게 쥔 손이 여전히 미세하게 밀리는 것과 같다. kp를 과하게
+         더 올리면(수만 단위) 이 timestep(0.002s)에서 수치적으로 불안정해질
+         위험이 커서, 4개를 마저 구하려고 억지로 올리지 않았다. -->
+    <body name="stabilizer_ee" pos="0 0 0">
+      <joint name="stab_x" type="slide" axis="1 0 0" damping="15"/>
+      <joint name="stab_y" type="slide" axis="0 1 0" damping="15"/>
+      <joint name="stab_z" type="slide" axis="0 0 1" damping="15"/>
+      <inertial pos="0 0 0" mass="0.1" diaginertia="1e-5 1e-5 1e-5"/>
+      <geom name="stabilizer_ee_geom" type="sphere" size="0.012" contype="0" conaffinity="0" rgba="0.2 0.8 0.3 1"/>
+      <site name="stabilizer_ee_site" pos="0 0 0" size="0.005"/>
+    </body>
   </worldbody>
 
   <equality>
     <joint joint1="left_finger" joint2="right_finger" polycoef="0 -1 0 0 0"/>
+    <!-- 활성화/relpose는 sim/stabilizer.py가 런타임에 채운다(접근 완료 시점의
+         실제 상대 포즈를 그대로 굳힘) -- 컴파일 타임 값은 의미 없다.
+         solref/solimp는 assets/peg_in_hole_bimanual.xml에서 실측 검증된
+         값(약한 기본값으로는 오른팔 삽입 반작용에 밀림)을 그대로 가져왔다. -->
+    <weld name="stabilizer_weld" body1="stabilizer_ee" body2="hole_socket"
+          solref="0.002 1" solimp="0.95 0.99 0.0001 0.5 2" active="false"/>
   </equality>
+
+  <actuator>
+    <position name="stab_x" joint="stab_x" kp="400" forcerange="-500 500"/>
+    <position name="stab_y" joint="stab_y" kp="400" forcerange="-500 500"/>
+    <position name="stab_z" joint="stab_z" kp="400" forcerange="-500 500"/>
+  </actuator>
 
   <actuator>
     <position class="waist" name="waist" joint="waist"/>
