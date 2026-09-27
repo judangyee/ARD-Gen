@@ -33,7 +33,36 @@ eval_scenarios:
     recoil_strength: 10.0
 
 success:
-  reward_threshold: 65.0
+  # retract 단계 추가로 보너스 항(+10, 후퇴 완료)이 늘어 리워드 상한이
+  # ~69~70대 -> ~79~80대로 올라갔다 -- 이전과 같은 여유(상한보다 5 아래)를
+  # 유지하려고 65.0 -> 75.0으로 올렸다.
+  reward_threshold: 75.0
+
+# 후퇴(retract) 단계 파라미터 -- 실제 값은 sim/tacker_openarm_env.py의
+# RETRACT_SAFE_DISTANCE_M/RETRACT_TOLERANCE_M/RETRACT_MAX_STEPS/
+# FINAL_SETTLE_STEPS 상수에 있다(다른 물리 상수, 예: FIRE_TOLERANCE_M와
+# 같은 방식 -- TaskConfig가 임의의 yaml 절을 Env로 그대로 전달하는 범용
+# 메커니즘이 없어서, 씬 무작위화 대상이 아닌 태스크 레벨 상수는 코드에
+# 두고 여기서는 문서화만 한다). 사용자 요청대로 여기 그대로 옮겨 적는다:
+#   safe_distance_m: 0.05   # 발사 지점에서 이만큼 수직으로 물러나면 "후퇴 완료"
+#   tolerance_m: 0.005      # 후퇴 목표점 도달 판정 허용 오차
+#   max_steps: 100          # 후퇴 예산
+#   final_settle_steps: 20  # 그립 해제(release_grip_after) 영향을 관찰하는 추가 정착 스텝
+#
+# ## 왼팔 강화 게인을 언제 놓아도 되는가 (N=150 실측, 세 옵션 비교)
+#
+# TackerOpenArmEnv(release_grip_after=...)로 "none"(끝까지 유지, 기본값)/
+# "fire_settle"(발사 반동이 가라앉자마자, 후퇴 시작 전 해제)/"retract"
+# (후퇴까지 다 끝난 뒤 해제) 세 가지를 구현해서 비교했다 -- 결론과 전체
+# 수치는 PIPELINE.md의 tacker retract 절 참고. 요약: 세 옵션 다 전체
+# 성공률(72~73%)은 거의 안 갈리지만, 어느 구간에서 workpiece가 밀리는지가
+# 갈린다 -- "none"이 모든 구간에서 밀림이 가장 작고(각 구간 중앙값 <0.2mm),
+# "fire_settle"은 후퇴 구간에서, "retract"는 최종 정착 구간에서 밀림이
+# 커진다(특히 "retract"의 최종 정착 밀림은 최댓값 기준 19mm까지 커져서
+# 셋 중 최악의 worst-case를 보인다). **그래서 정식 데이터 생성은 "none"
+# (기본값)으로 실행했다** -- 실제로 그립 힘을 아끼고 싶다면 "retract"보다
+# "fire_settle"이 더 안전한 선택이다(같은 결론이지만 최악의 경우가 훨씬
+# 덜 나쁨).
 
 # pipeline/diffusion_gains.py의 조건 벡터에 쓸 필드 이름과 순서.
 # sim/tacker_openarm_env.py의 sample_scene_config() 스키마 = sim 레벨 스키마

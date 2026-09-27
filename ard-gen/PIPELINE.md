@@ -849,13 +849,15 @@ OpenArm vendor 기본 게인(`assets/openarm/openarm_bimanual.xml`의
 `peg_in_hole_openarm`처럼 Env/XML 안에 이미 통합돼 있어서 실행할 별도
 단계 자체가 없다.
 
-- **필터링**: 350개 씬 중 252개 성공(72.0%, `data/episodes/tacker/`).
-- **언어 라벨링**: force_max 범위 [5.9, 22.6]N(실제 편차 있음, `qfrc_constraint`
-  기반 로깅이 이번에도 유효했다 -- workpiece가 freejoint라 XML `<sensor>`
-  대신 이 방식을 처음부터 채택), 강도 분포 gentle 83 / normal 83 / firm 86.
-- **LeRobotDataset 변환**: 252개 에피소드, 10,916프레임, state_dim=6(오른팔
-  3 + 왼팔 3, wrist 없음 -- 이유는 위 레거시 절과 동일하게 유효), action_dim=3,
-  task_instruction 9종. `data/lerobot/tacker/`.
+- **필터링**: 350개 씬 중 252개 성공(72.0%, `data/episodes/tacker/`) --
+  아래 "후퇴(retract) 단계 추가" 절에서 재실행한 뒤에도 완전히 같은 수치다.
+- **언어 라벨링**: force_max 범위(retract 추가 이전 실측) [5.9, 22.6]N(실제
+  편차 있음, `qfrc_constraint` 기반 로깅이 이번에도 유효했다 -- workpiece가
+  freejoint라 XML `<sensor>` 대신 이 방식을 처음부터 채택), 강도 분포
+  gentle 83 / normal 83 / firm 86.
+- **LeRobotDataset 변환**(retract 추가 이전): 252개 에피소드, 10,916프레임,
+  state_dim=6(오른팔 3 + 왼팔 3, wrist 없음), action_dim=3, task_instruction
+  9종 -- 프레임 수는 아래 retract 절에서 갱신됨.
 
 ### render_episode.py 추가 수정
 
@@ -864,3 +866,82 @@ OpenArm vendor 기본 게인(`assets/openarm/openarm_bimanual.xml`의
 `use_stabilizer` kwarg를 안 받아서, 그 kwarg를 강제로 넘기면 `TypeError`가
 났다(peg_in_hole/cap_twist는 여전히 그 kwarg를 받으므로 기존 동작에 영향 없음,
 둘 다 재렌더링해서 확인).
+
+## tacker에 후퇴(retract) 단계 추가
+
+사용자 피드백: "지금은 발사 성공 + 워크피스 변위 체크에서 에피소드가
+끝나는데, 실제 타카 작업처럼 접근→압착→발사→후퇴까지 전체 사이클을
+포함하도록 수정해달라." 압착은 이 태스크에서 발사 트리거 자체(tolerance
+진입)와 같은 순간이라 별도 단계로 안 나눴고, 접근 뒤에 **정착(settle) ->
+후퇴(retract) -> 최종 정착(final settle)** 세 단계를 추가했다(`sim/
+tacker_openarm_env.py`).
+
+### 설계
+
+- **후퇴 제어는 접근과 완전히 같은 메커니즘을 재사용**했다(검토 결과
+  재사용 가능함을 확인) -- `delta = clip(Kp_approach * (목표 - EE위치),
+  MAX_APPROACH_STEP_M)`을 그대로 쓰고, 목표점만 `nail_site`에서
+  `nail_site + [0,0,RETRACT_SAFE_DISTANCE_M]`(위로 5cm)로 바뀐다. 새 게인을
+  따로 안 만들었다 -- 접근/후퇴 둘 다 "정확한 위치오차 비례 제어"라는
+  같은 성질의 문제라서.
+- **정착 단계도 raw `mj_step` 대신 `step()`(computed-torque)을 delta=0으로
+  계속 호출하도록 바꿨다** -- 예전엔 발사 직후 ctrl이 마지막 값에 그대로
+  얼어붙어 있었는데, "도구를 그 자리에 눌러 유지한다"는 실제 동작에 더
+  맞게 고쳤다(부작용 없음, 실측 확인).
+- **성공 조건 확장**: `is_success()`가 이제 "발사 성공 + (발사 정착/후퇴
+  중/최종 정착) 3개 구간 각각의 workpiece 변위가 전부 허용치 이내 + 후퇴가
+  예산 안에 완료됨"을 전부 요구한다. 리워드도 3개 구간을 따로 페널티화해서
+  (`compute_reward()`) 어느 구간에서 밀렸는지 신호가 섞이지 않게 했다.
+
+### 왼팔 강화 게인을 언제 놓아도 되는가 -- 세 가지 다 구현해서 N=150 실측 비교
+
+`TackerOpenArmEnv(release_grip_after=...)`로 세 시점을 구현했다: `"none"`
+(기본값, 끝까지 유지), `"fire_settle"`(발사 반동이 가라앉자마자, 후퇴
+시작 전에 vendor 게인으로 낮춤), `"retract"`(후퇴까지 다 끝난 뒤에 낮춤).
+셋 다 게인을 낮춘 뒤 `FINAL_SETTLE_STEPS`(20스텝)만큼 더 관찰해서 그 영향을
+측정한다. 같은 씬 시퀀스(N=150, 시드 고정) + 같은 고정 게인으로:
+
+| | `none`(끝까지 유지) | `fire_settle`(정착 직후 해제) | `retract`(후퇴 후 해제) |
+|---|---|---|---|
+| 성공률 | 73.3% | 72.7% | 73.3% |
+| 후퇴 중 변위(`retract_bump`, 중앙값) | 0.118mm | **2.164mm** | 0.118mm |
+| 최종 정착 변위(`final_bump`, 중앙값 / 최댓값) | 0.191mm / 1.1mm | 0.204mm / 5.7mm | **2.138mm / 19.0mm** |
+
+**전체 성공률은 세 옵션 다 거의 안 갈린다(72.7~73.3%, 노이즈 수준 차이)** --
+하지만 *어느 구간에서* workpiece가 밀리는지는 뚜렷하게 갈린다. 원인을
+따져보면 일관된 그림이 나온다: 게인을 낮추면 (반동과 무관하게, 이전
+절에서 실측한 "vendor 게인은 중력만으로도 sag가 생긴다"는 것과 같은
+현상으로) workpiece가 새로운(더 처진) 평형점으로 서서히 이동하는데, **그
+이동량 자체는 언제 게인을 낮추든 비슷하고, 다만 그게 어느 측정 구간에서
+잡히느냐가 달라질 뿐이다** -- `fire_settle`은 그 이동이 후퇴 구간에서
+일어나(그래서 `retract_bump`가 커짐) 후퇴가 끝날 때쯤엔 이미 새 평형점에
+안착해 있어 `final_bump`는 작고, `retract`는 반대로 이동을 전부 최종 정착
+구간(20스텝, 후퇴 구간보다 짧다) 안에 몰아넣어서 그 구간의 변위가 더 크고
+들쭉날쭉하다(최댓값 19mm는 세 옵션 중 최악).
+
+**결론(정식 데이터 생성에 반영)**: 안전 마진이 가장 큰 건 `"none"`(끝까지
+유지)이라 프로덕션 데이터는 이걸로 생성했다. 그립 힘을 실제로 아끼고 싶은
+경우라면 `"retract"`보다 `"fire_settle"`이 낫다 -- 평균적인 성공률은
+동일하지만 최악의 경우(worst-case final_bump)가 훨씬 덜 나쁘다(5.7mm vs
+19.0mm). `tests/test_tacker_task.py`에 이 비교의 핵심 신호(그립을 일찍
+놓으면 후퇴 중 밀림이 뚜렷하게 커진다)를 회귀 테스트로 남겼다.
+
+### 재검증 결과: retract 추가로 새로운 실패 모드가 생기지 않았다
+
+같은 파이프라인(0→1→2-A→2-B→4→5)을 retract 포함 버전으로 재실행했다:
+
+- CMA-ES 1세대 만에 수렴(`Kp_approach≈0.217`, reward≈79.2 -- 후퇴 완료
+  보너스(+10)가 추가돼 리워드 상한이 올라가서 `success.reward_threshold`도
+  65.0 -> 75.0으로 같이 올렸다).
+- 부트스트랩 72.6%(726/1000), diffusion 검증 77.0%(+4.4%p) -- retract 추가
+  전(72.5%/77.0%)과 사실상 동일하다.
+- **필터링: 350개 씬 중 252개 성공(72.0%) -- retract 추가 전과 정확히
+  같은 숫자다.** 사용자가 우려했던 "후퇴 단계에서 새로운 실패 모드가
+  생기는지"는 기본 설정(`release_grip_after="none"`)에서는 실측상 없었다
+  (retract 중 밀림은 항상 발사 반동 자체보다 훨씬 작아서 성공/실패를
+  가르는 요인이 되지 않았다).
+- **LeRobotDataset 변환: 252개 에피소드, 18,706프레임**(10,916 ->
+  18,706, 약 1.71배) -- 에피소드당 평균 프레임이 43.3 -> 74.2로 늘었다
+  (후퇴(~30~40스텝) + 최종 정착(20스텝)이 추가된 만큼).
+- 언어 라벨링 force_max 범위 [5.9, 20.1]N, 강도 분포 gentle 83/normal
+  83/firm 86 -- 이전과 사실상 동일(발사 반동 자체는 안 바뀌었으므로 당연).

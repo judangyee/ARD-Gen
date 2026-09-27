@@ -83,6 +83,16 @@ _SAFE_NEAR_STEP_M = 2.0 * FIRE_TOLERANCE_M
 
 SUCCESS_DISPLACEMENT_M = 0.006  # 발사 후 이 이내로 workpiece가 밀리면 성공
 
+# 후퇴(retract) 단계 -- 사용자 피드백("실제 타카 작업처럼 접근->압착->발사->
+# 후퇴까지 포함해야 한다") 반영. 발사+정착 이후 오른팔이 타점에서 수직으로
+# 안전 거리까지 물러나는 동작을 추가한다 -- 접근 때와 같은 Kp_approach
+# 비례 제어를 그대로 재사용한다(목표점만 nail_site 대신 "nail_site 위
+# RETRACT_SAFE_DISTANCE_M"로 바뀔 뿐, 제어 로직은 동일).
+RETRACT_SAFE_DISTANCE_M = 0.05  # workpiece 표면(nail_site)에서 이만큼 위로 물러나면 "후퇴 완료"
+RETRACT_TOLERANCE_M = 0.005  # 후퇴 목표점에 이 이내로 들어오면 완료로 인정(발사 tolerance보다 느슨 -- 정확한 위치가 중요하지 않아서)
+RETRACT_MAX_STEPS = 100  # 후퇴 예산(접근과 비슷한 거리라 접근보다 넉넉하게)
+FINAL_SETTLE_STEPS = 20  # 왼팔 게인을 낮춘 뒤(release_grip_after 참고) 그 영향을 관찰하는 추가 정착 스텝
+
 # recoil_strength 스케일이 일반 Stabilizer 버전 tacker(0.15~0.45)보다 훨씬
 # 큰 이유: 그 버전의 왼팔은 순수 3-슬라이드 가상 EE(kp=20000, 관성 0.1kg)라
 # 작은 velocity kick에도 즉각 큰 반응이 나왔지만, 여기서는 진짜 7-DOF
@@ -246,12 +256,12 @@ class BimanualTackerOpenArmSim:
         # 비교" 절 참고. XML은 항상 강화 값(kp=2273.98 등)으로 컴파일되므로,
         # False일 때만 vendor 값으로 되돌린다(True면 아무 것도 안 건드림 --
         # XML 기본값이 이미 재사용된 강화 게인이라서).
+        self._left_arm_reinforced_gains = {
+            name: (float(self.model.actuator_gainprm[act_id, 0]), float(-self.model.actuator_biasprm[act_id, 2]))
+            for name, act_id in self._left_arm_actuator_ids.items()
+        }
         if not left_arm_reinforced:
-            for name, act_id in self._left_arm_actuator_ids.items():
-                kp, kv = _VENDOR_LEFT_GAINS[name]
-                self.model.actuator_gainprm[act_id, 0] = kp
-                self.model.actuator_biasprm[act_id, 1] = -kp
-                self.model.actuator_biasprm[act_id, 2] = -kv
+            self.set_left_arm_reinforced(False)
 
         # gravcomp -- peg_in_hole_bimanual_openarm_sim.py와 동일.
         for i in range(self.model.nbody):
@@ -440,6 +450,20 @@ class BimanualTackerOpenArmSim:
         torque = self.data.qfrc_constraint[dofadr + 3 : dofadr + 6].copy()
         return force, torque
 
+    def set_left_arm_reinforced(self, reinforced: bool) -> None:
+        """왼팔 게인을 언제든(에피소드 중간에도) 강화 값 <-> vendor 값으로
+        전환한다 -- MuJoCo의 actuator_gainprm/biasprm은 매 mj_step에서 다시
+        읽히므로 시뮬레이션 도중 바꿔도 즉시 반영된다. "왼팔 강화 게인을
+        언제 놓아도 되는가"(release_grip_after) 실험에 쓴다."""
+        for name, act_id in self._left_arm_actuator_ids.items():
+            if reinforced:
+                kp, kv = self._left_arm_reinforced_gains[name]
+            else:
+                kp, kv = _VENDOR_LEFT_GAINS[name]
+            self.model.actuator_gainprm[act_id, 0] = kp
+            self.model.actuator_biasprm[act_id, 1] = -kp
+            self.model.actuator_biasprm[act_id, 2] = -kv
+
     def apply_recoil(self, kick_vector: np.ndarray) -> None:
         dofadr = self._workpiece_dofadr
         self.data.qvel[dofadr : dofadr + 3] += np.asarray(kick_vector, dtype=float)
@@ -474,41 +498,105 @@ class TackerOpenArmEnv(BaseTaskEnv):
     받지 않는다(왼팔이 generic Stabilizer가 아니라 항상 붙어있는 실제 팔이라
     그 인터페이스 자체가 해당 없음, 모듈 docstring 참고). tasks/tacker.yaml에
     `stabilizer` 절이 없으므로 TaskConfig.make_env()가 애초에 그 kwarg를
-    안 넘긴다."""
+    안 넘긴다.
 
-    def __init__(self, xml_path: str | None = None, left_arm_reinforced: bool = True):
+    release_grip_after: 왼팔 강화 게인을 언제 vendor 게인으로 낮추는지 --
+    "none"(기본값, 에피소드 내내 강화 게인 유지), "fire_settle"(발사+정착
+    직후, 후퇴를 시작하기 전에 낮춤), "retract"(후퇴까지 완료한 뒤에 낮춤).
+    세 값 다 낮춘 뒤 FINAL_SETTLE_STEPS만큼 더 관찰해서, 그 시점에 게인을
+    낮추는 게 실제로 workpiece를 추가로 밀리게 하는지 측정한다(모듈
+    docstring "왼팔 강화 게인 온/오프 비교" 절 + PIPELINE.md의 retract
+    절 참고). "none"은 비교 기준선이라 관찰은 하되 실제로 게인을 낮추지
+    않는다."""
+
+    def __init__(
+        self,
+        xml_path: str | None = None,
+        left_arm_reinforced: bool = True,
+        release_grip_after: str = "none",
+    ):
+        if release_grip_after not in ("none", "fire_settle", "retract"):
+            raise ValueError(f"release_grip_after must be none/fire_settle/retract, got {release_grip_after!r}")
         self._sim = BimanualTackerOpenArmSim(xml_path=xml_path, left_arm_reinforced=left_arm_reinforced)
+        self._left_arm_reinforced = left_arm_reinforced
+        self._release_grip_after = release_grip_after
         self._success_displacement_m = SUCCESS_DISPLACEMENT_M
 
     # ------------------------------------------------------------------
     def reset(self, scene_config: dict[str, Any]) -> None:
         self._sim.reset(scene_config)
+        # release_grip_after가 이전 에피소드에서 게인을 낮춰놨을 수 있으므로
+        # 매 에피소드 시작 시 생성자에서 정한 초기 상태로 되돌린다.
+        self._sim.set_left_arm_reinforced(self._left_arm_reinforced)
         self._success_displacement_m = float(scene_config.get("success_displacement_m", SUCCESS_DISPLACEMENT_M))
 
     def step(self, action: np.ndarray) -> None:
         self._sim.step(np.asarray(action, dtype=float))
 
     def compute_reward(self, episode_result: dict[str, Any]) -> float:
+        """거리 페널티 + 발사 성공 보너스 - (발사 정착/후퇴 중/최종 정착)
+        변위 초과 페널티 3종 - 오버슈트 페널티 - 스텝 페널티 + 후퇴 완료
+        보너스 + 최종 성공 보너스. 페널티 3종을 따로 두는 이유: 어느 단계
+        에서 workpiece가 밀렸는지(발사 반동 자체 vs 후퇴 동작 vs 그립 해제)
+        를 리워드 신호에서도 구분할 수 있게 하기 위해서다."""
         success_disp = episode_result.get("success_displacement_m", SUCCESS_DISPLACEMENT_M)
         reward = (
             -2.0 * episode_result["final_distance"]
             + 20.0 * (1.0 if episode_result.get("fired") else 0.0)
             - 500.0 * max(0.0, episode_result.get("displacement", 0.0) - success_disp)
+            - 500.0 * max(0.0, episode_result.get("retract_bump", 0.0) - success_disp)
+            - 500.0 * max(0.0, episode_result.get("final_bump", 0.0) - success_disp)
             - 20.0 * episode_result.get("overshoot_penalty", 0.0)
             - 0.01 * episode_result["step_count"]
         )
+        if episode_result.get("retracted"):
+            reward += 10.0
         if episode_result.get("success"):
             reward += 50.0
         return float(reward)
 
     def is_success(self, episode_result: dict[str, Any]) -> bool:
-        if not episode_result.get("fired"):
+        """발사 성공 + (발사 정착/후퇴 중/최종 정착) 변위가 전부 허용치
+        이내 + 안전 거리까지 후퇴 완료, 전부 만족해야 성공(사용자 요청
+        "발사 성공 + 변위 체크 + 안전 거리까지 후퇴 완료" 그대로 반영)."""
+        if not episode_result.get("fired") or not episode_result.get("retracted"):
             return False
         success_disp = episode_result.get("success_displacement_m", SUCCESS_DISPLACEMENT_M)
-        return bool(episode_result.get("displacement", float("inf")) <= success_disp)
+        return bool(
+            episode_result.get("displacement", float("inf")) <= success_disp
+            and episode_result.get("retract_bump", float("inf")) <= success_disp
+            and episode_result.get("final_bump", float("inf")) <= success_disp
+        )
 
     # ------------------------------------------------------------------
+    def _record_step(
+        self,
+        ee_poses: list[np.ndarray],
+        left_arm_traj: list[np.ndarray],
+        actions: list[np.ndarray],
+        forces: list[np.ndarray],
+        torques: list[np.ndarray],
+        action: np.ndarray,
+    ) -> None:
+        sim = self._sim
+        force_now, torque_now = sim.get_force_torque()
+        forces.append(force_now)
+        torques.append(torque_now)
+        ee_poses.append(sim.get_ee_pose())
+        left_arm_traj.append(sim.get_left_ee_pos())
+        actions.append(action.astype(np.float32))
+
     def run_episode(self, gains: dict[str, float], scene_config: dict[str, Any]) -> dict[str, Any]:
+        """접근(approach) -> 정착(settle) -> 후퇴(retract) -> 최종 정착
+        (final settle) 네 단계로 구성된다(사용자 피드백: "실제 타카 작업처럼
+        접근->압착->발사->후퇴까지 포함해야 한다"). "압착"은 이 태스크에서
+        발사 트리거 자체(tolerance 진입)에 해당하므로 별도 단계로 안 나눴다
+        -- 접근이 끝나는 바로 그 순간이 곧 압착+발사다.
+
+        후퇴는 접근과 똑같은 Kp_approach 비례 제어를 그대로 재사용한다 --
+        목표점만 nail_site에서 "nail_site 위 RETRACT_SAFE_DISTANCE_M"로
+        바뀔 뿐 delta 계산/클립 로직은 동일하다(재사용 가능한지 검토해보니
+        그대로 재사용 가능했다)."""
         sim = self._sim
         self.reset(scene_config)
         kp_approach = float(gains["Kp_approach"])
@@ -520,11 +608,16 @@ class TackerOpenArmEnv(BaseTaskEnv):
         torques: list[np.ndarray] = []
 
         fired = False
+        retracted = False
         pre_fire_workpiece_pos: np.ndarray | None = None
+        displacement = 0.0
+        retract_bump = 0.0
+        final_bump = 0.0
         overshoot_penalty = 0.0
         final_dist = float("nan")
         step_count = 0
 
+        # -- 1) 접근(approach): tolerance 진입 = 압착+발사 --------------------
         for step_count in range(1, MAX_STEPS + 1):
             tip = sim.get_tool_tip_pos()
             nail = sim.get_nail_pos()
@@ -541,61 +634,121 @@ class TackerOpenArmEnv(BaseTaskEnv):
                 overshoot_penalty = max(overshoot_penalty, step_norm - _SAFE_NEAR_STEP_M)
 
             self.step(delta)
-
-            actions.append(delta.astype(np.float32))
-            force_now, torque_now = sim.get_force_torque()
-            forces.append(force_now)
-            torques.append(torque_now)
-            ee_poses.append(sim.get_ee_pose())
-            left_arm_traj.append(sim.get_left_ee_pos())
+            self._record_step(ee_poses, left_arm_traj, actions, forces, torques, delta)
 
             new_dist = float(np.linalg.norm(sim.get_nail_pos() - sim.get_tool_tip_pos()))
             if new_dist <= FIRE_TOLERANCE_M:
                 fired = True
                 final_dist = new_dist
-                pre_fire_workpiece_pos = sim.get_workpiece_pos().copy()
-                recoil_strength = float(scene_config["recoil_strength"])
-                recoil_angle = float(scene_config.get("recoil_angle", 0.0))
-                kick = recoil_strength * np.array([np.cos(recoil_angle), np.sin(recoil_angle), 0.2])
-                sim.apply_recoil(kick)
-
-                for _ in range(SETTLE_STEPS):
-                    mujoco.mj_step(sim.model, sim.data, nstep=N_SUBSTEPS)
-                    force_now, torque_now = sim.get_force_torque()
-                    forces.append(force_now)
-                    torques.append(torque_now)
-                    ee_poses.append(sim.get_ee_pose())
-                    left_arm_traj.append(sim.get_left_ee_pos())
-                    actions.append(np.zeros(3, dtype=np.float32))
                 break
 
-        displacement = 0.0
-        if fired and pre_fire_workpiece_pos is not None:
-            displacement = float(np.linalg.norm(sim.get_workpiece_pos() - pre_fire_workpiece_pos))
+        if not fired:
+            episode_result = {
+                "final_distance": final_dist,
+                "fired": False,
+                "displacement": displacement,
+                "retract_bump": retract_bump,
+                "retracted": False,
+                "final_bump": final_bump,
+                "success_displacement_m": self._success_displacement_m,
+                "overshoot_penalty": float(max(0.0, overshoot_penalty)),
+                "step_count": step_count,
+            }
+            episode_result["success"] = self.is_success(episode_result)
+            return self._finalize_result(
+                gains, scene_config, episode_result, ee_poses, left_arm_traj, actions, forces, torques
+            )
+
+        # -- 2) 정착(settle): 발사 반동을 kick하고 가라앉힌다 ------------------
+        # step()(computed-torque)을 delta=0으로 계속 불러서 그 순간 위치를
+        # 계속 붙잡는다(예전엔 raw mj_step만 불러 ctrl이 고정된 채였는데,
+        # "발사 직후 도구를 그 자리에 눌러 유지한다"는 실제 동작에 더
+        # 맞도록 고쳤다).
+        pre_fire_workpiece_pos = sim.get_workpiece_pos().copy()
+        recoil_strength = float(scene_config["recoil_strength"])
+        recoil_angle = float(scene_config.get("recoil_angle", 0.0))
+        kick = recoil_strength * np.array([np.cos(recoil_angle), np.sin(recoil_angle), 0.2])
+        sim.apply_recoil(kick)
+
+        zero_delta = np.zeros(3)
+        for _ in range(SETTLE_STEPS):
+            step_count += 1
+            self.step(zero_delta)
+            self._record_step(ee_poses, left_arm_traj, actions, forces, torques, zero_delta)
+
+        displacement = float(np.linalg.norm(sim.get_workpiece_pos() - pre_fire_workpiece_pos))
+
+        if self._release_grip_after == "fire_settle":
+            sim.set_left_arm_reinforced(False)
+
+        # -- 3) 후퇴(retract): nail_site 위 안전 거리까지 수직으로 물러난다 ----
+        retract_start_pos = sim.get_workpiece_pos().copy()
+        retract_target = sim.get_nail_pos() + np.array([0.0, 0.0, RETRACT_SAFE_DISTANCE_M])
+        for _ in range(RETRACT_MAX_STEPS):
+            tip = sim.get_tool_tip_pos()
+            err = retract_target - tip
+            dist = float(np.linalg.norm(err))
+            if dist <= RETRACT_TOLERANCE_M:
+                retracted = True
+                break
+
+            delta = kp_approach * err
+            step_norm = float(np.linalg.norm(delta))
+            if step_norm > MAX_APPROACH_STEP_M:
+                delta = delta * (MAX_APPROACH_STEP_M / step_norm)
+
+            step_count += 1
+            self.step(delta)
+            self._record_step(ee_poses, left_arm_traj, actions, forces, torques, delta)
+
+        retract_bump = float(np.linalg.norm(sim.get_workpiece_pos() - retract_start_pos))
+
+        if self._release_grip_after == "retract":
+            sim.set_left_arm_reinforced(False)
+
+        # -- 4) 최종 정착(final settle): 그립을 놓은 시점의 영향을 관찰 ---------
+        final_settle_start_pos = sim.get_workpiece_pos().copy()
+        for _ in range(FINAL_SETTLE_STEPS):
+            step_count += 1
+            self.step(zero_delta)
+            self._record_step(ee_poses, left_arm_traj, actions, forces, torques, zero_delta)
+        final_bump = float(np.linalg.norm(sim.get_workpiece_pos() - final_settle_start_pos))
 
         episode_result = {
             "final_distance": final_dist,
             "fired": fired,
             "displacement": displacement,
+            "retract_bump": retract_bump,
+            "retracted": retracted,
+            "final_bump": final_bump,
             "success_displacement_m": self._success_displacement_m,
             "overshoot_penalty": float(max(0.0, overshoot_penalty)),
             "step_count": step_count,
         }
-        success = self.is_success(episode_result)
-        episode_result["success"] = success
-        reward = self.compute_reward(episode_result)
+        episode_result["success"] = self.is_success(episode_result)
+        return self._finalize_result(
+            gains, scene_config, episode_result, ee_poses, left_arm_traj, actions, forces, torques
+        )
 
+    def _finalize_result(
+        self,
+        gains: dict[str, float],
+        scene_config: dict[str, Any],
+        episode_result: dict[str, Any],
+        ee_poses: list[np.ndarray],
+        left_arm_traj: list[np.ndarray],
+        actions: list[np.ndarray],
+        forces: list[np.ndarray],
+        torques: list[np.ndarray],
+    ) -> dict[str, Any]:
+        reward = self.compute_reward(episode_result)
         return {
             "trajectory": {"ee_poses": np.stack(ee_poses).astype(np.float32)},
             "ee_poses": np.stack(ee_poses).astype(np.float32),
             "actions": np.stack(actions).astype(np.float32) if actions else np.zeros((0, 3), dtype=np.float32),
             "forces": np.stack(forces).astype(np.float32) if forces else np.zeros((0, 3), dtype=np.float32),
             "torques": np.stack(torques).astype(np.float32) if torques else np.zeros((0, 3), dtype=np.float32),
-            "final_distance": final_dist,
-            "fired": fired,
-            "displacement": float(displacement),
-            "step_count": step_count,
-            "success": success,
+            **episode_result,
             "reward": reward,
             "gains": dict(gains),
             "scene_config": scene_config,

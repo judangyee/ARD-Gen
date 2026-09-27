@@ -39,7 +39,30 @@ def test_task_registry_wiring() -> None:
     result = env.run_episode(_SEED_GAINS, task.default_scene_config())
     assert result["success"] is True
     assert result["fired"] is True
+    assert result["retracted"] is True
     print("[OK] task_registry wiring for tacker (OpenArm)")
+
+
+def test_retract_phase_completes_without_new_failures() -> None:
+    """후퇴(retract) 단계를 추가한 뒤에도 새로운 실패 모드가 안 생기는지 --
+    기본 설정(release_grip_after="none", 왼팔 강화 게인 끝까지 유지)에서는
+    발사 반동만 성공/실패를 가르고, 후퇴 자체는 항상 완료되며 후퇴 중
+    workpiece가 눈에 띄게 더 밀리지 않아야 한다(PIPELINE.md의 retract 절
+    N=350 실측: 필터링 성공률이 retract 추가 전후로 동일했다, 여기서는
+    더 작은 N으로 빠르게 같은 것을 확인)."""
+    task = load_task_config("tacker")
+    env = task.make_env()
+    rng = np.random.default_rng(11)
+    retract_bumps = []
+    for _ in range(_N):
+        cfg = task.sample_scene_config(rng)
+        result = env.run_episode(_SEED_GAINS, cfg)
+        assert result["retracted"] is True, "기본 설정(그립 유지)에서는 후퇴가 항상 완료돼야 함"
+        retract_bumps.append(result["retract_bump"])
+    # 그립을 안 놓으면 후퇴 중 밀림이 발사 반동 자체보다 훨씬 작아야 한다
+    # (실측: 중앙값 0.1mm대) -- 이게 커지면 후퇴 로직 자체에 회귀가 생긴 것.
+    assert np.median(retract_bumps) < 0.001, "후퇴 중 workpiece가 예상보다 많이 밀림 -- 회귀 의심"
+    print(f"[OK] retract 단계 정상 동작 확인 (중앙값 retract_bump={np.median(retract_bumps) * 1000:.4f}mm)")
 
 
 def test_left_arm_reinforced_gains_matter() -> None:
@@ -72,8 +95,38 @@ def test_left_arm_reinforced_gains_matter() -> None:
     print("[OK] 왼팔 강화 게인이 발사 반동을 흡수한다는 게 실측으로 확인됨")
 
 
+def test_releasing_grip_early_increases_retract_bump() -> None:
+    """"왼팔 강화 게인을 언제 놔도 되는가" 실험(PIPELINE.md의 retract 절
+    N=150 실측 참고): 정착 직후(retract 시작 전)에 놓으면(release_grip_after
+    ="fire_settle") 그 다음 후퇴 구간에서 workpiece가 "none"(끝까지 유지)
+    보다 뚜렷하게 더 밀려야 한다 -- 안 그러면 이 실험 결론(끝까지 유지하는
+    게 제일 안전하다) 자체가 재현이 안 되는 것."""
+    task = load_task_config("tacker")
+
+    def run(env) -> np.ndarray:
+        rng = np.random.default_rng(5)
+        bumps = []
+        for _ in range(_N):
+            cfg = task.sample_scene_config(rng)
+            result = env.run_episode(_SEED_GAINS, cfg)
+            bumps.append(result["retract_bump"])
+        return np.array(bumps)
+
+    bump_none = run(TackerOpenArmEnv(release_grip_after="none"))
+    bump_early = run(TackerOpenArmEnv(release_grip_after="fire_settle"))
+
+    print(
+        f"[tacker] retract_bump 중앙값 -- 그립 유지: {np.median(bump_none) * 1000:.4f}mm | "
+        f"정착 직후 해제: {np.median(bump_early) * 1000:.4f}mm"
+    )
+    assert np.median(bump_early) > np.median(bump_none) * 5, "정착 직후 그립을 놔도 후퇴 중 밀림이 안 늘어남 -- 회귀 의심"
+    print("[OK] 그립을 일찍 놓으면 후퇴 중 밀림이 뚜렷하게 늘어난다는 게 실측으로 확인됨")
+
+
 if __name__ == "__main__":
     test_task_registry_wiring()
+    test_retract_phase_completes_without_new_failures()
     test_left_arm_reinforced_gains_matter()
+    test_releasing_grip_early_increases_retract_bump()
     print()
     print("ALL TACKER (OPENARM) TESTS PASSED")
