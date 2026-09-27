@@ -27,7 +27,10 @@ _TASKS_DIR = os.path.join(os.path.dirname(__file__), "..", "tasks")
 # 이름/범위, 씬 무작위화, 성공 기준, 언어 라벨링 어휘)은 tasks/{name}.yaml에
 # 있다 -- 여기는 "이름 -> 코드" 매핑만 담당한다.
 TASK_REGISTRY: dict[str, str] = {
-    "peg_in_hole": "sim.peg_in_hole_env:PegInHoleEnv",
+    # OpenArm 양팔 버전으로 교체함(VX300s 버전은 sim/peg_in_hole_env.py:PegInHoleEnv
+    # 로 여전히 존재하지만 더 이상 등록돼 있지 않다 -- 사용자 요청으로 전환,
+    # sim/peg_in_hole_openarm_env.py 상단 docstring 참고).
+    "peg_in_hole": "sim.peg_in_hole_openarm_env:PegInHoleOpenArmEnv",
     "cap_twist": "sim.cap_twist_env:CapTwistEnv",
 }
 

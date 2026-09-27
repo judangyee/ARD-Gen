@@ -135,16 +135,25 @@ def test_scene_sampling_matches() -> None:
 
 
 def test_task_registry_wiring() -> None:
+    """TASK_REGISTRY["peg_in_hole"]가 OpenArm 버전(sim/peg_in_hole_openarm_env.py:
+    PegInHoleOpenArmEnv)으로 교체된 뒤의 값들이다("아니 로봇이 왜 다시 바뀐거야"
+    피드백 이후 사용자가 명시적으로 선택한 전환, tasks/peg_in_hole.yaml 주석
+    참고) -- 이 파일의 다른 두 테스트(test_fixed_gain_episodes_match,
+    test_scene_sampling_matches)는 VX300s 저수준 리팩토링 자체를 검증하는
+    것이라 TASK_REGISTRY와 무관하게 여전히 유효하지만, 이 테스트만 등록된
+    태스크를 통해 접근하므로 전환 이후 값으로 갱신했다."""
     task = load_task_config("peg_in_hole")
     assert task.gain_names == ["Kp_xy", "Kd_xy"]
-    assert task.gain_bounds["Kp_xy"] == (0.00002, 0.003)
-    assert task.gain_bounds["Kd_xy"] == (0.0, 0.0005)
+    assert task.gain_bounds["Kp_xy"] == (0.001, 0.5)
+    assert task.gain_bounds["Kd_xy"] == (0.0, 0.02)
     assert len(task.eval_scenarios) == 3
-    assert task.condition_dim == 7
+    assert task.condition_dim == 4
     env = task.make_env()
-    result = env.run_episode(task.gains_from_vector([0.0003, 5e-05]), task.default_scene_config())
+    # optimize/peg_in_hole_openarm_admittance_gain_search.py로 실측 탐색한
+    # 알려진 성공 게인(sim/peg_in_hole_bimanual_openarm_sim.py __main__ 참고).
+    result = env.run_episode(task.gains_from_vector([0.124630, 0.001125]), task.default_scene_config())
     assert result["success"] is True
-    print("[OK] task_registry wiring for peg_in_hole")
+    print("[OK] task_registry wiring for peg_in_hole (OpenArm)")
 
 
 if __name__ == "__main__":

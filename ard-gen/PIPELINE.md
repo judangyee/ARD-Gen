@@ -494,3 +494,99 @@ LLM 기반으로 바꾸는 것(현재는 표현할 정보 조합이 단순해 �
 절 참고), 그리고 peg_in_hole 3단계에서 발견된 "고부하 경계선 케이스
 11/142건" 잔여 실패의 근본 개선(현재는 정직하게 실패로 남겨둠, 위 3단계
 절 참고).
+
+## TASK_REGISTRY["peg_in_hole"]을 VX300s에서 OpenArm 양팔로 교체
+
+위 232개 생산 데이터셋은 **VX300s 단일팔(Actuator)+가상 EE Stabilizer**
+(`assets/peg_in_hole.xml`, `sim/peg_in_hole_env.py:PegInHoleEnv`) 기준이었다.
+이 파일 자체와 검증 결과는 여전히 유효하고 코드도 그대로 남아있지만("아니
+로봇이 왜 다시 바뀐거야" 피드백으로 드러난 것처럼, 이 VX300s 라인과 별도로
+진행되던 `assets/peg_in_hole_bimanual_openarm.xml`/`sim/
+peg_in_hole_bimanual_openarm_sim.py`(OpenArm 양팔, commit 573291e부터) 두
+라인이 한 번도 합쳐진 적이 없었다), **사용자가 명시적으로 OpenArm 라인으로
+교체를 요청**해서 `sim/task_registry.py`의 `TASK_REGISTRY["peg_in_hole"]`을
+`sim.peg_in_hole_openarm_env:PegInHoleOpenArmEnv`로 바꿨다. 아래는 그
+전환과 재생성 기록이다.
+
+### 근본적 차이 (VX300s -> OpenArm)
+
+- **팔 자유도**: 6-DOF(VX300s) -> 7-DOF(OpenArm), 두 팔 받침대 간격 6.2cm로
+  훨씬 좁음.
+- **왼팔(Stabilizer)이 generic 클래스가 아니다**: VX300s는 `sim/
+  stabilizer.py`의 가상 EE(3-슬라이드 조인트, IK 불필요)라 어떤 태스크든
+  `object_body`/`grasp_offset` 두 필드만 주면 재사용된다. OpenArm은 왼팔이
+  **진짜 7-DOF 팔**이고 hole_socket을 쥔 채 강화된 위치 게인으로 태스크
+  내내 고정돼 있다 -- 이 고정이 XML/sim 모듈에 이미 구워져 있어서
+  `tasks/peg_in_hole.yaml`에 `stabilizer` 절이 없다(`sim/
+  peg_in_hole_openarm_env.py` 모듈 docstring 참고). 대신 매 스텝 왼팔 EE
+  위치를 기록해서 스키마 일관성(episode의 `left_arm`, role classifier용)은
+  그대로 유지한다.
+- **오른팔 제어**: admittance(접촉힘 PD) -> 역동역학(computed-torque, 매
+  스텝 `mj_fullM`으로 실제 관성 반영) + 위치 오차 기반 xy 타겟팅. 접촉힘이
+  거의 항상 0이라 admittance 자체가 신호를 못 받았기 때문(`sim/
+  peg_in_hole_bimanual_openarm_sim.py` 모듈 docstring에 실패한 시도들까지
+  전부 기록해뒀다 -- gravcomp 누락, 널스페이스 표류, 관절 한계 눌어붙음,
+  타이밍 불일치 가설 등).
+- **게인의 의미 자체가 다르다**: `Kp_xy`/`Kd_xy` 이름은 같지만 VX300s는
+  접촉힘(N)에, OpenArm은 위치 오차(m)에 곱하는 게인이라 스케일이 전혀
+  다르다(`tasks/peg_in_hole.yaml`의 bounds가 0.00002~0.003 -> 0.001~0.5로
+  바뀐 이유).
+- **condition_fields 4차원(7 -> 4)**: OpenArm의 hole 위치는 왼팔의 고정
+  자세로 결정되고 scene_config로 옮길 자유도가 아니라서 `hole_pose`(3차원)
+  가 조건 벡터에서 빠졌다.
+
+### 재생성 실행 기록 (0→1→2-A→2-B→4→5→LeRobotDataset)
+
+기존 `data/bootstrap/peg_in_hole_*`, `data/episodes/peg_in_hole/`,
+`data/lerobot/peg_in_hole/`는 전부 VX300s 기준이라 그대로 두면 새 Env와
+안 맞는다(둘 다 `.gitignore`돼 있어 커밋 오염은 없었지만, 로컬에 남아있으면
+헷갈리므로) -- 아래 순서로 지우고 새로 생성했다:
+
+1. `optimize/cma_search.py --task peg_in_hole` -- **1세대 만에 조기 종료**
+   (reward=48.91 >= threshold 45.0). 이미 알려진 좋은 게인(아래 참고) 근방
+   탐색 공간이 매우 관대하다는 뜻.
+2. `pipeline/bootstrap.py --task peg_in_hole --n-trials 1000` -- seed 게인
+   주변 무작위 노이즈(0.5~2.0배)로 1000회 실행, **성공률 99.1%**(VX300s는
+   기록에 따르면 훨씬 낮았다 -- OpenArm 버전이 실측으로 훨씬 로버스트함).
+3. `pipeline/diffusion_gains.py --task peg_in_hole` -- 조건부 diffusion
+   학습(500 epoch), 검증(새 무작위 씬 100개): **성공률 100%**(부트스트랩
+   대비 +0.9%p).
+4. `pipeline/filter_episodes.py --task peg_in_hole --n-scenes 250` -- **249/250
+   성공(99.6%)** -> `data/episodes/peg_in_hole/`.
+5. `pipeline/language_labeling.py --task peg_in_hole` -- 249개 전부 언어
+   라벨 완성.
+6. `pipeline/to_lerobot.py --task peg_in_hole` -- **249개 에피소드, 38,784
+   프레임**, state_dim=7/action_dim=3(VX300s와 동일 차원 -- 우연이 아니라
+   `get_ee_pose()`가 같은 `[x,y,z,wrist_rotate]` 형태를 반환하도록 맞췄기
+   때문), task_instruction 9종.
+
+### 정직하게 밝히는 한계: force_max에 실질적 변화가 없다
+
+5단계 로그에 `force_max 범위 [0.5, 0.5]N`이 그대로 찍힌다 -- 249개 에피소드
+전부 최대 접촉힘이 사실상 peg 자체 무게(0.4905N)에 고정돼 있고, "삽입
+강도"(gentle/normal/firm) 라벨은 33/66 백분위 경계가 둘 다 0.5N이라
+**진짜 힘 차이가 아니라 부동소수점 수준의 임의 분할**이다. 원인은 위
+"근본적 차이" 절의 제어 방식 전환 자체다 -- 오른팔이 이제 hole의 실제
+좌표를 직접 타겟팅해서 벽에 세게 부딪히기 전에 정렬을 마치므로, VX300s
+버전(admittance가 접촉힘 피드백으로 동작해서 힘 프로파일에 실제 편차가
+있었음, force_max 범위 [0.5, 148.7]N)과 달리 강한 접촉 자체가 거의
+일어나지 않는다. 그래서 **OpenArm peg_in_hole 데이터셋의 "삽입 강도"
+언어 라벨은 통계적으로 의미가 없다**(같은 "적당한 힘으로"라는 문구가
+힘과 무관하게 붙는다) -- 다음에 이어서 개선할 사람에게: 강도를 의미 있게
+만들려면 (a) 제어 자체에 의도적인 힘 변주를 넣거나(admittance 성분을
+다시 살리거나), (b) 강도 어휘를 force 대신 다른 신호(예: 접근 속도,
+Kp_xy 크기)로 바꾸는 것을 고려할 만하다.
+
+### 환경 함정: `MUJOCO_GL=osmesa` + PyTorch `Adam` 세그폴트
+
+`torch.optim.Adam`을 처음 생성할 때 PyTorch가 내부적으로 `triton` 임포트를
+시도하는데(`torch/_dynamo`), 이 컨테이너에서 **`MUJOCO_GL=osmesa`를 설정한
+상태로 `mujoco`를 먼저 임포트한 뒤** Adam을 생성하면 세그폴트가 난다(추정
+원인: OSMesa의 소프트웨어 래스터라이저와 triton이 서로 다른 버전의
+LLVM 공유 라이브러리를 동시에 로드해서 생기는 ABI 충돌 -- 확실친 않음,
+재현만 확인). 렌더링을 안 하는 스크립트(`optimize/cma_search.py`,
+`pipeline/bootstrap.py`, `pipeline/diffusion_gains.py`,
+`pipeline/filter_episodes.py`)는 애초에 `MUJOCO_GL`을 설정할 필요가 없으므로
+(오프스크린 렌더러를 안 만듦), **`render_episode.py`처럼 실제로 프레임을
+캡처하는 스크립트에서만 `MUJOCO_GL=osmesa`를 쓰고 나머지는 안 쓰는 것**이
+가장 간단한 회피책이다(실측: 두 조합 다 정상 동작 확인).

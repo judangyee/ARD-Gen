@@ -508,6 +508,7 @@ class BimanualPegInHoleOpenArmSim:
         self._hole_body_id = self.model.body("hole_socket").id
         self._peg_body_id = self.model.body("peg").id
         self._right_ee_body_id = self.model.body("openarm_right_ee_base_link").id
+        self._left_ee_body_id = self.model.body("openarm_left_ee_base_link").id
         self._hole_site_id = self.model.site("hole_center_site").id
         self._peg_tip_site_id = self.model.site("peg_tip_site").id
         self._peg_geom_ids = [self.model.geom("peg_shaft").id, self.model.geom("peg_tip_ball").id]
@@ -871,6 +872,14 @@ class BimanualPegInHoleOpenArmSim:
 
     def get_hole_center_pos(self) -> np.ndarray:
         return self.data.site_xpos[self._hole_site_id].copy()
+
+    def get_left_ee_pos(self) -> np.ndarray:
+        """왼팔(hole_socket을 쥔 채 이 태스크 내내 고정) EE 위치. 실제로는
+        거의 안 움직이지만(강화 게인으로 고정, assets 파일 docstring "3. 왼팔도
+        능동 제어가 필요해서..." 참고), sim/peg_in_hole_openarm_env.py가 이걸
+        매 스텝 기록해서 right_arm과 길이가 같은 left_arm_traj를 만든다(5단계
+        role classifier 학습용 스키마 일관성, 그 파일 모듈 docstring 참고)."""
+        return self.data.xpos[self._left_ee_body_id].copy()
 
     def step(self, delta_pos_world: np.ndarray) -> None:
         """가상(순수 기구학) 상태를 delta_pos_world만큼 전진시키고, 그 결과를
