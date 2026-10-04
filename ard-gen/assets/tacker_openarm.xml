@@ -58,8 +58,16 @@
        동역학" 탓으로만 돌려졌는데, 이 더 단순한 원인이 최소한 일부는
        설명할 가능성이 있다 -- PIPELINE.md의 tacker 절 참고). 이 옵션을
        추가하니 같은 정지 홀드 테스트에서 드리프트가 20mm대에서 실측
-       0.0x mm 수준으로 사라졌다. -->
-  <option cone="elliptic" impratio="10" integrator="implicitfast"/>
+       0.0x mm 수준으로 사라졌다.
+
+       timestep="0.002"는 공식 enactic/openarm_mujoco v2(timestep=0.001)와
+       다르다는 걸 명시해둔다 -- 이 파일의 sim 모듈(N_SUBSTEPS=5, 제어
+       주기 dt=0.01s)과 모든 게인이 0.002 전제로 튜닝돼 있어서(공식 모델
+       검증 작업 중 확인, PIPELINE.md 참고) 일부러 안 바꿨다. 명시 안 해도
+       기본값이 0.002라 동작은 그대로지만, openarm_bimanual.xml을 공식
+       값(timestep=0.001)으로 맞추면서 <attach> 시 "parent 값 유지" 경고가
+       뜨게 됐길래, 의도된 선택임을 분명히 적어둔다. -->
+  <option timestep="0.002" cone="elliptic" impratio="10" integrator="implicitfast"/>
   <visual>
     <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6" specular="0.1 0.1 0.1"/>
   </visual>

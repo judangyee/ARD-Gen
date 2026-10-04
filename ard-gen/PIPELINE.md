@@ -945,3 +945,65 @@ tacker_openarm_env.py`).
   (후퇴(~30~40스텝) + 최종 정착(20스텝)이 추가된 만큼).
 - 언어 라벨링 force_max 범위 [5.9, 20.1]N, 강도 분포 gentle 83/normal
   83/firm 86 -- 이전과 사실상 동일(발사 반동 자체는 안 바뀌었으므로 당연).
+
+## 공식 OpenArm 모델 검증 (로봇을 OpenArm 양팔 + 공식 그리퍼로 확정)
+
+`enactic/openarm_mujoco` v2(HEAD `1c1a2d4`, 이 세션 작업 시점)와
+`assets/openarm/` 전체(팔+그리퍼+받침대 MJCF, 모든 visual/collision 메시)를
+직접 바이트 단위로 diff했다. **검증됨**: 링크 치수/관절 range/질량/관성/
+메시 파일 전부 완전히 동일 (README의 "수정 없이 복사만 했다"는 주장이
+정확함), 양팔 베이스 간격도 official `openarm_bimanual.xml`의
+`openarm_left_base_link pos="0 0.031 0"` / `openarm_right_base_link
+pos="0 -0.031 0"`에서 그대로 유도되는 **6.2cm**가 정확함(기존 기록 그대로).
+
+**발견된 차이 3개, 전부 공식값으로 교체**:
+
+1. `openarm_bimanual.xml`/`openarm_pedestal.xml`/`pedestal.xml`의 `<option>`에서
+   `timestep="0.001" integrator="implicitfast"`가 빠져 있었음 -- 복원해서
+   세 파일 다 공식 원본과 바이트 단위로 완전히 동일해짐. (단, `<option>`은
+   `<attach>`를 안 타고 넘어가므로 -- 공식 파일 자신의 주석이 이미 그렇게
+   경고하고 있었다 -- 이 복원 자체는 최종 컴파일된 씬에 아무 영향이 없다.
+   실제로 영향 있는 곳은 각 씬 자신의 `<option>`이다, 아래 2번.)
+2. 왼쪽 손가락 액추에이터(`left_finger1_ctrl`) `ctrlrange`가 공식
+   `-0.4~0.7854`에서 `0~0.7854`로, 오른쪽(`right_finger1_ctrl`)이 공식
+   `-0.7854~0.4`에서 `-0.7854~0`으로 좁아져 있었음 -- 공식값으로 복원.
+   (조인트 자체의 물리적 range는 원래부터 안 바뀌어 있었음 -- 액추에이터
+   명령 가능 범위만 좁았던 것.)
+3. **(실제 버그, 실측으로 심각성 확인)** `assets/peg_in_hole_bimanual_openarm.xml`
+   자신의 `<option>`에 `integrator="implicitfast"`가 없었다 -- tacker/
+   screw_driving에서 이미 발견/수정했던 것과 완전히 같은 버그(강한 position
+   액추에이터 + 항상 활성 weld 조합의 semi-implicit Euler 에너지 누출)가
+   peg_in_hole에도 있었던 것으로, 이전 세션에서 "의심되지만 미확인"으로
+   남겨뒀던 항목이다. **직접 측정**: 왼팔이 hole_socket을 쥔 채 오른팔
+   입력 없이 2000스텝(20초) 정지 유지만 시켰을 때 — 수정 전 **69.08mm**
+   드리프트, 수정 후 **0.0000mm**. `assets/bimanual_openarm.xml`(Python
+   코드에서 안 쓰이는 범용 데모 씬)에도 같은 이유로 동일하게 적용.
+
+**의도적으로 공식값을 안 따른 것 1개**: 위 세 씬(`peg_in_hole_bimanual_openarm.xml`,
+`bimanual_openarm.xml`) + 기존 `tacker_openarm.xml`/
+`screw_driving_bimanual_openarm.xml`의 `timestep`은 공식값(0.001)이 아니라
+**0.002를 그대로 유지**한다 — 네 파일의 sim 모듈 전부 `N_SUBSTEPS=5`(제어
+주기 dt=0.01s)와 그걸 전제로 튜닝된 모든 게인(Kp_xy/Kd_xy, NOMINAL_RATE,
+Z_RATE, OMEGA_N 등)이 timestep=0.002 가정이라, 0.001로 바꾸면 네 태스크
+전부 게인을 처음부터 다시 탐색해야 한다(이번 "공식 모델 검증"의 범위를
+크게 벗어남). 네 파일 모두 `timestep="0.002"`를 명시해 이 선택이 의도적임을
+기록해뒀다(안 적어도 기본값이 0.002라 동작은 동일하지만, 공식 서브모델이
+이제 `timestep="0.001"`을 갖게 되면서 `<attach>` 시 "parent 값 유지" 경고가
+뜨게 됨 -- 경고 자체는 무해하고 예상된 것).
+
+**그리퍼(공식 구조, 이미 ARD-Gen 코드가 정확히 따르고 있었음)**: 손가락당
+물리 조인트 2개(`finger_joint1`/`finger_joint2`), `<equality><joint>` mimic
+제약(`polycoef="0 1 0 0 0"`, joint2 = joint1)으로 **1개 actuated DOF만**
+구동 — 즉 그리퍼 자체는 손당 1-DOF 평행 그리퍼다. ARD-Gen의 OpenArm sim
+모듈(`tacker_openarm_env.py`, `screw_driving_bimanual_openarm_sim.py` 등)은
+이미 이 구조를 정확히 따르고 있다(두 조인트 qpos를 함께 설정, 액추에이터는
+`*_finger1_ctrl` 하나만 사용). 공식 모델에서 직접 FK로 측정한 스트로크
+(MuJoCo 충돌 메시 기준, 공식 데이터시트 수치 아님 -- **미검증**): 조인트
+range(0~45°) 전체에서 핑거팁 콜리전 메시 간격 약 49mm(닫힘측 극단) ~
+84mm(열림측 극단).
+
+**손목 카메라(이미 공식 위치로 존재, 아직 파이프라인에 연결 안 됨)**:
+`openarm_bimanual.xml`에 `camera_wrist_left`/`camera_wrist_right`가 공식
+pos/euler/fovy/resolution 그대로 이미 정의돼 있다. 이 세션 이전까지 어떤
+Python 코드도 참조하지 않았다 -- 다음 Phase(손목 카메라 연결)에서는 "추가"가
+아니라 "이미 있는 공식 위치의 카메라를 observation에 연결"만 하면 된다.

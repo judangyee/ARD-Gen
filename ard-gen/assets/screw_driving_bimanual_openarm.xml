@@ -75,11 +75,17 @@
        있었다(실측: 4500스텝에 20cm 넘게, 게인을 5배 올려도 별로 안
        줄어듦 -- peg_in_hole_bimanual_openarm.xml도 똑같이 실측해보니
        같은 패턴이 있었는데 그쪽은 에피소드가 짧아서(수백 스텝) 드러나지
-       않았을 뿐이었다). implicitfast로 바꾸니 4500스텝에 ~28mm에서
+       않았을 뿐이었다 -- 공식 모델 검증 작업 때 그 파일도 이 옵션을
+       추가해 고쳤다). implicitfast로 바꾸니 4500스텝에 ~28mm에서
        빠르게 수렴하고 멈췄다(실측 확인) -- 뻣뻣한 position 액추에이터 +
        weld 제약 조합에서 흔히 나타나는 explicit Euler의 에너지 누출을
-       암시적 적분이 잡아주는 것으로 보인다. -->
-  <option cone="elliptic" impratio="10" integrator="implicitfast"/>
+       암시적 적분이 잡아주는 것으로 보인다.
+
+       timestep="0.002"는 공식 enactic/openarm_mujoco v2(timestep=0.001)와
+       다르다 -- 이 파일의 sim 모듈(N_SUBSTEPS=5, dt=0.01s)과 모든 게인이
+       0.002 전제로 튜닝돼 있어 일부러 안 바꿨다(tacker_openarm.xml과 같은
+       이유, 그 파일 주석 참고). -->
+  <option timestep="0.002" cone="elliptic" impratio="10" integrator="implicitfast"/>
   <visual>
     <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6" specular="0.1 0.1 0.1"/>
   </visual>

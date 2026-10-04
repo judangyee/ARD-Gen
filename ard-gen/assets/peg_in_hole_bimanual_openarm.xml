@@ -130,9 +130,30 @@
     아니면 이 팔 기구학(7-DOF, 훨씬 큰 팔, 강화 게인)에 맞게 재탐색해야
     하는지는 sim 모듈을 만들면서 처음 실측한다 -- 결과는 그 파일 __main__
     참고.
+
+    ## integrator="implicitfast" 추가 (공식 모델 검증 중 실측 확인)
+
+    enactic/openarm_mujoco v2의 openarm_bimanual.xml 자체 주석이 이미
+    "<option>은 <attach>를 안 타고 넘어가므로 모든 씬이 이 설정(timestep +
+    integrator 포함)을 각자 반복해야 한다"고 명시하고 있는데, 이 씬은
+    처음 만들 때 그걸 놓쳤다 -- tacker_openarm.xml/
+    screw_driving_bimanual_openarm.xml에서 나중에 실측으로 먼저 발견한
+    것과 같은 버그(강한 position 액추에이터 + 항상 활성 weld 조합에서
+    기본 semi-implicit Euler의 에너지 누출로 왼팔이 hole_socket을 쥔 채
+    천천히 처짐)를 여기서도 고친다.
+
+    timestep은 공식값(0.001)이 아니라 0.002로 그대로 둔다 -- 이 씬의
+    sim 모듈(N_SUBSTEPS=5, 제어 주기 dt=0.01s)과 이미 튜닝된 모든 게인
+    (Kp_xy/Kd_xy, Z_RATE 등)이 전부 timestep=0.002 전제로 실측/탐색된
+    값이라, 0.001로 바꾸면 그 전부를 다시 튜닝해야 한다(이번 요청 범위
+    밖) -- tacker_openarm.xml/screw_driving_bimanual_openarm.xml도 같은
+    이유로 0.002를 쓴다. 명시적으로 적어두는 이유는 openarm_bimanual.xml
+    (공식 원본, timestep="0.001")을 <attach>하면 "parent(0.002) vs
+    child(0.001), parent 값 유지" 경고가 뜨는데, 그게 의도된 선택임을
+    분명히 하기 위해서다.
   -->
   <compiler angle="radian"/>
-  <option cone="elliptic" impratio="10"/>
+  <option timestep="0.002" cone="elliptic" impratio="10" integrator="implicitfast"/>
   <visual>
     <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6" specular="0.1 0.1 0.1"/>
   </visual>

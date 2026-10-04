@@ -67,9 +67,19 @@
     admittance controller, sim 모듈, 게인 재탐색, 렌더 스크립트, 어떤
     태스크 로직도 없다. VX300s 버전과 마찬가지로 이 환경 위에 태스크를
     짓는 건 다음 작업.
+
+    ## integrator="implicitfast" 추가 (공식 모델 검증 중 실측 확인)
+
+    assets/openarm/openarm_bimanual.xml 자체 주석이 "<option>은 <attach>를
+    안 타고 넘어가므로 모든 씬이 이 설정을 각자 반복해야 한다"고 명시하는데
+    이 씬은 그걸 놓쳤었다 -- peg_in_hole_bimanual_openarm.xml과 같은 이유로
+    고친다(이 파일은 Python 코드에서 쓰이지 않는 범용 데모 씬이지만, 같은
+    attach 구조를 쓰는 다른 씬들과 일관되게 맞춘다). timestep도 공식값
+    (0.001)이 아니라 0.002로 명시해둔다 -- peg_in_hole_bimanual_openarm.xml
+    과 같은 이유(다른 OpenArm 씬들과의 일관성, attach 경고 방지).
   -->
   <compiler angle="radian"/>
-  <option cone="elliptic" impratio="10"/>
+  <option timestep="0.002" cone="elliptic" impratio="10" integrator="implicitfast"/>
   <visual>
     <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6" specular="0.1 0.1 0.1"/>
   </visual>
