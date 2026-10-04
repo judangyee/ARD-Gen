@@ -37,6 +37,22 @@ VX300s의 Kp_xy/Kd_xy는 **접촉힘**(N)에 곱하는 admittance 게인이다. 
 VX300s 값(0.00002~0.003 스케일)을 그대로 못 쓰고 완전히 다시 잡았다(이
 파일이 아니라 tasks/peg_in_hole.yaml 참고, optimize/
 peg_in_hole_openarm_admittance_gain_search.py로 실측 탐색한 결과).
+
+## 조인트 공간 state/action 추가 (공식 그리퍼 반영, "팔당 7관절+그리퍼" 요청)
+
+기존 Cartesian state(ee_pos 3 + wrist_rotate 1, 양팔)/action(delta_xyz 3)은
+그대로 유지한다 -- 이미 검증된 admittance 컨트롤러가 내부적으로 쓰는 신호라
+건드리면 안 된다. 대신 그 위에 **조인트 공간 관측/명령**을 추가로 기록해서
+돌려준다: `right_joint_pos`/`left_joint_pos`(각 팔 7관절 qpos, 관측),
+`right_joint_action`(오른팔 7관절의 이번 틱 명령 목표, sim 모듈의
+`_virtual_qpos` -- resolved-rate IK가 계산한 q_des, computed-torque가
+실제로 추종하는 값), `right_gripper_action`/`left_gripper_action`(그리퍼
+1 actuated DOF 명령값 -- 공식 모델 검증에서 확인한 대로 조인트 2개를
+equality mimic으로 묶어 1개만 구동하는 구조라 각 팔 1차원이면 충분).
+공식 모델 검증(PIPELINE.md 참고) 중 확인된 그리퍼 구조를 그대로 반영한
+것이다 -- 새로 발명한 게 아니라 이미 존재하는 구동 방식을 기록에 노출시킨
+것뿐이다. pipeline/to_lerobot.py의 build_frames()가 이 필드들을 있으면
+observation.state/action 뒤에 이어붙인다(없는 태스크는 영향 없음).
 """
 from __future__ import annotations
 
@@ -134,6 +150,15 @@ class PegInHoleOpenArmEnv(BaseTaskEnv):
         forces: list[np.ndarray] = []
         torques: list[np.ndarray] = []
 
+        # 조인트 공간 state/action(공식 그리퍼 반영, 팔당 7관절 + 그리퍼 1DOF
+        # -- 모듈 docstring 참고). 기존 Cartesian ee_poses/actions는 그대로
+        # 유지하고(제거 안 함), 이 필드들은 그 위에 "추가"된다.
+        right_joint_pos = [sim.get_right_joint_pos()]
+        left_joint_pos = [sim.get_left_joint_pos()]
+        right_joint_actions: list[np.ndarray] = []
+        right_gripper_actions: list[np.ndarray] = []
+        left_gripper_actions: list[np.ndarray] = []
+
         prev_dx, prev_dy = 0.0, 0.0
         max_force_mag = 0.0
         insertion_depth = 0.0
@@ -165,6 +190,12 @@ class PegInHoleOpenArmEnv(BaseTaskEnv):
             forces.append(force)
             torques.append(torque)
             ee_poses.append(sim.get_ee_pose())
+
+            right_joint_actions.append(sim.get_right_joint_action())
+            right_gripper_actions.append(np.array([sim.get_right_gripper_ctrl()], dtype=np.float32))
+            left_gripper_actions.append(np.array([sim.get_left_gripper_ctrl()], dtype=np.float32))
+            right_joint_pos.append(sim.get_right_joint_pos())
+            left_joint_pos.append(sim.get_left_joint_pos())
 
             peg_tip = sim.get_peg_tip_pos()
             hole_center = sim.get_hole_center_pos()
@@ -212,4 +243,16 @@ class PegInHoleOpenArmEnv(BaseTaskEnv):
             "gains": dict(gains),
             "scene_config": scene_config,
             "left_arm_traj": np.stack(left_arm_traj).astype(np.float32),
+            # 조인트 공간 state/action(공식 그리퍼 반영) -- 모듈 docstring
+            # "조인트 공간 state/action" 절 참고. right_joint_pos/left_joint_pos는
+            # (T+1,7)(ee_poses와 같은 "관측" 길이 관례), *_action/*_gripper_action은
+            # (T,1 또는 7)(actions와 같은 "제어 명령" 길이 관례).
+            "right_joint_pos": np.stack(right_joint_pos).astype(np.float32),
+            "left_joint_pos": np.stack(left_joint_pos).astype(np.float32),
+            "right_joint_action": np.stack(right_joint_actions).astype(np.float32)
+            if right_joint_actions else np.zeros((0, 7), dtype=np.float32),
+            "right_gripper_action": np.stack(right_gripper_actions).astype(np.float32)
+            if right_gripper_actions else np.zeros((0, 1), dtype=np.float32),
+            "left_gripper_action": np.stack(left_gripper_actions).astype(np.float32)
+            if left_gripper_actions else np.zeros((0, 1), dtype=np.float32),
         }

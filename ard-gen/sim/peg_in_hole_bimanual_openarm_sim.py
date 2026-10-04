@@ -881,6 +881,36 @@ class BimanualPegInHoleOpenArmSim:
         role classifier 학습용 스키마 일관성, 그 파일 모듈 docstring 참고)."""
         return self.data.xpos[self._left_ee_body_id].copy()
 
+    # ------------------------------------------------------------------
+    # 아래 5개는 순수 조회 메서드(물리/제어에 전혀 영향 없음) -- "액션 공간을
+    # 팔당 7(관절) + 그리퍼 DoF로 확장"(공식 그리퍼 반영) 요청에 따라 Env
+    # 래퍼가 조인트 공간 state/action을 기록하는 데 쓴다. 기존 Cartesian
+    # ee_pose/action(delta_pos_world)은 그대로 유지(제거 안 함) -- 이 메서드들은
+    # 그 위에 "추가"되는 것뿐이다.
+    def get_right_joint_pos(self) -> np.ndarray:
+        """오른팔 7관절의 실제 qpos(라디안), _ARM_JOINTS 순서."""
+        return np.array([self.data.qpos[self._arm_qposadr[name]] for name in _ARM_JOINTS])
+
+    def get_right_joint_action(self) -> np.ndarray:
+        """오른팔 7관절의 이번 틱 명령 목표(self._virtual_qpos, resolved-rate
+        IK가 만든 q_des) -- step()의 computed-torque가 실제로 추종하는
+        목표값이라, "이번 틱에 무엇을 하라고 명령했는가"라는 의미의
+        조인트 공간 action이다(delta_pos_world는 Cartesian 공간 action)."""
+        return np.array([self._virtual_qpos[name] for name in _ARM_JOINTS])
+
+    def get_left_joint_pos(self) -> np.ndarray:
+        """왼팔 7관절의 실제 qpos -- 이 태스크 내내 고정이라 거의 안 바뀌지만,
+        get_left_ee_pos()와 같은 이유(스키마 일관성)로 "팔당" 조회를 제공한다."""
+        return np.array([self.data.qpos[self._left_arm_qposadr[name]] for name in _LEFT_ARM_HOME_QPOS])
+
+    def get_right_gripper_ctrl(self) -> float:
+        """오른팔 그리퍼(1 actuated DOF, `right_finger1_ctrl`)의 현재 명령값."""
+        return float(self.data.ctrl[self._gripper_actuator_id])
+
+    def get_left_gripper_ctrl(self) -> float:
+        """왼팔 그리퍼(1 actuated DOF, `left_finger1_ctrl`)의 현재 명령값."""
+        return float(self.data.ctrl[self._left_gripper_actuator_id])
+
     def step(self, delta_pos_world: np.ndarray) -> None:
         """가상(순수 기구학) 상태를 delta_pos_world만큼 전진시키고, 그 결과를
         목표(q_des)로 삼아 오른팔에 역동역학(computed-torque) 토크를 넣는다

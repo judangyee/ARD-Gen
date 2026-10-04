@@ -1007,3 +1007,43 @@ range(0~45°) 전체에서 핑거팁 콜리전 메시 간격 약 49mm(닫힘측 
 pos/euler/fovy/resolution 그대로 이미 정의돼 있다. 이 세션 이전까지 어떤
 Python 코드도 참조하지 않았다 -- 다음 Phase(손목 카메라 연결)에서는 "추가"가
 아니라 "이미 있는 공식 위치의 카메라를 observation에 연결"만 하면 된다.
+
+## 공식 그리퍼 반영 (액션 공간을 팔당 7관절 + 그리퍼로 확장)
+
+공식 모델 검증에서 확인한 대로 그리퍼는 이미 ARD-Gen 코드가 올바르게
+구동하고 있었다(손가락당 물리 조인트 2개 + equality mimic, 1 actuated
+DOF) -- 이번 작업은 "그리퍼를 고치는" 게 아니라, 지금까지 **기록되지
+않고 있던** 조인트 공간 state/action을 데이터셋 스키마에 노출시키는
+것이다.
+
+**설계**: 기존 Cartesian state(ee_pos+wrist_rotate)/action(delta_xyz)은
+전혀 안 건드렸다(이미 검증된 admittance 컨트롤러의 입출력이라 바꾸면
+제어 자체가 깨짐) -- 대신 그 뒤에 이어붙이는 방식("확장")으로:
+
+- `sim/peg_in_hole_bimanual_openarm_sim.py`에 순수 조회 메서드 5개 추가
+  (`get_right_joint_pos/action`, `get_left_joint_pos`,
+  `get_right/left_gripper_ctrl` -- 물리/제어에 전혀 영향 없음).
+- `sim/peg_in_hole_openarm_env.py`의 `run_episode()`가 매 스텝 이 값들을
+  기록해서 `right_joint_pos`/`left_joint_pos`(관측, 팔당 7)/
+  `right_joint_action`(명령 목표 qpos, 7)/`right_gripper_action`/
+  `left_gripper_action`(그리퍼 명령값, 팔당 1)을 결과에 추가.
+- `pipeline/episode_io.py`: `right_arm`/`left_arm` dict에 이 필드들을
+  **있으면만** 저장/복원하도록 확장(없는 태스크, 예: cap_twist는 전혀
+  영향 없음 -- `.get()`이 None을 돌려주고 조용히 생략됨).
+- `pipeline/filter_episodes.py`: 이 필드들을 `_KNOWN_RESULT_FIELDS`에
+  추가하고(배열이라 스칼라 전용 extra_* 자동통과 루프에 걸리면
+  TypeError가 남) episode dict로 실어 나름.
+- `pipeline/to_lerobot.py`: `build_frames()`가 있으면 `observation.state`/
+  `action` 뒤에 이어붙인다(`_align_trailing()`로 일반화 -- 기존
+  `_align_left_arm()`을 임의 차원에 쓸 수 있게 한 것). `_STATE_NAMES`/
+  `_ACTION_NAMES["peg_in_hole"]`도 그만큼 늘렸다.
+
+**검증 결과**: `observation.state` 7(기존 Cartesian) + 7(오른팔 7관절) +
+7(왼팔 7관절) = **21차원**, `action` 3(기존 delta_xyz) + 7(오른팔 7관절
+명령) + 1(오른팔 그리퍼) + 1(왼팔 그리퍼) = **12차원**. 0→1→2-A→2-B→4→
+LeRobotDataset 변환 전체를 작게(popsize 6/3세대, bootstrap 20건, 10 에피소드)
+다시 돌려서 확인: CMA-ES 수렴(reward 49.16, 기존과 동일 범위), 부트스트랩
+100%, diffusion 100%, 필터링 100%(10/10), `to_lerobot.py`가
+state_dim=21/action_dim=12로 정확히 변환 + meta/info.json의 feature
+names가 21/12개와 정확히 일치. 회귀 테스트 7개 전부 통과(기존 Cartesian
+필드는 전혀 안 바뀌어서 그대로 통과).

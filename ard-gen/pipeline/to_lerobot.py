@@ -32,6 +32,12 @@ peg_in_hole과 cap_twist는 관측/행동 차원 자체가 다르다(전자는 �
 - action = right_arm.action (매 스텝 실제 제어 명령). 프레임 수는
   action 배열 길이를 기준으로 삼는다(traj가 action보다 정확히 1 프레임
   더 긴 것이 정상 -- 초기 관측 1개 + 스텝마다 관측 1개).
+- (공식 그리퍼 반영) right_arm/left_arm에 joint_pos/joint_action/
+  gripper_action이 있으면(현재 peg_in_hole만) build_frames()가 그 뒤에
+  이어붙인다 -- 기존 Cartesian state/action 차원은 그대로 유지, 조인트
+  공간(팔당 7)+그리퍼(팔당 1)가 뒤에 추가되는 구조다(sim/
+  peg_in_hole_openarm_env.py 모듈 docstring 참고). 없는 태스크(cap_twist)
+  는 전과 동일하게 동작한다.
 
 사용 예:
     python pipeline/to_lerobot.py --task peg_in_hole --episodes-dir ./data/episodes/peg_in_hole \
@@ -58,41 +64,64 @@ CODEBASE_VERSION = "v2.1-approx"  # 실제 lerobot 패키지로 만든 게 아�
 # 태스크별 state/action 컬럼 이름(사람이 읽을 수 있는 메타데이터용, 물리적
 # 의미는 각 sim 모듈의 docstring 참고 -- 여기서 하드코딩하는 이유는
 # LeRobotDataset의 features.names가 "그 데이터셋 하나의 고정 스키마"라서다).
+_RIGHT_JOINT_NAMES = [f"right_joint{i}_pos" for i in range(1, 8)]
+_LEFT_JOINT_NAMES = [f"left_joint{i}_pos" for i in range(1, 8)]
+
 _STATE_NAMES = {
+    # 공식 그리퍼 반영(액션 공간을 팔당 7관절+그리퍼로 확장) 이후:
+    # 기존 Cartesian ee_pos/wrist_rotate는 그대로 유지하고(제거 안 함),
+    # 그 뒤에 조인트 공간 관측(팔당 7)을 추가했다 -- build_frames()의
+    # "조인트 공간 state/action 추가" 절 참고. 없는 태스크(cap_twist 등)는
+    # 그대로 예전 차원을 쓴다.
     "peg_in_hole": ["right_ee_x", "right_ee_y", "right_ee_z", "right_wrist_rotate",
-                    "left_ee_x", "left_ee_y", "left_ee_z"],
+                    "left_ee_x", "left_ee_y", "left_ee_z"] + _RIGHT_JOINT_NAMES + _LEFT_JOINT_NAMES,
     "cap_twist": ["cap_angle_rad", "left_ee_x", "left_ee_y", "left_ee_z"],
 }
 _ACTION_NAMES = {
-    "peg_in_hole": ["delta_x", "delta_y", "delta_z"],
+    "peg_in_hole": ["delta_x", "delta_y", "delta_z"] + _RIGHT_JOINT_NAMES
+    + ["right_gripper_ctrl", "left_gripper_ctrl"],
     "cap_twist": ["omega_command_rad_s"],
 }
 
 
-def _align_left_arm(right_traj: np.ndarray, left_traj: np.ndarray | None, n_frames: int) -> np.ndarray:
-    """왼팔 궤적을 오른팔과 같은 프레임 수로 맞춘다 -- 왼팔은 접근 단계가
-    있어 더 길므로 뒤쪽(오른팔과 실제로 동시에 기록된 구간)만 쓴다.
-    왼팔이 아예 없는(Stabilizer 미지원) 태스크면 0으로 채운다."""
-    if left_traj is None or len(left_traj) == 0:
-        return np.zeros((n_frames, 3), dtype=np.float32)
-    if len(left_traj) >= n_frames:
-        return left_traj[-n_frames:].astype(np.float32)
-    # 왼팔이 더 짧은 경우(이론상 일어나지 않지만 방어적으로): 마지막 값으로 패딩.
-    pad = np.repeat(left_traj[-1:], n_frames - len(left_traj), axis=0)
-    return np.concatenate([left_traj, pad], axis=0).astype(np.float32)
+def _align_trailing(arr: np.ndarray | None, n_frames: int, dim: int) -> np.ndarray:
+    """arr(있으면)를 n_frames 길이로 맞춘다 -- 뒤쪽(실제 제어와 동시에
+    기록된 구간)만 쓴다(_align_left_arm의 일반화, 왼팔 EE 3차원 전용이던
+    것을 임의 차원에 쓸 수 있게 했다). 없으면 0으로 채운다."""
+    if arr is None or len(arr) == 0:
+        return np.zeros((n_frames, dim), dtype=np.float32)
+    arr = np.asarray(arr, dtype=np.float32)
+    if len(arr) >= n_frames:
+        return arr[-n_frames:]
+    pad = np.repeat(arr[-1:], n_frames - len(arr), axis=0)
+    return np.concatenate([arr, pad], axis=0)
 
 
 def build_frames(episode: dict) -> tuple[np.ndarray, np.ndarray, str]:
     """에피소드 하나에서 (state (T,S), action (T,A), task_instruction) 을 만든다."""
     right = episode["right_arm"]
+    left = episode.get("left_arm") or {}
     action = np.asarray(right["action"], dtype=np.float32)
     n_frames = len(action)
 
     right_state = np.asarray(right["traj"], dtype=np.float32)[:n_frames]
-    left_traj = episode.get("left_arm", {}).get("traj") if episode.get("left_arm") else None
-    left_state = _align_left_arm(right_state, left_traj, n_frames)
-
+    left_state = _align_trailing(left.get("traj"), n_frames, 3)
     state = np.concatenate([right_state, left_state], axis=1)
+    action_parts = [action]
+
+    # 조인트 공간 state/action 추가(공식 그리퍼 반영, 있는 태스크만 -- 현재
+    # peg_in_hole) -- 기존 Cartesian 필드는 그대로 두고 뒤에 이어붙인다.
+    if right.get("joint_pos") is not None:
+        state = np.concatenate([state, _align_trailing(right["joint_pos"], n_frames, 7)], axis=1)
+    if left.get("joint_pos") is not None:
+        state = np.concatenate([state, _align_trailing(left["joint_pos"], n_frames, 7)], axis=1)
+    if right.get("joint_action") is not None:
+        action_parts.append(_align_trailing(right["joint_action"], n_frames, 7))
+    if right.get("gripper_action") is not None:
+        action_parts.append(_align_trailing(right["gripper_action"], n_frames, 1))
+    if left.get("gripper_action") is not None:
+        action_parts.append(_align_trailing(left["gripper_action"], n_frames, 1))
+    action = np.concatenate(action_parts, axis=1) if len(action_parts) > 1 else action
 
     language = episode.get("language") or {}
     task_instruction = language.get("task_instruction", f"{episode.get('task', 'unknown')} 태스크 수행")

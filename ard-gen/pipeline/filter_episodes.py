@@ -63,6 +63,11 @@ _KNOWN_RESULT_FIELDS = {
     "forces", "torques", "insertion_depth", "final_distance", "max_force",
     "step_count", "success", "reward", "gains", "scene_config",
     "left_arm_traj",  # 3단계(Stabilizer) -- 위에서 episode["left_arm"]로 이미 옮김
+    # 조인트 공간 state/action(공식 그리퍼 반영 태스크만, 아래서
+    # episode["right_arm"]/episode["left_arm"]로 이미 옮김) -- 배열이라
+    # 아래 스칼라 전용 extra_* 통과 루프에 걸리면 TypeError가 난다.
+    "right_joint_pos", "right_joint_action", "right_gripper_action",
+    "left_joint_pos", "left_gripper_action",
 }
 
 
@@ -136,6 +141,20 @@ def main() -> None:
         # 동시에 기록된 궤적이다(sim/stabilizer.py 참고).
         if result.get("left_arm_traj") is not None:
             episode["left_arm"] = {"traj": result["left_arm_traj"], "role": "stabilizer"}
+        # 조인트 공간 state/action(공식 그리퍼 반영 태스크만) -- 있으면만
+        # 실어 나른다. 없는 태스크(cap_twist 등)는 그냥 생략된다(episode_io.py
+        # 의 save_episode()도 .get()으로 같은 방식으로 optional 처리한다).
+        if result.get("right_joint_pos") is not None:
+            episode["right_arm"]["joint_pos"] = result["right_joint_pos"]
+        if result.get("right_joint_action") is not None:
+            episode["right_arm"]["joint_action"] = result["right_joint_action"]
+        if result.get("right_gripper_action") is not None:
+            episode["right_arm"]["gripper_action"] = result["right_gripper_action"]
+        if episode.get("left_arm") is not None:
+            if result.get("left_joint_pos") is not None:
+                episode["left_arm"]["joint_pos"] = result["left_joint_pos"]
+            if result.get("left_gripper_action") is not None:
+                episode["left_arm"]["gripper_action"] = result["left_gripper_action"]
         if result.get("insertion_depth") is not None:
             episode["insertion_depth"] = result["insertion_depth"]
         if result.get("forces") is not None and len(result["forces"]) > 0:

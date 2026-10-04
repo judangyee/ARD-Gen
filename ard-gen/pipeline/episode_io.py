@@ -11,6 +11,8 @@ left_arm으로 실어 나른다. stabilizer 절이 없는 태스크는 여전히
         "left_arm": {                    # 있으면만(Stabilizer 지원 태스크)
             "traj": (T', 3) ndarray,     # world-frame EE 위치(접근+유지 전체)
             "role": "stabilizer",
+            "joint_pos": (T'+1, 7) ndarray,      # 있으면만(공식 그리퍼 반영 태스크)
+            "gripper_action": (T', 1) ndarray,   # 있으면만
         },
         "right_arm": {
             "traj": (T+1, D) ndarray,    # ee_poses (관측/state)
@@ -20,6 +22,9 @@ left_arm으로 실어 나른다. stabilizer 절이 없는 태스크는 여전히
             "force": (T, 3) ndarray,
             "torque": (T, 3) ndarray,
             "role": "actuator",
+            "joint_pos": (T+1, 7) ndarray,       # 있으면만(공식 그리퍼 반영 태스크) -- 조인트 공간 관측
+            "joint_action": (T, 7) ndarray,      # 있으면만 -- 조인트 공간 action(명령 목표 qpos)
+            "gripper_action": (T, 1) ndarray,    # 있으면만 -- 그리퍼(1 actuated DOF) 명령값
         },
         "scene_config": {...},          # sim.task_registry.TaskConfig.sample_scene_config 스키마
         "success": True,
@@ -90,6 +95,15 @@ def save_episode(path: str, episode: dict[str, Any]) -> None:
         "scene_config": np.array(json.dumps(episode["scene_config"])),
         "success": np.array(bool(episode["success"])),
     }
+    # 조인트 공간 state/action(공식 그리퍼 반영 태스크만) -- 있으면만 저장
+    # 한다. 없는 태스크(cap_twist 등)는 right_arm dict에 이 키들이 아예
+    # 없으므로 .get()이 None을 돌려주고 조용히 생략된다.
+    if right.get("joint_pos") is not None:
+        kwargs["right_arm_joint_pos"] = np.asarray(right["joint_pos"], dtype=np.float32)
+    if right.get("joint_action") is not None:
+        kwargs["right_arm_joint_action"] = np.asarray(right["joint_action"], dtype=np.float32)
+    if right.get("gripper_action") is not None:
+        kwargs["right_arm_gripper_action"] = np.asarray(right["gripper_action"], dtype=np.float32)
     if episode.get("insertion_depth") is not None:
         kwargs["insertion_depth"] = np.array(episode["insertion_depth"], dtype=np.float32)
     if episode.get("force_max") is not None:
@@ -108,6 +122,10 @@ def save_episode(path: str, episode: dict[str, Any]) -> None:
         left = episode["left_arm"]
         kwargs["left_arm_traj"] = np.asarray(left["traj"], dtype=np.float32)
         kwargs["left_arm_role"] = np.array(left.get("role", "stabilizer"))
+        if left.get("joint_pos") is not None:
+            kwargs["left_arm_joint_pos"] = np.asarray(left["joint_pos"], dtype=np.float32)
+        if left.get("gripper_action") is not None:
+            kwargs["left_arm_gripper_action"] = np.asarray(left["gripper_action"], dtype=np.float32)
     for key, value in episode.items():
         if key in _FIXED_TOP_LEVEL_KEYS or value is None:
             continue
@@ -136,6 +154,12 @@ def load_episode(path: str) -> dict[str, Any]:
         "scene_config": json.loads(str(data["scene_config"])),
         "success": bool(data["success"]),
     }
+    if "right_arm_joint_pos" in data.files:
+        episode["right_arm"]["joint_pos"] = data["right_arm_joint_pos"]
+    if "right_arm_joint_action" in data.files:
+        episode["right_arm"]["joint_action"] = data["right_arm_joint_action"]
+    if "right_arm_gripper_action" in data.files:
+        episode["right_arm"]["gripper_action"] = data["right_arm_gripper_action"]
     if "insertion_depth" in data.files:
         episode["insertion_depth"] = float(data["insertion_depth"])
     if "force_max" in data.files:
@@ -147,6 +171,10 @@ def load_episode(path: str) -> dict[str, Any]:
             "traj": data["left_arm_traj"],
             "role": str(data["left_arm_role"]) if "left_arm_role" in data.files else "stabilizer",
         }
+        if "left_arm_joint_pos" in data.files:
+            episode["left_arm"]["joint_pos"] = data["left_arm_joint_pos"]
+        if "left_arm_gripper_action" in data.files:
+            episode["left_arm"]["gripper_action"] = data["left_arm_gripper_action"]
     for key in data.files:
         if not key.startswith("extra_"):
             continue
