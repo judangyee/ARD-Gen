@@ -35,7 +35,7 @@ anchor가 옮겨간 거리 자체는 몇 cm 수준이라, 처음부터 다시 �
 덜 생긴다.
 
 사용법:
-    python optimize/peg_in_hole_openarm_home_pose_search.py
+    python optimize/_archive/peg_in_hole_openarm_home_pose_search.py
 """
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ os.environ.setdefault("MUJOCO_GL", "osmesa")
 
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))  # optimize/_archive/에서 repo 루트까지 두 단계
 
 import cma
 import mujoco
@@ -59,7 +59,7 @@ from sim.peg_in_hole_bimanual_openarm_sim import (
     _HOVER_GAP_M,
 )
 
-_XML_PATH = os.path.join(os.path.dirname(__file__), "..", "assets", "peg_in_hole_bimanual_openarm.xml")
+_XML_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "assets", "peg_in_hole_bimanual_openarm.xml")
 
 _PEG_TIP_LOCAL = _PEG_LOCAL_OFFSET + np.array([0.0, 0.0, -0.04])
 _HOLE_TARGET_LOCAL = np.array([-0.01772, -0.00214, -0.19274])  # hole_grasp relpose xyz(재조정 2차)

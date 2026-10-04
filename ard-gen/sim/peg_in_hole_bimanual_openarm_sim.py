@@ -103,7 +103,7 @@ kv_base, kp_mid, kv_mid, kp_wrist, kv_wrist, 나중엔 _NULLSPACE_GAIN까지)
 단순화할 수 없는 다관절 결합 동역학이었던 것 같다(확실친 않음, 더
 깊이 파려면 완전한 역동역학/computed-torque 제어가 필요해 보인다).
 
-## 2차 탐색: optimize/peg_in_hole_openarm_gain_search.py로 정식화, 근접 실패 원인 발견
+## 2차 탐색: optimize/_archive/peg_in_hole_openarm_gain_search.py로 정식화, 근접 실패 원인 발견
 
 탐색 스크립트를 optimize/ 디렉터리로 정식 이관하고(재현 가능하게),
 이전 결과(베이스 kp=2081.80/kv=1565.01, 중간 kp=145.00/kv=1052.43, 손목
@@ -190,7 +190,7 @@ joint4가 range의 90%, joint7이 94.3%까지 붙어 있었다는 걸 발견했�
 똑같은 실패 패턴**이고, 실측(1500스텝)으로도 xy 드리프트가 108mm까지
 벌어지는 걸로 확인했다.
 
-optimize/peg_in_hole_openarm_home_pose_search.py로 같은 비용 함수(방향/
+optimize/_archive/peg_in_hole_openarm_home_pose_search.py로 같은 비용 함수(방향/
 xy/z/손 간격/작업공간/관절 한계 여유, assets 파일 docstring "2. home
 자세" 참고)를 새 로컬 오프셋 기준으로 현재 값 근방에서(완전히 새로
 찾지 않고 x0=현재 home 자세) 다시 풀었다 -- 양팔 14관절 전부 margin
@@ -203,7 +203,7 @@ xy/z/손 간격/작업공간/관절 한계 여유, assets 파일 docstring "2. h
 
 다만 이 진동 범위(45~75mm)가 목표 정렬 허용치(outer_half ≈ 19.5mm)보다
 아직 2.5~4배 넓어서, 관절 한계 문제는 해결됐어도 삽입 자체는 여전히
-성공 못 한다 -- kp/kv/nullspace 게인(optimize/peg_in_hole_openarm_gain_search.py)과
+성공 못 한다 -- kp/kv/nullspace 게인(optimize/_archive/peg_in_hole_openarm_gain_search.py)과
 admittance 게인(Kp_xy, Kd_xy -- 이 파일 맨 위 "아직 검증 안 된 것" 절
 참고, 처음부터 VX300s 값을 그대로 썼을 뿐 이 팔 기구학에 맞게 재탐색한
 적이 아직 없음)이 새 home 자세/anchor 기준으로는 다시 검증돼야 한다.
@@ -293,7 +293,7 @@ def adaptive_z_rate(dx: float, dy: float, outer_half: float, raw_depth: float, t
 # (scene_config로 덮어쓸 수 있음)
 TARGET_INSERTION_DEPTH = 0.055 / 3  # m, hole 길이(0.055m)의 1/3
 
-# 성공 판정 버그(실측으로 발견, optimize/peg_in_hole_openarm_gain_search.py의
+# 성공 판정 버그(실측으로 발견, optimize/_archive/peg_in_hole_openarm_gain_search.py의
 # "성공 판정 버그" 절 참고): xy가 안 맞은 채로 hole을 완전히 지나쳐
 # 허공에서 raw_depth가 물리적으로 불가능한 값(hole 실측 깊이 0.059m보다
 # 훨씬 큼)까지 커진 뒤, 어쩌다 한 스텝 xy가 우연히 허용치 안으로 들어오면
@@ -332,7 +332,7 @@ _ARM_JOINTS = [f"openarm_right_joint{i}" for i in range(1, 8)]
 # joint4가 range의 90%, joint7이 94.3%까지 붙어버렸다 -- "관절 한계
 # 페널티 없이 찾은 첫 home 자세"와 똑같은 패턴(1500스텝 실측: xy 드리프트가
 # 108mm까지 벌어짐, 게인 문제가 아니라 관절이 한계에 눌어붙어 힘을 못 냄).
-# optimize/peg_in_hole_openarm_home_pose_search.py로 새 peg tip/hole 목표점
+# optimize/_archive/peg_in_hole_openarm_home_pose_search.py로 새 peg tip/hole 목표점
 # 로컬 오프셋 기준 같은 비용 함수(방향/xy/z/손 간격/작업공간/관절 한계
 # 여유)를 현재 값 근방에서 다시 풀었다.
 _HOME_QPOS = {
@@ -1041,7 +1041,7 @@ def _run_episode_with_sim(
 
 if __name__ == "__main__":
     # xy를 접촉힘이 아니라 hole 실제 위치로 직접 targeting하도록 바꾼 뒤
-    # (_run_episode_with_sim 주석 참고) optimize/peg_in_hole_openarm_admittance_gain_search.py로
+    # (_run_episode_with_sim 주석 참고) optimize/_archive/peg_in_hole_openarm_admittance_gain_search.py로
     # 다시 찾은 값 -- 1500스텝 평가에서 success_step~478로 안정적으로 성공.
     gains = {"Kp_xy": 0.124630, "Kd_xy": 0.001125}
     cfg = _default_scene_config()

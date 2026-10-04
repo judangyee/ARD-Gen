@@ -22,7 +22,7 @@ adaptive_z_rate(오버슈트 정지 포함)와 위치 기반 xy PD를 그대로 
 있는 raw_depth clip + 연속 유지 기준을 그대로 가져다 쓴다.
 
 사용법:
-    python optimize/peg_in_hole_openarm_admittance_gain_search.py
+    python optimize/_archive/peg_in_hole_openarm_admittance_gain_search.py
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ os.environ.setdefault("MUJOCO_GL", "osmesa")
 
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))  # optimize/_archive/에서 repo 루트까지 두 단계
 
 import cma
 import numpy as np
