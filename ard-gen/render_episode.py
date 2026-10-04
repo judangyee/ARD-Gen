@@ -39,7 +39,7 @@ from sim.task_registry import list_tasks, load_task_config
 # 카메라 이름이 있는 태스크만 여기 추가한다 -- 없으면 아래 기본 자유
 # 시점 카메라로 대체된다(tacker도 top_cam이 있지만 workpiece가 매 씬 다른
 # xy/yaw에 놓이므로 mode="targetbody"가 알아서 따라간다).
-_NAMED_CAMERAS = {"peg_in_hole": "top_cam", "tacker": "top_cam"}
+_NAMED_CAMERAS = {"peg_in_hole": "top_cam", "tacker": "top_cam", "screw_driving": "top_cam"}
 
 
 def _camera_for(task_name: str, sim):

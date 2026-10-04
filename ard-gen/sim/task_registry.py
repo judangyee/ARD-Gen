@@ -37,6 +37,14 @@ TASK_REGISTRY: dict[str, str] = {
     # 코드/자산(assets/tacker.xml, sim/tacker_env.py)은 참고용으로 남겨뒀지만
     # 더 이상 등록돼 있지 않다.
     "tacker": "sim.tacker_openarm_env:TackerOpenArmEnv",
+    # 레거시 VX300s 단일팔 버전(sim/screw_driving_sim.py:ScrewDrivingSim,
+    # optimize/screw_driving_cma_search.py)은 OpenArm 양팔 버전을 최적화하지
+    # 못하고 있었던 공백을 메우려고 등록을 전환했다(별도 세션 진단 + 사용자
+    # 요청, sim/screw_driving_openarm_env.py 상단 docstring 참고) -- 구버전
+    # 코드/자산(assets/screw_driving.xml, sim/screw_driving_sim.py,
+    # optimize/screw_driving_cma_search.py)은 참고용으로 남겨뒀지만 더 이상
+    # 등록돼 있지 않다.
+    "screw_driving": "sim.screw_driving_openarm_env:ScrewDrivingOpenArmEnv",
 }
 
 

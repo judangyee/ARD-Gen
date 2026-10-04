@@ -1,0 +1,96 @@
+# 나사 조이기(screw driving) 태스크 설정, OpenArm 양팔 버전.
+# sim/screw_driving_openarm_env.py:ScrewDrivingOpenArmEnv가 실제 구현이다
+# (TASK_REGISTRY 매핑) -- 레거시 VX300s 단일팔 버전(sim/screw_driving_sim.py,
+# optimize/screw_driving_cma_search.py)은 OpenArm 양팔 버전(assets/
+# screw_driving_bimanual_openarm.xml, sim/screw_driving_bimanual_openarm_sim.py)
+# 을 전혀 최적화/검증하지 못하고 있던 공백을 메우려고 처음으로 범용
+# 파이프라인(optimize/cma_search.py --task, pipeline/bootstrap.py 등)에
+# 연결한다(별도 세션 진단 + 사용자 요청).
+name: screw_driving
+
+gains:
+  # 이 태스크는 admittance(힘/위치 오차 피드백)가 아니라 **토크 리미터**다
+  # (sim/screw_driving_bimanual_openarm_sim.py 모듈 docstring "이 탐색이
+  # 실제로 찾아낸 것" 절 참고) -- 저항 토크가 torque_limit을 넘는 순간 그
+  # 사이클의 "돌리기"를 멈추고 되감는다. 접근 속도/사이클 범위는 물리/제어
+  # 상수로 코드에 고정돼 있어 게인이 아니다 -- 그래서 탐색 대상은
+  # torque_limit 하나뿐이다(episode_io.py 모듈 docstring이 이미 이 1개
+  # 게인 설계를 전제하고 있었다).
+  names: [torque_limit]
+  # bounds/x0은 레거시 screw_driving_cma_search.py에서 실측으로 이미
+  # 검증된 값을 그대로 이어받았다(그 파일 상단 docstring/parse_args 참고) --
+  # x0를 자연 저항 문턱값(~1.35~1.79) 근처에 두고 sigma0을 넉넉히 줘서
+  # 첫 세대부터 성공/실패 후보가 고르게 섞이게 한다(낮은 값에서 시작하면
+  # "실패 평지"에 갇혀 조기 수렴하는 문제가 이미 실측됐다).
+  #
+  # sigma0은 레거시 값(1.5) 그대로 못 썼다 -- 범용 optimize/cma_search.py는
+  # (레거시 스크립트와 달리) bounds를 CMA-ES 쪽에 직접 맡기는데(opts["bounds"]),
+  # 1차원 게인 + bounds=[0.1,4.0] + CMA_stds=1.5 조합이 cma 4.5.0의
+  # _stds_into_limits()에서 "array is 0-dimensional" IndexError로 즉시
+  # 죽는 걸 실측으로 재현했다(레거시 스크립트 docstring이 경고한 "1차원 +
+  # bounds 조합" cma 라이브러리 버그의 같은 계열이지만, 그 스크립트가 겪은
+  # 것과 달리 bounds 자체가 아니라 bounds 범위에 대한 sigma0 비율이
+  # 트리거였다 -- sigma0<=1.3에서는 5개 시드 전부 안전함을 실측 확인).
+  # 그래서 sigma0만 1.2로 낮췄다(여전히 x0=1.0 주변에서 성공/실패가 고르게
+  # 섞이는 폭).
+  bounds:
+    torque_limit: [0.1, 4.0]
+  x0: [1.0]
+  sigma0: [1.2]
+
+# CMA-ES 평가용 대표 시나리오 2개 -- 레거시 screw_driving_cma_search.py가
+# 이미 실측 검증해둔 "기본 저항"과 "더 뻑뻑한 나사"(hinge_friction_scale
+# 5배) 조합을 그대로 재사용한다. target_depth는 건드리지 않아 둘 다
+# TARGET_DEPTH(0.034m, bolt_slide 물리적 최대치) 그대로다 -- 평가 시나리오를
+# 일부러 "완전히 끝까지 조여야 성공"으로 가장 엄격하게 잡는다(씬 무작위화의
+# target_depth<TARGET_DEPTH 완화는 2-A/2-B/4단계의 무작위 샘플링에서
+# 자연스럽게 커버된다).
+eval_scenarios:
+  - hinge_friction_scale: 1.0
+  - hinge_friction_scale: 5.0
+
+success:
+  # 0단계 CMA-ES 실측 결과로 채움(아래 PIPELINE.md "screw_driving OpenArm
+  # 파이프라인 연결" 절 참고) -- 두 시나리오 모두 완료(success=True)에
+  # 필요한 +50 보너스를 받으면서 max_torque가 과하지 않은 지점의 평균
+  # 리워드보다 여유 있게 낮게 잡는다.
+  reward_threshold: 20.0
+
+# pipeline/diffusion_gains.py의 조건 벡터에 쓸 필드 이름과 순서.
+# sim/screw_driving_openarm_env.py의 sample_scene_config() 스키마(=sim
+# 레벨 스키마 그 자체, peg_in_hole/tacker OpenArm 버전과 같은 이유로
+# 별도 "1단계 공유 씬" 변환이 없음)의 target_depth(1)+hinge_friction_scale(1)
+# = 2차원. "bolt 초기 위치/자세"는 조건 벡터에 없다 -- sim/
+# screw_driving_bimanual_openarm_sim.py의 reset()이 driver_tip-bolt_head를
+# 항상 그 순간의 실제 오프셋을 그대로 목표로 캡처하는 설계(그 파일 reset()
+# 참고)라서, 사용자가 이번 요청에서 명시한 "기존 시뮬레이터 로직은 건드리지
+# 말 것" 지시를 지키는 한 위치 오프셋을 넣어도 난이도에 실질적 영향이 없는
+# 가짜 파라미터가 된다(오프셋을 적용해도 target_offset 캡처가 그 이후에
+# 일어나 항상 오차 0으로 흡수됨, 직접 코드 추적으로 확인) -- 그래서 이번에는
+# 넣지 않고 정직하게 비워뒀다. 실제로 의미 있는 위치 난이도를 만들려면
+# reset()의 target_offset 캡처 순서를 바꿔야 하는데, 그건 사용자가 다음에
+# 따로 설계 방향을 정할 미해결 2번 이슈(반작용 토크 모델링)와 묶어서 같이
+# 다루는 게 맞다고 판단했다(PIPELINE.md 참고).
+condition_fields: [target_depth, hinge_friction_scale]
+
+# 3단계(Stabilizer) 절 없음: peg_in_hole/tacker OpenArm 버전과 동일한 이유
+# (왼팔이 generic sim/stabilizer.py 가상 EE가 아니라 block을 쥔 채 이
+# 태스크 내내 고정된 진짜 7-DOF 팔, sim/screw_driving_openarm_env.py 모듈
+# docstring 참고). episode의 left_arm 필드는 여전히 채워진다(그 파일의
+# left_arm_traj 기록).
+
+# 5단계(언어 라벨링)용 어휘. 나사 조이기는 항상 "조이는" 단일 방향이라
+# cap_twist의 cw/ccw 같은 direction 개념이 없다(direction_words 비움).
+# intensity_words도 비운다 -- 이 태스크는 선형 힘 센서가 없어 "forces"가
+# 항상 빈 배열이고(sim/screw_driving_openarm_env.py 모듈 docstring "forces가
+# 항상 빈 배열인 이유" 절 참고, cap_twist와 동일 선택), language_labeling.py
+# 의 intensity 버킷은 force_max가 있어야 동작한다. 대신 quantity에 최종
+# 삽입 깊이(mm)를 채워서 "몇 mm까지 조였는지"를 수량어로 쓴다.
+language:
+  templates:
+    - "나사를 {quantity}mm 깊이까지 조여라."
+    - "오른팔로 드라이버를 이용해 나사를 {quantity}mm까지 단단히 박아라."
+    - "나사를 {quantity}mm 깊이에 도달할 때까지 조여라."
+  intensity_words: {}
+  direction_words: {}
+  quantity_words: {}  # 숫자를 그대로 쓴다(예: "33.7") -- 매핑이 없으면 str(값) 그대로 채워짐

@@ -409,6 +409,14 @@ class ScrewDrivingBimanualOpenArmSim:
     def get_bolt_head_pos(self) -> np.ndarray:
         return self.data.site_xpos[self._bolt_head_site_id].copy()
 
+    def get_left_ee_pos(self) -> np.ndarray:
+        """왼팔(block을 쥔 채 이 태스크 내내 고정) EE 위치. peg_in_hole/tacker의
+        get_left_ee_pos()와 같은 이유로 추가하는 순수 조회 메서드(물리/제어에
+        아무 영향 없음) -- BaseTaskEnv 래퍼(sim/screw_driving_openarm_env.py)가
+        left_arm_traj를 기록해 파이프라인 4/5단계의 role 스키마 일관성을
+        유지하는 데 쓴다."""
+        return self.data.xpos[self._left_ee_body_id].copy()
+
     # ------------------------------------------------------------------
     def step(self, gains: dict[str, float]) -> dict[str, Any]:
         """제어 틱 하나를 진행한다. torque_limiter 회전 제어(screw_driving_sim.py
