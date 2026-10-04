@@ -73,6 +73,8 @@ from typing import Any
 import mujoco
 import numpy as np
 
+from sim.resolved_rate_ik import apply_openarm_gravcomp, resolved_rate_step
+
 _DEFAULT_XML = os.path.join(os.path.dirname(__file__), "..", "assets", "screw_driving_bimanual_openarm.xml")
 
 N_SUBSTEPS = 5  # mj_step 호출당 substep 수 (timestep=0.002 -> 제어 주기 dt=0.01s)
@@ -232,10 +234,7 @@ class ScrewDrivingBimanualOpenArmSim:
         }
 
         # vendor 모델에는 gravcomp가 없다 -- peg_in_hole과 동일한 이유로 직접 켠다.
-        for i in range(self.model.nbody):
-            name = self.model.body(i).name
-            if name.startswith("openarm_left_") or name.startswith("openarm_right_"):
-                self.model.body_gravcomp[i] = 1.0
+        apply_openarm_gravcomp(self.model)
 
         self._block_qposadr = self.model.joint("block_free").qposadr[0]
         self._driver_qposadr = self.model.joint("driver_free").qposadr[0]
@@ -287,7 +286,11 @@ class ScrewDrivingBimanualOpenArmSim:
         docstring 참고) joint7을 별도로 돌리고 나머지가 사후 보정하는
         방식은 실측으로 폐기했다. 관절 한계 회피(Jacobian-column-freezing)
         + 널스페이스는 peg_in_hole의 _advance_virtual과 동일 기법이되,
-        4행(3 위치 + 1 롤) Jacobian에 대해 적용한다."""
+        4행(3 위치 + 1 롤) Jacobian에 대해 적용한다(공유 모듈
+        sim/resolved_rate_ik.py:resolved_rate_step() 호출, ponytail-audit로
+        peg_in_hole/tacker와의 중복을 발견하고 추출함 -- max_dq_per_step
+        안전 클램프는 이 4행 과제의 특이점 근처 발산 때문에 이 파일만
+        쓰는 추가 인자다, 위 문단 참고)."""
         sd = self._shadow_data
         for name, value in self._virtual_qpos.items():
             sd.qpos[self._arm_qposadr[name]] = value
@@ -301,49 +304,12 @@ class ScrewDrivingBimanualOpenArmSim:
         J = np.vstack([self._jacp, tool_axis_world @ self._jacr])  # 4 x nv
         target = np.concatenate([delta_pos_world, [delta_roll]])
 
-        def _solve(Jm: np.ndarray) -> np.ndarray:
-            jjt = Jm @ Jm.T + _JAC_DAMPING * np.eye(Jm.shape[0])
-            return Jm.T @ np.linalg.inv(jjt)
-
-        pinv0 = _solve(J)
-        dq_task0 = pinv0 @ target
-        J_frozen = J.copy()
-        frozen_dofs = []
-        for name in _ARM_JOINTS:
-            dof = self._arm_dofadr[name]
-            lo, hi = self.model.jnt_range[self.model.joint(name).id]
-            frac = (self._virtual_qpos[name] - lo) / (hi - lo)
-            if (frac < _LIMIT_FREEZE_MARGIN and dq_task0[dof] < 0.0) or (
-                frac > 1.0 - _LIMIT_FREEZE_MARGIN and dq_task0[dof] > 0.0
-            ):
-                J_frozen[:, dof] = 0.0
-                frozen_dofs.append(dof)
-
-        pinv = _solve(J_frozen)
-        dq_task = pinv @ target
-        # 4행(3 위치+1 롤) 과제가 특정 자세에서 거의 특이(singular)해지면
-        # 감쇠(_JAC_DAMPING)만으로 못 막을 만큼 dq_task가 한 스텝에 크게
-        # 튈 수 있다(실측: roll이 TURN_HIGH 근처를 지날 때 offset 오차가
-        # 몇 mm에서 90mm대로, bolt_slide가 몇 스텝 만에 3mm->35mm로
-        # 튀는 걸 확인). 관절 하나당 한 스텝 최대 변화량에 안전 상한을 둔다.
-        dq_task_norm = float(np.max(np.abs(dq_task))) if dq_task.size else 0.0
-        if dq_task_norm > _MAX_DQ_PER_STEP:
-            dq_task = dq_task * (_MAX_DQ_PER_STEP / dq_task_norm)
-
-        nv = self.model.nv
-        null_proj = np.eye(nv) - pinv @ J_frozen
-        dq_null = np.zeros(nv)
-        for name in _ARM_JOINTS:
-            dof = self._arm_dofadr[name]
-            dq_null[dof] = _NULLSPACE_GAIN * (_HOME_QPOS[name] - self._virtual_qpos[name])
-        dq = dq_task + null_proj @ dq_null
-        for dof in frozen_dofs:
-            dq[dof] = 0.0
-
-        for name in _ARM_JOINTS:
-            dof = self._arm_dofadr[name]
-            lo, hi = self.model.jnt_range[self.model.joint(name).id]
-            self._virtual_qpos[name] = float(np.clip(self._virtual_qpos[name] + dq[dof], lo, hi))
+        self._virtual_qpos = resolved_rate_step(
+            self.model, J, target, self._virtual_qpos,
+            _ARM_JOINTS, self._arm_dofadr, _HOME_QPOS,
+            _JAC_DAMPING, _NULLSPACE_GAIN, _LIMIT_FREEZE_MARGIN,
+            max_dq_per_step=_MAX_DQ_PER_STEP,
+        )
 
     # ------------------------------------------------------------------
     def reset(self, scene_config: dict[str, Any] | None = None) -> None:

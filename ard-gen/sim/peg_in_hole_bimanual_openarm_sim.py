@@ -217,6 +217,8 @@ from typing import Any
 import mujoco
 import numpy as np
 
+from sim.resolved_rate_ik import apply_openarm_gravcomp, resolved_rate_step
+
 _DEFAULT_XML = os.path.join(os.path.dirname(__file__), "..", "assets", "peg_in_hole_bimanual_openarm.xml")
 
 N_SUBSTEPS = 5  # mj_step 호출당 substep 수 (timestep=0.002 -> 제어 주기 dt=0.01s)
@@ -621,10 +623,7 @@ class BimanualPegInHoleOpenArmSim:
         # body_gravcomp를 직접 1.0으로 덮어썼다 -- geom_pos/geom_size를
         # 런타임에 덮어쓰는 것과 같은 방식. 이후 위 드리프트가 사실상 사라짐
         # (아래 __main__ 결과 참고).
-        for i in range(self.model.nbody):
-            name = self.model.body(i).name
-            if name.startswith("openarm_left_") or name.startswith("openarm_right_"):
-                self.model.body_gravcomp[i] = 1.0
+        apply_openarm_gravcomp(self.model)
 
         self._peg_qposadr = self.model.joint("peg_free").qposadr[0]
         self._peg_dofadr = self.model.joint("peg_free").dofadr[0]
@@ -757,49 +756,18 @@ class BimanualPegInHoleOpenArmSim:
         그 몫을 대신 맡게 한다 -- 이러면 (수정된) J@dq=delta_pos_world
         관계가 계속 성립해서 사후 clip류의 누출이 구조적으로 없다.
         한계에서 멀어지는 방향(그 관절을 다시 살릴 수 있는 방향)은
-        얼리지 않는다."""
+        얼리지 않는다.
+
+        실제 계산은 sim/resolved_rate_ik.py:resolved_rate_step()에 있다 --
+        tacker_openarm_env.py/screw_driving_bimanual_openarm_sim.py가 이
+        로직을 글자 그대로 복제하고 있던 걸 ponytail-audit로 발견하고
+        공유 모듈로 뽑았다(수학/동작은 이 docstring 그대로, 코드만 모음)."""
         _, jacp = self._virtual_peg_tip_and_jac()
-
-        def _solve(J: np.ndarray) -> np.ndarray:
-            jjt = J @ J.T + _JAC_DAMPING * np.eye(3)
-            return J.T @ np.linalg.inv(jjt)
-
-        # 1단계: 미정정(unconstrained) 풀이로 "이번 스텝에 한계 쪽으로 더
-        # 밀릴" 관절을 찾는다.
-        jacp_pinv0 = _solve(jacp)
-        dq_task0 = jacp_pinv0 @ delta_pos_world
-        jacp_frozen = jacp.copy()
-        frozen_dofs = []
-        for name in _ARM_JOINTS:
-            dof = self._arm_dofadr[name]
-            lo, hi = self.model.jnt_range[self.model.joint(name).id]
-            frac = (self._virtual_qpos[name] - lo) / (hi - lo)
-            if (frac < _LIMIT_FREEZE_MARGIN and dq_task0[dof] < 0.0) or (
-                frac > 1.0 - _LIMIT_FREEZE_MARGIN and dq_task0[dof] > 0.0
-            ):
-                jacp_frozen[:, dof] = 0.0
-                frozen_dofs.append(dof)
-
-        # 2단계: 얼린 관절을 뺀 Jacobian으로 다시 풀어서 나머지 관절이
-        # 대신하게 한다 -- 이러면 (수정된) J@dq=delta_pos_world 관계가
-        # 계속 성립해서 사후 clip류의 xy 누출이 구조적으로 없다.
-        jacp_pinv = _solve(jacp_frozen)
-        dq_task = jacp_pinv @ delta_pos_world
-
-        nv = self.model.nv
-        null_proj = np.eye(nv) - jacp_pinv @ jacp_frozen
-        dq_null = np.zeros(nv)
-        for name in _ARM_JOINTS:
-            dof = self._arm_dofadr[name]
-            dq_null[dof] = _NULLSPACE_GAIN * (_HOME_QPOS[name] - self._virtual_qpos[name])
-        dq = dq_task + null_proj @ dq_null
-        for dof in frozen_dofs:
-            dq[dof] = 0.0
-
-        for name in _ARM_JOINTS:
-            dof = self._arm_dofadr[name]
-            lo, hi = self.model.jnt_range[self.model.joint(name).id]
-            self._virtual_qpos[name] = float(np.clip(self._virtual_qpos[name] + dq[dof], lo, hi))
+        self._virtual_qpos = resolved_rate_step(
+            self.model, jacp, delta_pos_world, self._virtual_qpos,
+            _ARM_JOINTS, self._arm_dofadr, _HOME_QPOS,
+            _JAC_DAMPING, _NULLSPACE_GAIN, _LIMIT_FREEZE_MARGIN,
+        )
 
     def _sync_peg_to_arm_fk(self) -> None:
         """peg free body의 qpos를 지금 오른팔 ee pose로부터 FK로 직접

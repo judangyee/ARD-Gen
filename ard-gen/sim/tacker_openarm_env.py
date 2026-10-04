@@ -65,6 +65,7 @@ import mujoco
 import numpy as np
 
 from sim.base_task_env import BaseTaskEnv
+from sim.resolved_rate_ik import apply_openarm_gravcomp, resolved_rate_step
 
 _DEFAULT_XML = os.path.join(os.path.dirname(__file__), "..", "assets", "tacker_openarm.xml")
 
@@ -264,10 +265,7 @@ class BimanualTackerOpenArmSim:
             self.set_left_arm_reinforced(False)
 
         # gravcomp -- peg_in_hole_bimanual_openarm_sim.py와 동일.
-        for i in range(self.model.nbody):
-            name = self.model.body(i).name
-            if name.startswith("openarm_left_") or name.startswith("openarm_right_"):
-                self.model.body_gravcomp[i] = 1.0
+        apply_openarm_gravcomp(self.model)
 
         self._tool_qposadr = self.model.joint("tacker_tool_free").qposadr[0]
         self._workpiece_qposadr = self.model.joint("workpiece_free").qposadr[0]
@@ -314,44 +312,14 @@ class BimanualTackerOpenArmSim:
     def _advance_virtual(self, delta_pos_world: np.ndarray) -> None:
         """peg_in_hole_bimanual_openarm_sim.py의 _advance_virtual()과 완전히
         동일(널스페이스 투영 + 관절 한계 회피, 그 파일 docstring 참고) --
-        코드 그대로 재사용했고 이름/변수만 이 파일의 명명에 맞췄다."""
+        공유 모듈(sim/resolved_rate_ik.py, ponytail-audit로 중복 발견 후
+        추출)을 그대로 호출한다."""
         _, jacp = self._virtual_tool_tip_and_jac()
-
-        def _solve(J: np.ndarray) -> np.ndarray:
-            jjt = J @ J.T + _JAC_DAMPING * np.eye(3)
-            return J.T @ np.linalg.inv(jjt)
-
-        jacp_pinv0 = _solve(jacp)
-        dq_task0 = jacp_pinv0 @ delta_pos_world
-        jacp_frozen = jacp.copy()
-        frozen_dofs = []
-        for name in _ARM_JOINTS:
-            dof = self._arm_dofadr[name]
-            lo, hi = self.model.jnt_range[self.model.joint(name).id]
-            frac = (self._virtual_qpos[name] - lo) / (hi - lo)
-            if (frac < _LIMIT_FREEZE_MARGIN and dq_task0[dof] < 0.0) or (
-                frac > 1.0 - _LIMIT_FREEZE_MARGIN and dq_task0[dof] > 0.0
-            ):
-                jacp_frozen[:, dof] = 0.0
-                frozen_dofs.append(dof)
-
-        jacp_pinv = _solve(jacp_frozen)
-        dq_task = jacp_pinv @ delta_pos_world
-
-        nv = self.model.nv
-        null_proj = np.eye(nv) - jacp_pinv @ jacp_frozen
-        dq_null = np.zeros(nv)
-        for name in _ARM_JOINTS:
-            dof = self._arm_dofadr[name]
-            dq_null[dof] = _NULLSPACE_GAIN * (_HOME_QPOS[name] - self._virtual_qpos[name])
-        dq = dq_task + null_proj @ dq_null
-        for dof in frozen_dofs:
-            dq[dof] = 0.0
-
-        for name in _ARM_JOINTS:
-            dof = self._arm_dofadr[name]
-            lo, hi = self.model.jnt_range[self.model.joint(name).id]
-            self._virtual_qpos[name] = float(np.clip(self._virtual_qpos[name] + dq[dof], lo, hi))
+        self._virtual_qpos = resolved_rate_step(
+            self.model, jacp, delta_pos_world, self._virtual_qpos,
+            _ARM_JOINTS, self._arm_dofadr, _HOME_QPOS,
+            _JAC_DAMPING, _NULLSPACE_GAIN, _LIMIT_FREEZE_MARGIN,
+        )
 
     def _sync_tool_to_arm_fk(self) -> None:
         ee_pos = self.data.xpos[self._right_ee_body_id]
