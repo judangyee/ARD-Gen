@@ -44,8 +44,10 @@ def _build_eval_scene_configs(task: TaskConfig) -> list[dict]:
 
 
 def evaluate_gains(envs: list, values: list[float], task: TaskConfig, eval_scene_configs: list[dict]) -> float:
-    """대표 시나리오들에 대한 평균 리워드를 계산한다."""
-    gains = task.gains_from_vector(values)
+    """대표 시나리오들에 대한 평균 리워드를 계산한다. gains는 평가 전에
+    task.clip_gains()로 bounds 안쪽으로 자른다 -- 아래 main()의 opts에
+    "bounds"를 안 넘기는 이유와 같은 근거(바로 아래 docstring) 참고."""
+    gains = task.clip_gains(task.gains_from_vector(values))
     rewards = [env.run_episode(gains, cfg)["reward"] for env, cfg in zip(envs, eval_scene_configs)]
     return float(np.mean(rewards))
 
@@ -75,9 +77,21 @@ def main() -> None:
     eval_scene_configs = _build_eval_scene_configs(task)
     primary_scene_config = eval_scene_configs[0]
 
-    lo, hi = task.bounds_lo_hi()
+    # bounds는 CMA-ES(opts["bounds"]) 쪽에 안 맡기고 evaluate_gains()/아래
+    # best_overall 갱신에서 task.clip_gains()로 직접 클리핑한다 -- 레거시
+    # optimize/screw_driving_cma_search.py가 이미 실측으로 발견/문서화한
+    # 것과 같은 cma 라이브러리 버그(1차원에 가까운 게인 + bounds 조합이
+    # 특정 세대에서 CMA의 내부 step-size가 bounds 쪽으로 수렴하면
+    # es.tell() 내부 _stds_into_limits()에서 "array is 0-dimensional"
+    # IndexError로 죽음, cma 4.5.0에서도 재현됨)를 범용 cma_search.py에서도
+    # 그대로 재현했다(screw_driving 태스크로 실측 확인 -- cap_twist처럼
+    # landscape가 매끈해서 CMA가 한 세대 안에 조기 종료되는 태스크는 이
+    # 버그를 드러낼 만큼 충분히 오래 안 돌아서 지금까지 숨어있었을 뿐,
+    # screw_driving의 절벽형 landscape(문턱값 아래/위로 성공/실패가
+    # 갈림)에서 여러 세대를 돌리면 누구나 재현된다). bounds를 CMA-ES에서
+    # 빼는 쪽이 모든 태스크에 안전한 근본 수정이라 여기서 고쳤다(기존
+    # peg_in_hole/cap_twist/tacker 회귀 테스트로 동작 변화 없음을 확인).
     opts = {
-        "bounds": [lo, hi],
         "CMA_stds": task.sigma0,
         "popsize": args.popsize,
         "maxiter": args.max_generations,
@@ -104,11 +118,12 @@ def main() -> None:
         gen_best_reward = rewards[gen_best_idx]
         best_reward_per_gen.append(gen_best_reward)
 
+        gen_best_gains = task.clip_gains(task.gains_from_vector(candidates[gen_best_idx]))
         if gen_best_reward > best_overall["reward"]:
             best_overall["reward"] = gen_best_reward
-            best_overall["gains"] = task.gains_from_vector(candidates[gen_best_idx])
+            best_overall["gains"] = gen_best_gains
 
-        gains_str = ",".join(f"{v:.5f}" for v in candidates[gen_best_idx])
+        gains_str = ",".join(f"{v:.5f}" for v in task.gains_to_vector(gen_best_gains))
         print(
             f"[cma_search] gen {generation:3d}: best_reward_this_gen={gen_best_reward:7.3f} "
             f"best_overall={best_overall['reward']:7.3f} "

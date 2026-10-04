@@ -41,15 +41,19 @@ peg_in_hole/tacker OpenArm 버전과 동일한 이유(이 파일들 docstring �
 4/5단계가 기대하는 "left_arm이 있으면 role=stabilizer로 저장" 계약을
 스키마 일관성 차원에서 유지하기 위해 왼팔 EE 위치를 매 스텝 기록한다.
 
-## "forces"가 항상 빈 배열인 이유 (정직한 반영, cap_twist와 동일 선택)
+## "forces" 키를 아예 안 넣는 이유 (정직한 반영, cap_twist와 동일 선택)
 
 이 태스크에는 선형 힘 센서가 없다 -- 실제로 (별도 세션 진단에서 실측
 확인된 대로) driver와 bolt는 contact/weld 둘 다 없이 완전히 분리된
 물체라서, 나사 조임 저항 토크가 오른팔에 물리적으로 전달되는 경로 자체가
 없다(이 설계 공백은 PIPELINE.md에 별도로 기록, 다음 세션에서 설계 방향을
 정할 미해결 2번 이슈). 그래서 억지로 숫자를 채우지 않고 cap_twist의
-"forces는 선형 힘 센서가 없어 항상 빈 배열"과 같은 선택을 했다 -- "torque"
+"forces 키 자체를 안 보낸다"와 같은 선택을 했다 -- "torque"
 (bolt_drive_torque 액추에이터 effort, 스칼라)만 (T,1) 형태로 기록한다.
+(처음엔 빈 (0,3) 배열로 키를 채워 넣었는데, pipeline/bootstrap.py가 "forces"
+키 존재만 보고 바로 np.linalg.norm(...).max()를 불러 "zero-size array"
+ValueError로 죽는 걸 실측으로 발견했다 -- 그 파일도 len 체크로 고쳤지만,
+여기서는 애초에 cap_twist처럼 키를 안 넣는 쪽으로 다시 정리했다.)
 
 ## quantity/direction: 깊이를 수량어로, 방향어는 없음
 
@@ -191,7 +195,13 @@ class ScrewDrivingOpenArmEnv(BaseTaskEnv):
             "trajectory": {"ee_poses": np.stack(ee_poses).astype(np.float32)},
             "ee_poses": np.stack(ee_poses).astype(np.float32),
             "actions": np.stack(actions).astype(np.float32) if actions else np.zeros((0, 1), dtype=np.float32),
-            "forces": np.zeros((0, 3), dtype=np.float32),
+            # "forces" 키를 아예 안 넣는다(cap_twist와 동일한 선택, 위 모듈
+            # docstring "forces가 항상 빈 배열인 이유" 절 참고) -- 빈 (0,3)
+            # 배열로 채워서 넣으면 pipeline/bootstrap.py가 "forces" 키
+            # 존재만 보고 np.linalg.norm(...).max()를 불러 "zero-size array"
+            # ValueError로 죽는 걸 실측으로 발견했다(그 파일도 len 체크로
+            # 고쳤지만, 여기서도 애초에 키를 안 넣는 쪽이 cap_twist와 더
+            # 일관적이다).
             "torques": np.stack(torques).astype(np.float32) if torques else np.zeros((0, 1), dtype=np.float32),
             "insertion_depth": float(depth),
             "max_torque": float(max_torque),

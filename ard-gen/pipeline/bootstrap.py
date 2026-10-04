@@ -104,7 +104,14 @@ def main() -> None:
             scene_columns[field_name][i] = value
         gains_matrix[i] = task.gains_to_vector(gains)
         successes[i] = result["success"]
-        if "forces" in result:
+        # "forces" 키가 있어도 선형 힘 센서가 없는 태스크(예: screw_driving)는
+        # 항상 빈 (0,3) 배열을 담아 보낸다(cap_twist는 키 자체를 안 보내는
+        # 쪽을 택했지만, 둘 다 "힘 데이터 없음"을 뜻한다) -- len 체크 없이
+        # 바로 .max()를 부르면 "zero-size array to reduction operation
+        # maximum" ValueError로 죽는다(screw_driving 파이프라인 연결 중
+        # 실측 확인). pipeline/filter_episodes.py는 이미 len 체크를 하고
+        # 있었다 -- 여기도 그 패턴으로 맞춘다.
+        if result.get("forces") is not None and len(result["forces"]) > 0:
             force_mag = np.linalg.norm(result["forces"], axis=1)
             force_max[i] = float(force_mag.max())
             force_mean[i] = float(force_mag.mean())
