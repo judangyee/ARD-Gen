@@ -945,3 +945,133 @@ tacker_openarm_env.py`).
   (후퇴(~30~40스텝) + 최종 정착(20스텝)이 추가된 만큼).
 - 언어 라벨링 force_max 범위 [5.9, 20.1]N, 강도 분포 gentle 83/normal
   83/firm 86 -- 이전과 사실상 동일(발사 반동 자체는 안 바뀌었으므로 당연).
+
+## screw_driving OpenArm 파이프라인 연결
+
+별도 세션의 진단("screw_driving이 잘 동작하지 않는다")에서 발견한 진짜
+원인은 물리 자체가 아니었다: `optimize/screw_driving_cma_search.py`가
+레거시 VX300s 단일팔 시뮬레이터(`sim/screw_driving_sim.py`)만 최적화하고
+있었고, OpenArm 양팔 버전(`sim/screw_driving_bimanual_openarm_sim.py`,
+`assets/screw_driving_bimanual_openarm.xml`)은 `TASK_REGISTRY`에도 없어서
+범용 파이프라인(`optimize/cma_search.py --task`, `pipeline/bootstrap.py`
+등)이 전혀 손대지 못하고 있었다. 이번 작업은 그 공백을 메워 OpenArm
+버전을 peg_in_hole/tacker와 같은 자리로 정식 연결하는 것이다.
+
+### 연결: BaseTaskEnv 래퍼 + TASK_REGISTRY + yaml (sim 로직은 그대로)
+
+`sim/screw_driving_openarm_env.py`(`ScrewDrivingOpenArmEnv`)가
+`ScrewDrivingBimanualOpenArmSim`을 그대로 재사용하고 감싸기만 한다 --
+`step()`/`_advance_virtual_combined()`(토크 리미터 turn/rewind 상태 기계,
+computed-torque 컨트롤러) 등 control-loop 로직은 한 줄도 안 바꿨다(사용자
+지시). 유일한 sim 모듈 추가는 순수 조회 메서드 `get_left_ee_pos()`
+하나뿐(물리/제어에 영향 없음, 4/5단계 left_arm 스키마 일관성용).
+
+- **게인은 `torque_limit` 1개뿐**이다 -- 이 태스크는 peg_in_hole/tacker의
+  admittance(힘/위치 오차 피드백)가 아니라 **토크 리미터**라서다(저항
+  토크가 `torque_limit`을 넘으면 그 사이클의 "돌리기"를 멈추고 되감는다).
+  접근 속도/사이클 범위는 물리 상수로 코드에 고정돼 있어 게인이 아니다.
+  (`episode_io.py`의 기존 docstring이 이미 "나사 조이기의 torque_limit
+  1개"로 이 설계를 전제하고 있었다 -- 리팩토링 당시부터 예정된 모양이었던
+  셈.)
+- **씬 무작위화는 `target_depth`(0.028~0.034m, bolt_slide 물리적
+  최대치 아래로만) + `hinge_friction_scale`(0.5~5.0, 레거시 스크립트가
+  이미 실측 검증해둔 범위)** 2차원이다. "bolt 초기 위치/자세"는 **일부러
+  넣지 않았다** -- `reset()`의 `target_offset` 캡처가 항상 그 순간의 실제
+  오프셋을 목표로 잡는 설계라서(코드 추적으로 확인), 캡처 전에 bolt를
+  옮기면 그대로 목표가 같이 이동해 오차 0으로 흡수되고, 캡처 후에 옮기면
+  난이도를 올리는 게 아니라 블록 벽에 비정상적으로 파고드는 상태를 만들
+  뿐이다 -- 둘 다 "사용자 지시: 기존 시뮬레이터 로직은 건드리지 말 것"을
+  지키면서는 의미 있게 구현할 수 없었다. 진짜로 구현하려면 `reset()`의
+  캡처 순서 자체를 바꿔야 하는데, 그건 아래 "미해결 이슈" 2번(반작용 토크
+  모델링)과 함께 다음에 설계 방향을 정하는 게 맞다고 판단했다.
+- `forces` 필드는 cap_twist와 같은 선택으로 **키 자체를 안 보낸다**(선형
+  힘 센서가 없는 태스크라는 정직한 반영). `quantity`에 최종 삽입 깊이(mm)를
+  채워 수량어로 쓴다 -- 조이기는 항상 단일 방향이라 `direction`은 없음.
+
+### 실측 버그 2개 발견 (범용 파이프라인 쪽, screw_driving이 처음 드러낸 것)
+
+screw_driving을 실제로 여러 세대/트라이얼 돌려보니, 기존 태스크들이 지금껏
+우연히 피해갔던 두 가지 generic 버그가 드러났다 -- 둘 다 고쳤고, 기존
+peg_in_hole/cap_twist/tacker 회귀 테스트로 동작 변화 없음을 확인했다.
+
+1. **`optimize/cma_search.py`의 `opts["bounds"]`가 cma 4.5.0에서
+   `IndexError: array is 0-dimensional`로 죽음.** 레거시
+   `screw_driving_cma_search.py`가 이미 문서화해둔 것과 같은 cma 라이브러리
+   버그 계열(1차원에 가까운 게인 + bounds 조합)인데, cap_twist는 landscape가
+   매끈해서 1세대 안에 조기 종료되는 바람에 지금껏 이 버그를 드러낼 만큼
+   오래 안 돌았을 뿐이다. screw_driving은 절벽형 landscape(문턱값
+   위/아래로 성공/실패가 갈림)라 여러 세대를 돌리면 재현된다. **고침**:
+   `opts`에서 `bounds`를 빼고, `evaluate_gains()`/최종 게인 갱신 양쪽에서
+   `task.clip_gains()`로 직접 클리핑한다(`pipeline/bootstrap.py`가 이미
+   쓰던 패턴과 동일).
+2. **`pipeline/bootstrap.py`가 `"forces"` 키 존재만 보고
+   `np.linalg.norm(...).max()`를 불러 "zero-size array" `ValueError`.**
+   선형 힘 센서가 없는 태스크(forces가 빈 배열)에서 죽는다 --
+   `pipeline/filter_episodes.py`는 이미 `len(...) > 0`까지 체크하고
+   있었는데 `bootstrap.py`만 놓치고 있었다. 같은 패턴으로 맞췄다.
+
+### 재생성 실행 기록 (0→1→2-A→2-B→4→5)
+
+- **0단계(CMA-ES)**: `--threshold 20.0`(tasks/screw_driving.yaml 기본값)
+  으로 1세대 만에 수렴 -- `torque_limit=1.843`, reward=37.00(재실행
+  37.07), `insertion_depth=33.7mm`(목표 34mm의 99% 이상), success=True.
+  **수렴 과정이 "뭘 찾았는지"를 더 분명히 보려고 `--threshold 1e9`(조기
+  종료 없음)로 따로 돌려보니**: gen1 reward=37.00(`torque_limit=2.94`),
+  gen2 reward=37.00(`torque_limit=4.00`, bounds 상한에 닿음), gen3
+  reward=37.00(`torque_limit=4.00`) -- 3세대째 reward가 완전히
+  평탄해지자 CMA-ES가 스스로 멈췄다(`tolflatfitness` 류 정지 조건).
+  **이게 바로 별도 세션 진단에서 찾은 "자연 저항 문턱값(~1.4~1.8) 이상에서는
+  리미터가 사실상 안 걸려 '무제한'과 동일해진다"는 바로 그 평탄 구간을
+  CMA-ES 수렴 과정에서 그대로 재확인한 것**이다 -- `torque_limit`을
+  문턱값보다 올려봐야(2.94든 4.00이든) reward가 똑같은 이유가 바로 그거다.
+- **2-A단계(부트스트랩)**: 60트라이얼(데모 규모, seed×[0.5,2.0] 노이즈),
+  **성공률 75.0%(45/60)**, 성공 게인 분포 `torque_limit`
+  평균=2.737±0.629 -- 자연 문턱값(1.4~1.8)보다 위에 몰려있어 위 CMA-ES
+  평탄 구간 해석과 일치한다.
+- **2-B단계(diffusion)**: 300 epoch 학습 후 새 무작위 씬 20개에서 검증 --
+  **부트스트랩 75.0% -> diffusion 100.0%(20/20, +25.0%p 개선)**.
+  diffusion이 생성한 게인 분포 `torque_limit=2.766±0.434`(bootstrap
+  성공군과 비슷한 영역에 몰림, 타당함).
+- **4단계(필터링)**: 30개 씬 중 **28개 성공(93.3%)** ->
+  `data/episodes/screw_driving/`. 에피소드 구조 직접 검증: `right_arm.traj`
+  (8629,3)/`action`(8628,1), **`left_arm.traj`가 `right_arm.traj`와
+  정확히 같은 길이(8629,3)**(둘 다 동시에 시작하는 설계라서 peg_in_hole/
+  tacker OpenArm 버전과 동일하게 approach 단계가 따로 없음), `gain_names`/
+  `gains` 왕복 보존, `scene_config`에 `target_depth`/`hinge_friction_scale`
+  정상 샘플링됨.
+- **5단계(언어 라벨링)**: 28개 에피소드 전부 라벨링 완료.
+  `role_labels={"right_arm":"actuator","left_arm":"stabilizer"}` 정상
+  부여(스키마 일관성 확인). 샘플: `"나사를 32.3mm 깊이까지 조여라."`
+  (`quantity_target=32.3`, `direction=None`). `force_max` 범위는
+  `[0.0, 0.0]`(forces 키가 없어서) -> 강도 분포 전부 `gentle`로 쏠리지만
+  `intensity_words`를 비워뒀으므로(cap_twist와 동일 선택) 언어 라벨
+  자체에는 영향 없음(정직하게 의도된 결과).
+
+### 미해결로 남기는 이슈 (다음에 설계 방향을 따로 정할 것)
+
+이번 작업은 **파이프라인 연결**이 목적이라 아래 2개는 고치지 않고
+그대로 남겨뒀다 -- 둘 다 별도 세션 진단에서 먼저 발견된 것이고, 고치려면
+`sim/screw_driving_bimanual_openarm_sim.py`의 control-loop/물리 설계
+자체를 바꿔야 해서(이번 요청의 "기존 시뮬레이터 로직은 건드리지 말 것"
+범위 밖) 다음에 따로 다뤄야 한다.
+
+1. **반작용 토크가 오른팔에 물리적으로 전달되는 경로가 없다.** driver와
+   bolt는 contact(driver는 `contype=0`)도 weld도 없이 완전히 분리된
+   별개의 물체다 -- bolt의 회전은 오른팔이 명령한 roll을 그대로 따라가는
+   open-loop `ctrl`일 뿐, bolt_hinge의 저항 토크가 driver_grasp weld를
+   통해 오른팔로 역으로 전달되는 길이 없다(실측 확인: `hinge_friction_scale`
+   을 1->50배로 올려도 오른팔 토크/weld 구속력이 전혀 안 바뀜). peg_in_hole/
+   cap_twist처럼 "실제 반작용을 버티는" 태스크가 아니라 지금은 겉보기에만
+   비슷한 구조다.
+2. **반작용이 실제로 걸린다면 현재 게인(computed-torque `OMEGA_N=40,
+   ZETA=1.0`, peg_in_hole 그대로 재사용)으로 버틸 수 있는지도 불확실하다.**
+   driver에 직접 외부 토크(`xfrc_applied`)를 걸어 실측한 결과, 5N*m
+   수준에서 거의 즉시(4스텝 이내) `QACC`가 발산했다. 즉 1번(반작용
+   미모델링)을 고쳐서 실제로 토크를 전달하게 만들더라도, 그 다음 단계로
+   현재 게인이 그 부하를 버틸 수 있는지 자체가 별도로 재검증/재설계가
+   필요한 문제다.
+
+두 이슈는 서로 묶여 있다 -- 1번을 고치는 설계(예: driver-bolt 사이에
+실제 weld/contact를 추가하거나, 별도의 반작용력 모델을 둠)를 정할 때
+2번(그 부하를 버틸 게인 재설계, 필요하면 kp/댐핑 재스윕)을 같이
+결정하는 게 맞다. 이번 세션에서는 고치지 않는다.

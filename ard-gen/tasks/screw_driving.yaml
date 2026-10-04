@@ -50,10 +50,13 @@ eval_scenarios:
   - hinge_friction_scale: 5.0
 
 success:
-  # 0단계 CMA-ES 실측 결과로 채움(아래 PIPELINE.md "screw_driving OpenArm
-  # 파이프라인 연결" 절 참고) -- 두 시나리오 모두 완료(success=True)에
-  # 필요한 +50 보너스를 받으면서 max_torque가 과하지 않은 지점의 평균
-  # 리워드보다 여유 있게 낮게 잡는다.
+  # 0단계 CMA-ES 실측 결과(PIPELINE.md "screw_driving OpenArm 파이프라인
+  # 연결" 절 참고): 성공(success=True, +50 보너스 받음) reward는 ~37.0~
+  # 37.1(torque_limit=1.84), 자연 저항 문턱값(~1.4~1.8) 이상에서는
+  # torque_limit을 더 올려도(2.94, 4.00 등) reward가 똑같이 평탄하다(3세대
+  # 안에 CMA-ES가 스스로 멈출 만큼 평탄함, 실측 확인). 실패(리미터가 걸려
+  # 영원히 데드락, +50 없음) reward는 음수(step 페널티만 20000+ 쌓임) --
+  # 그래서 20.0은 성공/실패 사이에 넉넉한 여유를 둔 값이다.
   reward_threshold: 20.0
 
 # pipeline/diffusion_gains.py의 조건 벡터에 쓸 필드 이름과 순서.
