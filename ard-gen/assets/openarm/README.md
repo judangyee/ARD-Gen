@@ -11,6 +11,8 @@
 - `assets/visual/{arm,gripper,body}/`, `assets/collision/` -- 위 두 파일이
   참조하는 메시만(태스크 전용 `visual/cell/` 등은 제외).
 
-상위 `assets/bimanual_openarm.xml`이 `pedestal/openarm_pedestal.xml`을
-`<attach>`로 가져다 쓰고, 바닥/조명/카메라/workpiece(범용 파지 대상)만
-추가한다.
+상위 태스크 씬(`assets/peg_in_hole_bimanual_openarm.xml`,
+`assets/screw_driving_bimanual_openarm.xml`, `assets/tacker_openarm.xml`)이
+`pedestal/openarm_pedestal.xml`을 `<attach>`로 가져다 쓰고, 바닥/조명/카메라/
+태스크별 오브젝트를 추가한다. (환경만 있던 범용 전신 `assets/bimanual_openarm.xml`은
+실제로 쓰이지 않아 삭제됐다.)

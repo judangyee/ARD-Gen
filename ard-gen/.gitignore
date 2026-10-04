@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
+.venv/
 seed_trajectory.npz
 convergence.png
 generalization_report*.json
