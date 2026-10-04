@@ -211,6 +211,7 @@ admittance 게인(Kp_xy, Kd_xy -- 이 파일 맨 위 "아직 검증 안 된 것"
 from __future__ import annotations
 
 import os
+from collections import deque
 from typing import Any
 
 import mujoco
@@ -500,10 +501,35 @@ def sample_scene_config(rng: np.random.Generator) -> dict[str, Any]:
 
 
 class BimanualPegInHoleOpenArmSim:
-    def __init__(self, xml_path: str | None = None):
+    def __init__(
+        self,
+        xml_path: str | None = None,
+        torque_noise_std: float = 0.0,
+        control_delay_steps: int = 0,
+        rng: np.random.Generator | None = None,
+    ):
+        """torque_noise_std/control_delay_steps: 실기 모사용 옵션(둘 다 기본값
+        0 -- 끄면 이전 동작과 완전히 동일, 공식 그리퍼 반영 작업의 "가우시안
+        노이즈 + 제어 지연 주입 옵션" 요청). 기존 파이프라인(CMA-ES/부트스트랩/
+        필터링)은 이 kwarg들을 안 넘기므로 영향이 없다 -- 나중에 sim-to-real
+        로버스트성 평가 등에서 명시적으로 켜 쓰는 용도다.
+
+        - torque_noise_std(N*m): get_right_joint_torque()/get_left_joint_torque()
+          가 돌려주는 "관측값"에만 가우시안 노이즈를 더한다 -- 실제 물리
+          시뮬레이션(제어 루프에 쓰이는 토크 자체)에는 영향 없다(진짜 토크
+          센서도 센서 자체의 노이즈가 실제 구동에 되먹임되지 않는 것과 동일).
+        - control_delay_steps(정수, 제어 틱 단위): step()에 들어오는
+          delta_pos_world 명령을 이만큼 지연시켜 적용한다(실제 로봇의
+          통신/처리 지연 모사) -- FIFO 큐로 구현, reset()마다 비운다.
+        """
         self.xml_path = xml_path or _DEFAULT_XML
         self.model = mujoco.MjModel.from_xml_path(self.xml_path)
         self.data = mujoco.MjData(self.model)
+
+        self._torque_noise_std = float(torque_noise_std)
+        self._control_delay_steps = int(control_delay_steps)
+        self._rng = rng if rng is not None else np.random.default_rng()
+        self._delay_buffer: deque[np.ndarray] = deque()
 
         self._hole_body_id = self.model.body("hole_socket").id
         self._peg_body_id = self.model.body("peg").id
@@ -607,6 +633,14 @@ class BimanualPegInHoleOpenArmSim:
         torque_adr = self.model.sensor("peg_torque").adr[0]
         self._force_slice = slice(force_adr, force_adr + 3)
         self._torque_slice = slice(torque_adr, torque_adr + 3)
+
+        # 관절 토크 센서(팔당 7, assets 파일의 <sensor> jointactuatorfrc 참고).
+        self._right_torque_adr = [
+            self.model.sensor(f"torque_right_j{i}_sensor").adr[0] for i in range(1, 8)
+        ]
+        self._left_torque_adr = [
+            self.model.sensor(f"torque_left_j{i}_sensor").adr[0] for i in range(1, 8)
+        ]
 
         # "home" 키프레임에서 hole_socket의 qpos(7) -- 왼팔이 안 움직이므로
         # 매 reset()마다 그대로 복사해서 쓴다 (재계산 불필요).
@@ -813,6 +847,7 @@ class BimanualPegInHoleOpenArmSim:
 
     def reset(self, scene_config: dict[str, Any]) -> float:
         mujoco.mj_resetData(self.model, self.data)
+        self._delay_buffer.clear()
 
         for geom_id in self._peg_geom_ids:
             self.model.geom_friction[geom_id][0] = scene_config["friction"]
@@ -857,6 +892,17 @@ class BimanualPegInHoleOpenArmSim:
         return outer_half
 
     def get_force_torque(self) -> tuple[np.ndarray, np.ndarray]:
+        """(관절 토크 센서 작업 중 실측으로 발견, 아직 안 고침 -- "peg_in_hole
+        재생성" Phase에서 다룰 예정) peg는 freejoint 바디라서, 이 site
+        force/torque 센서는 peg-hole 접촉력을 전혀 못 읽고 peg 자신의
+        무게(질량*g)만 고정값으로 반환한다(실측: z축 힘이 에피소드 내내
+        0.4905N에서 표준편차 6.6e-7 -- 완전히 상수, "force_max가 0.5N에
+        고정되던 문제"의 근본 원인으로 보인다). 이미 tacker/screw_driving
+        에서 겪은 것과 같은 freejoint-site-sensor 버그 계열(PIPELINE.md
+        tacker 절 "실측 버그 발견" 참고) -- 올바른 수정은 qfrc_constraint
+        기반 읽기로 바꾸는 것(실측 확인: 같은 에피소드에서 0.0000~0.253N,
+        표준편차 0.059로 실제 접촉 동역학을 반영함). 지금은 그대로 두고
+        다음 Phase에서 고친다."""
         site_rot = self.data.site_xmat[self._peg_tip_site_id].reshape(3, 3)
         force_local = self.data.sensordata[self._force_slice]
         torque_local = self.data.sensordata[self._torque_slice]
@@ -911,6 +957,32 @@ class BimanualPegInHoleOpenArmSim:
         """왼팔 그리퍼(1 actuated DOF, `left_finger1_ctrl`)의 현재 명령값."""
         return float(self.data.ctrl[self._left_gripper_actuator_id])
 
+    def _delay_apply(self, delta_pos_world: np.ndarray) -> np.ndarray:
+        """control_delay_steps FIFO -- __init__ docstring 참고. delay=0이면
+        즉시 그대로 돌려준다(이전 동작과 완전히 동일)."""
+        if self._control_delay_steps <= 0:
+            return delta_pos_world
+        self._delay_buffer.append(np.array(delta_pos_world, dtype=float))
+        if len(self._delay_buffer) > self._control_delay_steps:
+            return self._delay_buffer.popleft()
+        return np.zeros_like(np.asarray(delta_pos_world, dtype=float))
+
+    def get_right_joint_torque(self) -> np.ndarray:
+        """오른팔 7관절의 jointactuatorfrc 센서값(N*m), _ARM_JOINTS 순서.
+        torque_noise_std>0이면 관측값에만 가우시안 노이즈를 더한다(__init__
+        docstring 참고 -- 실제 물리에는 영향 없음)."""
+        torque = self.data.sensordata[self._right_torque_adr].copy()
+        if self._torque_noise_std > 0:
+            torque = torque + self._rng.normal(0.0, self._torque_noise_std, size=torque.shape)
+        return torque
+
+    def get_left_joint_torque(self) -> np.ndarray:
+        """왼팔 7관절의 jointactuatorfrc 센서값(N*m) -- get_right_joint_torque()와 동일."""
+        torque = self.data.sensordata[self._left_torque_adr].copy()
+        if self._torque_noise_std > 0:
+            torque = torque + self._rng.normal(0.0, self._torque_noise_std, size=torque.shape)
+        return torque
+
     def step(self, delta_pos_world: np.ndarray) -> None:
         """가상(순수 기구학) 상태를 delta_pos_world만큼 전진시키고, 그 결과를
         목표(q_des)로 삼아 오른팔에 역동역학(computed-torque) 토크를 넣는다
@@ -939,8 +1011,14 @@ class BimanualPegInHoleOpenArmSim:
         가속도 feedforward(목표 궤적 자체의 q̈_des)는 안 넣는다 --
         resolved-rate 계획이 가속도 궤적을 안 주기 때문에, 이건 완전한
         computed-torque가 아니라 "매 스텝 새로 잰 M(q)로 결합/관성을
-        상쇄한 뒤의 PD"에 가깝다."""
-        self._advance_virtual(delta_pos_world)
+        상쇄한 뒤의 PD"에 가깝다.
+
+        control_delay_steps>0이면 delta_pos_world를 그만큼 지연시켜
+        적용한다(FIFO, __init__ docstring 참고) -- 실제 명령이 들어오는
+        순간을 늦추는 것뿐이라, _advance_virtual() 자체의 resolved-rate
+        로직은 안 바뀐다."""
+        delta_to_apply = self._delay_apply(delta_pos_world)
+        self._advance_virtual(delta_to_apply)
         mujoco.mj_forward(self.model, self.data)  # 이번 스텝 시작 상태로 M(q)/qfrc_bias/qfrc_passive 갱신
         M = np.zeros((self.model.nv, self.model.nv))
         mujoco.mj_fullM(self.model, self.data, M)

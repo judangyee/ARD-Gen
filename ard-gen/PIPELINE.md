@@ -1047,3 +1047,37 @@ LeRobotDataset 변환 전체를 작게(popsize 6/3세대, bootstrap 20건, 10 �
 state_dim=21/action_dim=12로 정확히 변환 + meta/info.json의 feature
 names가 21/12개와 정확히 일치. 회귀 테스트 7개 전부 통과(기존 Cartesian
 필드는 전혀 안 바뀌어서 그대로 통과).
+
+## 관절 토크 센서 + 노이즈/제어 지연 옵션
+
+`assets/peg_in_hole_bimanual_openarm.xml`의 `<sensor>`에 `jointactuatorfrc`
+14개(팔당 7) 추가 -- 기존 `peg_force`/`peg_torque`(freejoint 바디의 site
+force/torque 센서)와 종류가 다른 센서라 그 버그(아래 참고)에 안 걸린다.
+`get_right/left_joint_torque()`가 이 센서값을 읽어서 `right_joint_torque`/
+`left_joint_torque`(관측, (T+1,7))로 기록되고, `to_lerobot.py`의
+`observation.state`에도 (조인트 공간 state 뒤에) 이어붙었다("observation에
+joint_torque 필드 포함" 요청) -- state_dim 21 -> **35**(팔당 7 토크 x 2).
+
+**실측 확인**(default 설정 그대로, 노이즈/지연 0): 토크값이 스텝마다
+실제로 변함(예: 오른팔 joint1이 1~2스텝째 -0.62 -> -0.91N*m로 변화) --
+freejoint site 센서와 달리 상수가 아니다.
+
+**실기 모사 옵션(기본 꺼짐, "설정값으로" 요청)**: `BimanualPegInHoleOpenArmSim`/
+`PegInHoleOpenArmEnv` 생성자에 `torque_noise_std`(N*m, 토크 관측값에만
+가우시안 노이즈 -- 제어 루프 자체에는 영향 없음)와 `control_delay_steps`
+(제어 틱 단위 FIFO 지연, `step()`에 들어오는 delta 명령을 그만큼 늦춤)
+추가. 둘 다 기본값 0이면 이전 동작과 완전히 동일(실측 확인: 같은 게인으로
+reward 49.29, 변화 없음) -- 기존 파이프라인(`task.make_env()`가 kwarg 없이
+생성)은 전혀 영향 없다. 직접 켜서 확인: `torque_noise_std=0.5` -> 관측값이
+눈에 띄게 흔들림(노이즈가 관측에만 적용되는 것 확인), `control_delay_steps=5`
+-> 같은 씬에서 성공은 유지되지만 step_count 121->126, reward 49.29->49.24로
+살짝 느려짐(지연의 정성적으로 타당한 효과).
+
+**중요 발견(아직 안 고침, 다음 Phase에서 다룸)**: `get_force_torque()`가
+읽는 `peg_force`/`peg_torque` 센서는 **peg가 freejoint 바디라서 접촉력을
+전혀 못 읽고 peg 자신의 무게(질량*g)만 고정 반환한다** -- 실측: z축 힘이
+에피소드 내내 0.4905N, 표준편차 6.6e-7(완전한 상수). `qfrc_constraint`
+기반으로 바꾸면 실제 접촉 동역학(0.0000~0.253N, 표준편차 0.059)이 보인다.
+tacker/screw_driving에서 이미 겪은 것과 같은 freejoint-site-sensor 버그
+계열이고, **"force_max가 0.5N에 고정되던 문제"(다음 Phase 참고)의 근본
+원인으로 보인다.**

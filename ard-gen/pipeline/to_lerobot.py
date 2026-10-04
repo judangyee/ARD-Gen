@@ -66,15 +66,19 @@ CODEBASE_VERSION = "v2.1-approx"  # 실제 lerobot 패키지로 만든 게 아�
 # LeRobotDataset의 features.names가 "그 데이터셋 하나의 고정 스키마"라서다).
 _RIGHT_JOINT_NAMES = [f"right_joint{i}_pos" for i in range(1, 8)]
 _LEFT_JOINT_NAMES = [f"left_joint{i}_pos" for i in range(1, 8)]
+_RIGHT_JOINT_TORQUE_NAMES = [f"right_joint{i}_torque" for i in range(1, 8)]
+_LEFT_JOINT_TORQUE_NAMES = [f"left_joint{i}_torque" for i in range(1, 8)]
 
 _STATE_NAMES = {
     # 공식 그리퍼 반영(액션 공간을 팔당 7관절+그리퍼로 확장) 이후:
     # 기존 Cartesian ee_pos/wrist_rotate는 그대로 유지하고(제거 안 함),
     # 그 뒤에 조인트 공간 관측(팔당 7)을 추가했다 -- build_frames()의
-    # "조인트 공간 state/action 추가" 절 참고. 없는 태스크(cap_twist 등)는
-    # 그대로 예전 차원을 쓴다.
+    # "조인트 공간 state/action 추가" 절 참고. 관절 토크 센서(팔당 7)도
+    # 같은 방식으로 그 뒤에 추가했다("observation에 joint_torque 필드
+    # 포함" 요청). 없는 태스크(cap_twist 등)는 그대로 예전 차원을 쓴다.
     "peg_in_hole": ["right_ee_x", "right_ee_y", "right_ee_z", "right_wrist_rotate",
-                    "left_ee_x", "left_ee_y", "left_ee_z"] + _RIGHT_JOINT_NAMES + _LEFT_JOINT_NAMES,
+                    "left_ee_x", "left_ee_y", "left_ee_z"] + _RIGHT_JOINT_NAMES + _LEFT_JOINT_NAMES
+    + _RIGHT_JOINT_TORQUE_NAMES + _LEFT_JOINT_TORQUE_NAMES,
     "cap_twist": ["cap_angle_rad", "left_ee_x", "left_ee_y", "left_ee_z"],
 }
 _ACTION_NAMES = {
@@ -115,6 +119,13 @@ def build_frames(episode: dict) -> tuple[np.ndarray, np.ndarray, str]:
         state = np.concatenate([state, _align_trailing(right["joint_pos"], n_frames, 7)], axis=1)
     if left.get("joint_pos") is not None:
         state = np.concatenate([state, _align_trailing(left["joint_pos"], n_frames, 7)], axis=1)
+    # 관절 토크 센서 관측 추가(있는 태스크만) -- joint_pos와 같은 자리에서
+    # 이어붙인다(state의 "그 뒤" 순서는 _STATE_NAMES의 순서와 일치시켜야
+    # 한다 -- joint_pos 다음에 joint_torque).
+    if right.get("joint_torque") is not None:
+        state = np.concatenate([state, _align_trailing(right["joint_torque"], n_frames, 7)], axis=1)
+    if left.get("joint_torque") is not None:
+        state = np.concatenate([state, _align_trailing(left["joint_torque"], n_frames, 7)], axis=1)
     if right.get("joint_action") is not None:
         action_parts.append(_align_trailing(right["joint_action"], n_frames, 7))
     if right.get("gripper_action") is not None:

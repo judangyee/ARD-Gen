@@ -103,8 +103,20 @@ class PegInHoleOpenArmEnv(BaseTaskEnv):
         xml_path: str | None = None,
         stabilizer_config: dict[str, Any] | None = None,
         use_stabilizer: bool = True,
+        torque_noise_std: float = 0.0,
+        control_delay_steps: int = 0,
     ):
-        self._sim = BimanualPegInHoleOpenArmSim(xml_path=xml_path)
+        """torque_noise_std/control_delay_steps: BimanualPegInHoleOpenArmSim.__init__()
+        로 그대로 전달한다(실기 모사 옵션, 둘 다 기본값 0 -- 꺼져 있으면
+        이전 동작과 완전히 동일, 그 클래스 docstring 참고). tasks/
+        peg_in_hole.yaml에 이 kwarg들을 지정하는 절이 없으므로
+        TaskConfig.make_env()를 통한 기존 파이프라인은 항상 기본값(0)으로
+        생성한다 -- 명시적으로 Env를 직접 생성할 때만 켤 수 있다."""
+        self._sim = BimanualPegInHoleOpenArmSim(
+            xml_path=xml_path,
+            torque_noise_std=torque_noise_std,
+            control_delay_steps=control_delay_steps,
+        )
         self._outer_half = 0.0
         self._target_depth = 0.0
 
@@ -159,6 +171,11 @@ class PegInHoleOpenArmEnv(BaseTaskEnv):
         right_gripper_actions: list[np.ndarray] = []
         left_gripper_actions: list[np.ndarray] = []
 
+        # 관절 토크 센서 관측(공식 그리퍼 반영 작업의 "관절 토크 센서 추가"
+        # 요청) -- joint_pos와 같은 "관측" 길이 관례((T+1,7)).
+        right_joint_torque = [sim.get_right_joint_torque()]
+        left_joint_torque = [sim.get_left_joint_torque()]
+
         prev_dx, prev_dy = 0.0, 0.0
         max_force_mag = 0.0
         insertion_depth = 0.0
@@ -196,6 +213,8 @@ class PegInHoleOpenArmEnv(BaseTaskEnv):
             left_gripper_actions.append(np.array([sim.get_left_gripper_ctrl()], dtype=np.float32))
             right_joint_pos.append(sim.get_right_joint_pos())
             left_joint_pos.append(sim.get_left_joint_pos())
+            right_joint_torque.append(sim.get_right_joint_torque())
+            left_joint_torque.append(sim.get_left_joint_torque())
 
             peg_tip = sim.get_peg_tip_pos()
             hole_center = sim.get_hole_center_pos()
@@ -255,4 +274,6 @@ class PegInHoleOpenArmEnv(BaseTaskEnv):
             if right_gripper_actions else np.zeros((0, 1), dtype=np.float32),
             "left_gripper_action": np.stack(left_gripper_actions).astype(np.float32)
             if left_gripper_actions else np.zeros((0, 1), dtype=np.float32),
+            "right_joint_torque": np.stack(right_joint_torque).astype(np.float32),
+            "left_joint_torque": np.stack(left_joint_torque).astype(np.float32),
         }

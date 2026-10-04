@@ -68,6 +68,7 @@ _KNOWN_RESULT_FIELDS = {
     # 아래 스칼라 전용 extra_* 통과 루프에 걸리면 TypeError가 난다.
     "right_joint_pos", "right_joint_action", "right_gripper_action",
     "left_joint_pos", "left_gripper_action",
+    "right_joint_torque", "left_joint_torque",  # 관절 토크 센서 (팔당 7, 배열)
 }
 
 
@@ -150,11 +151,15 @@ def main() -> None:
             episode["right_arm"]["joint_action"] = result["right_joint_action"]
         if result.get("right_gripper_action") is not None:
             episode["right_arm"]["gripper_action"] = result["right_gripper_action"]
+        if result.get("right_joint_torque") is not None:
+            episode["right_arm"]["joint_torque"] = result["right_joint_torque"]
         if episode.get("left_arm") is not None:
             if result.get("left_joint_pos") is not None:
                 episode["left_arm"]["joint_pos"] = result["left_joint_pos"]
             if result.get("left_gripper_action") is not None:
                 episode["left_arm"]["gripper_action"] = result["left_gripper_action"]
+            if result.get("left_joint_torque") is not None:
+                episode["left_arm"]["joint_torque"] = result["left_joint_torque"]
         if result.get("insertion_depth") is not None:
             episode["insertion_depth"] = result["insertion_depth"]
         if result.get("forces") is not None and len(result["forces"]) > 0:

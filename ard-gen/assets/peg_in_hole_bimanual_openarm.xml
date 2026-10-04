@@ -347,6 +347,28 @@
   <sensor>
     <force name="peg_force" site="peg_tip_site"/>
     <torque name="peg_torque" site="peg_tip_site"/>
+
+    <!-- 관절 토크 센서(팔당 7, 공식 그리퍼 반영 작업의 "관절 토크 센서 추가"
+         요청) -- jointactuatorfrc는 그 관절에 작용하는 모든 액추에이터의
+         합력을 읽는다(오른팔은 torque_right_j*, 왼팔은 pos_left_j* 각각
+         1개뿐이라 그 액추에이터의 출력과 같다). peg_force/peg_torque(위,
+         freejoint 바디의 site 힘/토크 센서)와는 다른 종류의 측정이라
+         이 버그에 영향받지 않는다 -- freejoint 자체가 아니라 "관절에
+         작용하는 액추에이터 힘"을 재는 거라 센서 종류 자체가 다르다. -->
+    <jointactuatorfrc name="torque_right_j1_sensor" joint="openarm_right_joint1"/>
+    <jointactuatorfrc name="torque_right_j2_sensor" joint="openarm_right_joint2"/>
+    <jointactuatorfrc name="torque_right_j3_sensor" joint="openarm_right_joint3"/>
+    <jointactuatorfrc name="torque_right_j4_sensor" joint="openarm_right_joint4"/>
+    <jointactuatorfrc name="torque_right_j5_sensor" joint="openarm_right_joint5"/>
+    <jointactuatorfrc name="torque_right_j6_sensor" joint="openarm_right_joint6"/>
+    <jointactuatorfrc name="torque_right_j7_sensor" joint="openarm_right_joint7"/>
+    <jointactuatorfrc name="torque_left_j1_sensor" joint="openarm_left_joint1"/>
+    <jointactuatorfrc name="torque_left_j2_sensor" joint="openarm_left_joint2"/>
+    <jointactuatorfrc name="torque_left_j3_sensor" joint="openarm_left_joint3"/>
+    <jointactuatorfrc name="torque_left_j4_sensor" joint="openarm_left_joint4"/>
+    <jointactuatorfrc name="torque_left_j5_sensor" joint="openarm_left_joint5"/>
+    <jointactuatorfrc name="torque_left_j6_sensor" joint="openarm_left_joint6"/>
+    <jointactuatorfrc name="torque_left_j7_sensor" joint="openarm_left_joint7"/>
   </sensor>
 
   <contact>
