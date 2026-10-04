@@ -47,7 +47,7 @@ clip하고, `depth >= target_depth`가 `_SUCCESS_HOLD_STEPS` 연속 스텝
 동안 유지돼야 성공으로 인정한다.
 
 사용법:
-    python optimize/peg_in_hole_openarm_gain_search.py
+    python optimize/_archive/peg_in_hole_openarm_gain_search.py
 """
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ os.environ.setdefault("MUJOCO_GL", "osmesa")
 
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))  # optimize/_archive/에서 repo 루트까지 두 단계
 
 import numpy as np
 import cma
@@ -72,7 +72,7 @@ from sim.peg_in_hole_bimanual_openarm_sim import (
     _SUCCESS_HOLD_STEPS,
 )
 
-_TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "..", "assets", "peg_in_hole_bimanual_openarm.xml")
+_TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "assets", "peg_in_hole_bimanual_openarm.xml")
 _TEMPLATE = open(_TEMPLATE_PATH).read()
 
 # 이전 탐색(모듈 docstring 참고)이 찾은 값 -- 지금 파일에 반영된 것과 동일.
@@ -101,7 +101,7 @@ def eval_gains(params: np.ndarray, tag: str = "a") -> float:
     kp_base, kv_base, kp_mid, kv_mid, kp_wrist, kv_wrist, null_gain = np.abs(params)
     simmod._NULLSPACE_GAIN = float(null_gain)
     xml = build_xml(kp_base, kv_base, kp_mid, kv_mid, kp_wrist, kv_wrist)
-    tmp_path = os.path.join(os.path.dirname(__file__), "..", "assets", f"_gain_search_tmp_{tag}.xml")
+    tmp_path = os.path.join(os.path.dirname(__file__), "..", "..", "assets", f"_gain_search_tmp_{tag}.xml")
     with open(tmp_path, "w") as f:
         f.write(xml)
     try:
@@ -195,7 +195,7 @@ def main() -> None:
     print("FINAL best:", best_overall.round(3), "cost", best_cost)
 
     for i in range(8):
-        p = os.path.join(os.path.dirname(__file__), "..", "assets", f"_gain_search_tmp_{i}.xml")
+        p = os.path.join(os.path.dirname(__file__), "..", "..", "assets", f"_gain_search_tmp_{i}.xml")
         if os.path.exists(p):
             os.remove(p)
 

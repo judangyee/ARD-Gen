@@ -14,7 +14,7 @@ gains:
   # peg_in_hole_bimanual_openarm_sim.py 모듈 docstring "xy를 접촉힘이
   # 아니라..." 절 참고) **위치 오차(m)**에 곱하는 게인으로 의미 자체가
   # 바뀌었다 -- 그래서 스케일이 완전히 다르다(VX300s는 0.00002~0.003).
-  # optimize/peg_in_hole_openarm_admittance_gain_search.py로 실측 탐색한
+  # optimize/_archive/peg_in_hole_openarm_admittance_gain_search.py로 실측 탐색한
   # 결과값(Kp_xy=0.124630, Kd_xy=0.001125, 대표 시나리오 3개 전부 성공,
   # reward~48.8)을 bounds 안쪽 여유 있는 위치에 두고 잡았다.
   bounds:

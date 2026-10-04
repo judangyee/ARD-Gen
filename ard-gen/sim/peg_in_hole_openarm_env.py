@@ -35,7 +35,7 @@ VX300s의 Kp_xy/Kd_xy는 **접촉힘**(N)에 곱하는 admittance 게인이다. 
 항상 0이라 그 신호 자체가 없어서, Kp_xy/Kd_xy를 **위치 오차**(m)에 곱하는
 게인으로 바꿨다 -- 그래서 tasks/peg_in_hole.yaml의 게인 bounds/x0/sigma0도
 VX300s 값(0.00002~0.003 스케일)을 그대로 못 쓰고 완전히 다시 잡았다(이
-파일이 아니라 tasks/peg_in_hole.yaml 참고, optimize/
+파일이 아니라 tasks/peg_in_hole.yaml 참고, optimize/_archive/
 peg_in_hole_openarm_admittance_gain_search.py로 실측 탐색한 결과).
 """
 from __future__ import annotations

@@ -124,11 +124,12 @@ seed 하나만으로는 diffusion을 학습시킬 수 없으므로 두 단계로
       0.000649)와 비슷한 영역이지만 씬 조건에 따라 값을 조절해서 뽑는다는
       점이 다르다(무작위 노이즈는 조건과 무관하게 넓게 뿌리기만 함).
 
-> `bootstrap/`(구 디렉토리, 행동 복제 MLP 정책)와 `pipeline/bootstrap.py`
-> (2-A)는 이름은 비슷하지만 다른 것이다 — 전자는 "force 상태 → 행동"을
-> 흉내내는 정책이고, 후자는 "씬 조건 → 게인이 성공하는지"를 기록해 2-B
-> diffusion의 학습 데이터를 만드는 것. 실제 구현해보니 서로 재사용할
-> 부분이 없어 별도로 유지한다.
+> `bootstrap/`(구 디렉토리, 행동 복제 MLP 정책, 2026-10 삭제됨)와
+> `pipeline/bootstrap.py`(2-A)는 이름은 비슷했지만 다른 것이었다 — 전자는
+> "force 상태 → 행동"을 흉내내는 정책이고, 후자는 "씬 조건 → 게인이
+> 성공하는지"를 기록해 2-B diffusion의 학습 데이터를 만드는 것. 실제
+> 구현해보니 서로 재사용할 부분이 없어 별도로 유지했었다(이후 `bootstrap/`은
+> 2단계와 무관한 미사용 코드로 판명되어 삭제).
 
 ### 3단계 — Stabilizer(왼팔) 증강: 기하 변환 ✅ 완료
 
@@ -264,7 +265,10 @@ grasp 직후/중간/종료 시점 3프레임씩 오프스크린 렌더링으로 
 축으로만 회전해서 카메라 각도상 성공/실패가 육안으로는 거의 구분 안 됨
 (원통 대칭이라 회전이 안 보이는 것뿐, 버그 아님) — 정직하게 밝혀둔다.
 
-#### 3. MimicGen 스타일 기하 증강 — `pipeline/stabilizer_augment.py`
+#### 3. MimicGen 스타일 기하 증강 — `pipeline/stabilizer_augment.py` (2026-10 삭제됨)
+
+> run_pipeline.py 기준 3단계(Stabilizer)는 이미 파이프라인 검증에서 제외돼 있었고, 다른
+> 어떤 파일도 이 모듈을 import하지 않아서 코드는 삭제했다 — 아래는 당시 실측 기록이다.
 
 seed 에피소드의 왼팔 궤적(world-frame)을 물체 기준 좌표계로 저장해두고,
 새 씬의 물체 포즈로 SE(3) 변환(순수 좌표 계산, 물리 재시뮬레이션 없음)해서
@@ -474,11 +478,11 @@ LeRobotDataset 호환 변환본(`data/lerobot/{task}/`).
 | 파이프라인 단계 | 관련 코드 | 상태 |
 |---|---|---|
 | 0단계 (Seed 확보) | `optimize/cma_search.py`, `sim/{peg_in_hole,cap_twist}_env.py` | ✅ 완료 |
-| (스코프 외) 부트스트랩 정책 실험 | `bootstrap/` | ✅ 완료 (2단계와는 무관, 별도 유지) |
+| (스코프 외) 부트스트랩 정책 실험 | `bootstrap/` | 🗑️ 삭제됨(2026-10, 2단계와 무관한 미사용 코드) |
 | 1단계 (공유 씬 설정) | `sim/{peg_in_hole,cap_twist}_env.py`의 `sample_scene_config`/`to_sim_scene_config` | ✅ 완료 |
 | 2-A (게인 부트스트래핑) | `pipeline/bootstrap.py`, `data/bootstrap/` | ✅ 완료 |
 | 2-B (diffusion) | `pipeline/diffusion_gains.py`, `data/bootstrap/diffusion_gains.pt` | ✅ 완료 |
-| 3단계 (Stabilizer 기하 변환) | `sim/stabilizer.py`, `pipeline/stabilizer_augment.py` | ✅ 완료 |
+| 3단계 (Stabilizer 기하 변환) | `sim/stabilizer.py`, `pipeline/stabilizer_augment.py` | 🗑️ 삭제됨(2026-10, run_pipeline.py에서도 이미 제외돼 있었음) |
 | 4단계 (동시 실행 & 필터링) | `pipeline/filter_episodes.py`, `pipeline/episode_io.py`, `data/episodes/{task}/` | ✅ 완료 (양팔 동시 실행, 232+209개 정식 데이터셋) |
 | 5단계 (언어 라벨링) | `pipeline/language_labeling.py` | ✅ 완료 (템플릿 기반 + role_labels, LLM 전환은 보류 -- 이유는 해당 절 참고) |
 | LeRobotDataset 변환 | `pipeline/to_lerobot.py`, `data/lerobot/{task}/` | ✅ 완료 (npz 기반 호환 스키마 -- 정확한 범위는 해당 절 참고) |

@@ -1,13 +1,13 @@
 <mujoco model="ard_gen_peg_in_hole_bimanual_openarm">
   <!--
-    ARD-Gen peg-in-hole 태스크, OpenArm 양팔 버전. assets/bimanual_openarm.xml
-    (환경만 있던 파일)에 실제 태스크를 얹었다: 오른팔(Actuator)이 peg를
+    ARD-Gen peg-in-hole 태스크, OpenArm 양팔 버전. (구)assets/bimanual_openarm.xml
+    (환경만 있던, 이후 미사용으로 삭제된 파일)에 실제 태스크를 얹었다: 오른팔(Actuator)이 peg를
     쥐고 hole에 꽂고, 왼팔(Stabilizer)이 hole을 공중에서 붙잡고 있다
     ("오른팔이 핀을 꼽고 왼팔이 구멍을 공중에서 잡고 있는 걸로 하자"
     요청). VX300s 버전(assets/peg_in_hole_bimanual.xml)과 같은 설계
     (오른팔 admittance controller + 왼팔 고정 그립)지만, OpenArm은
     7-DOF(VX300s는 6-DOF)에 두 팔의 받침대 간격이 6.2cm로 훨씬 좁아서
-    (assets/bimanual_openarm.xml docstring 참고) 아래 세 가지를 VX300s
+    ((구)assets/bimanual_openarm.xml docstring 참고, 이후 미사용으로 삭제됨) 아래 세 가지를 VX300s
     버전과 다르게 풀었다 -- 전부 실측하다가 발견한 문제라서 실패했던
     시도까지 그대로 남겨둔다(다음에 비슷한 걸 만들 때 같은 삽질 반복
     안 하려고).
@@ -75,8 +75,8 @@
     VX300s의 왼팔(Stabilizer)만 게인을 올렸던 것과 달리, 여기서는
     **오른팔도** vendor 기본 게인(motor_DM8009 kp=230 등)으로는 위
     실측처럼 안정화가 안 됐다(오른팔도 그냥 정지 홀드가 아니라 전체
-    궤적 동안 계속 정확한 위치를 유지해야 하기 때문). assets/bimanual_openarm.xml
-    이 v0.3에서 했던 것과 같은 방식(vendor 액추에이터는 그대로 둔 채
+    궤적 동안 계속 정확한 위치를 유지해야 하기 때문). (구)assets/bimanual_openarm.xml
+    이 v0.3에서 했던 것과 같은 방식(이후 미사용으로 삭제됨, vendor 액추에이터는 그대로 둔 채
     ctrl=0으로 안 건드리고, 우리 것을 따로 추가)으로 양팔 14개 관절
     전부에 kp/kv를 강화한 <position> 액추에이터(pos_right_j1..7,
     pos_left_j1..7)를 추가했다. 값(관절 종류별 3단계, kv=kp*0.1):
@@ -209,7 +209,7 @@
          바뀌었는데 home 자세(고정 관절각)는 그대로였다 -- 그 결과 오른팔
          joint4가 range의 90%, joint7이 94.3%까지 붙어 있었다("관절 한계
          페널티 없이 찾은 첫 home 자세"와 같은 실패 패턴, 위 docstring
-         "실패한 첫 시도" 참고). optimize/peg_in_hole_openarm_home_pose_search.py로
+         "실패한 첫 시도" 참고). optimize/_archive/peg_in_hole_openarm_home_pose_search.py로
          새 로컬 오프셋 기준 home 자세를 다시 풀었고(양팔 14관절 전부
          margin 15% 이내), 왼팔 home 자세가 바뀌면서 relpose의 위치(xyz)는
          ee 로컬 고정 관계라 그대로 유효했지만 orientation(quat)은 "hole이
@@ -419,7 +419,7 @@
          기준으로는 그게 과하게 벌어져 있었다는 걸 알게 돼 다시 좁혔다.
          왼팔/오른팔 joint1-7 qpos와 ctrl(pos_left_j*/pos_right_j*)을 새 값으로
          바꾼 이유: sim 모듈의 _HOME_QPOS/_LEFT_ARM_HOME_QPOS 주석과
-         optimize/peg_in_hole_openarm_home_pose_search.py 참고 -- grasp
+         optimize/_archive/peg_in_hole_openarm_home_pose_search.py 참고 -- grasp
          anchor 재조정으로 peg tip/hole 목표점의 ee-로컬 위치가 바뀌면서
          이전 home 자세는 오른팔 joint4/joint7이 range 90%대까지 붙어
          있었다("어떻게 해결할거야" 피드백, 관절 한계 페널티 없이 찾은

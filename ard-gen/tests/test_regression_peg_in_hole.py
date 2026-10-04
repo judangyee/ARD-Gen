@@ -149,7 +149,7 @@ def test_task_registry_wiring() -> None:
     assert len(task.eval_scenarios) == 3
     assert task.condition_dim == 4
     env = task.make_env()
-    # optimize/peg_in_hole_openarm_admittance_gain_search.py로 실측 탐색한
+    # optimize/_archive/peg_in_hole_openarm_admittance_gain_search.py로 실측 탐색한
     # 알려진 성공 게인(sim/peg_in_hole_bimanual_openarm_sim.py __main__ 참고).
     result = env.run_episode(task.gains_from_vector([0.124630, 0.001125]), task.default_scene_config())
     assert result["success"] is True

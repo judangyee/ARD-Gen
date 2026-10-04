@@ -58,7 +58,7 @@
     - driver/block grasp anchor 실측 재조정(peg/hole처럼 여러 차례 눈으로
       보며 다듬어야 할 가능성 높음)
     - 양팔 14관절 home 자세 재탐색(오른팔 driver tip이 bolt head 위
-      호버 위치에 오도록, CMA-ES, peg_in_hole_openarm_home_pose_search.py
+      호버 위치에 오도록, CMA-ES, optimize/_archive/peg_in_hole_openarm_home_pose_search.py
       패턴 재사용)
     - sim/screw_driving_bimanual_openarm_sim.py: peg_in_hole의 오른팔
       computed-torque 위치 제어 + screw_driving_sim.py의 가상 나사산

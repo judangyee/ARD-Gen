@@ -5,4 +5,4 @@ pyyaml>=6.0  # tasks/*.yaml 태스크 설정 (sim/task_registry.py)
 matplotlib>=3.7.0
 imageio>=2.31.0
 imageio-ffmpeg>=0.4.9
-torch>=2.0.0  # bootstrap/ (행동 복제 정책 학습)에만 필요
+torch>=2.0.0  # pipeline/diffusion_gains.py, pipeline/filter_episodes.py에 필요

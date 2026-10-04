@@ -64,9 +64,14 @@ def main() -> None:
 
     print()
     print("=" * 70)
-    print("1단계 -- 공유 씬 설정 (pipeline/scene_sampler.py)")
+    print("1단계 -- 공유 씬 설정 (sim/task_registry.py의 TaskConfig.sample_scene_config)")
     print("=" * 70)
-    print("[run_pipeline] 별도 실행 단계 없음 -- 4단계 내부에서 sample_scene_config()로 매 씬마다 호출됨")
+    print(
+        "[run_pipeline] 별도 실행 단계 없음 -- pipeline/scene_sampler.py는 더 이상 쓰이지 않음"
+        "(회귀 테스트 비교용으로만 남음). 0단계(optimize/cma_search.py)가 이미 "
+        "sim/task_registry.py의 TaskConfig로 태스크를 로드하고, 4단계(filter_episodes.py) "
+        "내부에서 TaskConfig.sample_scene_config()로 매 씬마다 호출됨"
+    )
 
     print()
     print("=" * 70)
