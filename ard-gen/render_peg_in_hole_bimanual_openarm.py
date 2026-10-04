@@ -5,8 +5,24 @@ render_bimanual.py와 같은 구조. **아직 삽입이 성공하지 않는다**
 -- 이 스크립트는 그 실패 양상(오른팔 진동, peg가 hole에서 xy로 벗어나는 것)을
 눈으로 보기 위한 것이다.
 
+## 손목 카메라(camera_wrist_right/left) 기본 채널 추가
+
+공식 OpenArm 모델 검증(PIPELINE.md 참고) 때 확인한 대로, `camera_wrist_left`/
+`camera_wrist_right`는 공식 enactic/openarm_mujoco v2 MJCF에 이미 공식
+위치/각도로 정의돼 있었다(그리퍼 하우징 안쪽, 핑거를 향함) -- 렌더
+파이프라인에 연결만 안 돼 있었다. 기존 카메라(wide_cam/top_cam)는 그대로
+두고 `--cameras` 기본값에 두 손목 카메라를 "추가 채널"로 넣었다(요청
+그대로 -- 기존 시점 유지 + 손목 카메라 추가). mj_ray로 광축을 직접 쏴서
+확인(이 환경엔 렌더 백엔드(OSMesa/EGL)가 없어 실제 프레임 렌더는 못
+했음, 미검증으로 남김): 그리퍼 핑거(27~61mm 거리)를 향하고 있어 "잡은
+물체를 가까이서 보는" 손목 카메라로서 기하학적으로 타당한 배치임을
+확인했다.
+
 사용 예:
     MUJOCO_GL=osmesa python render_peg_in_hole_bimanual_openarm.py --out-dir .
+    # 손목 카메라만 보고 싶으면:
+    MUJOCO_GL=osmesa python render_peg_in_hole_bimanual_openarm.py --out-dir . \
+        --cameras camera_wrist_right
 """
 from __future__ import annotations
 
@@ -33,7 +49,7 @@ from sim.peg_in_hole_bimanual_openarm_sim import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir", type=str, default=".")
-    parser.add_argument("--cameras", type=str, default="wide_cam,top_cam")
+    parser.add_argument("--cameras", type=str, default="wide_cam,top_cam,camera_wrist_right,camera_wrist_left")
     parser.add_argument("--kp-xy", type=float, default=0.124630)
     parser.add_argument("--kd-xy", type=float, default=0.001125)
     parser.add_argument("--offset-x", type=float, default=0.014)

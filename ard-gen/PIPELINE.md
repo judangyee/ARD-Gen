@@ -1081,3 +1081,31 @@ reward 49.29, 변화 없음) -- 기존 파이프라인(`task.make_env()`가 kwar
 tacker/screw_driving에서 이미 겪은 것과 같은 freejoint-site-sensor 버그
 계열이고, **"force_max가 0.5N에 고정되던 문제"(다음 Phase 참고)의 근본
 원인으로 보인다.**
+
+## 손목 카메라 연결
+
+공식 모델 검증(위 절)에서 이미 확인한 대로 `camera_wrist_left`/
+`camera_wrist_right`는 공식 enactic/openarm_mujoco v2 MJCF에 공식
+위치/각도로 이미 정의돼 있었다 -- 이번 작업은 "추가"가 아니라 렌더
+파이프라인에 **연결**하는 것이다.
+
+`render_peg_in_hole_bimanual_openarm.py`의 `--cameras` 기본값을
+`wide_cam,top_cam`에서 `wide_cam,top_cam,camera_wrist_right,camera_wrist_left`
+로 확장했다(기존 시점 유지 + 추가 채널, 요청 그대로) -- 이 스크립트는
+이미 임의의 카메라 이름 리스트를 받아 각각 별도 mp4로 저장하는 범용
+멀티카메라 구조라 코드 변경은 default 값 하나뿐이다.
+
+**검증됨**: `mj_ray`로 두 손목 카메라의 광축을 직접 쐈을 때(렌더 없이도
+되는 순수 기하 질의) 그리퍼 자신의 손가락(`finger_inner_*`/`finger_outer_*`
+visual mesh, 27~61mm 거리)을 향하고 있음을 확인 -- "그리퍼 하우징 안에서
+잡은 물체를 보는" 손목 카메라로서 기하학적으로 타당한 배치다(collision
+그룹까지 포함한 첫 ray-cast는 자기 자신의 collision proxy를 6mm에서
+맞혀 혼란을 줬는데, visual 그룹(group=2)만으로 다시 쏴서 진짜 광학
+경로를 확인했다).
+
+**미검증**: 이 컨테이너에는 OSMesa도 EGL도 설치돼 있지 않아서(`libOSMesa`/
+`libEGL` 자체가 없음 -- `python -c "import mujoco"`가 `MUJOCO_GL=osmesa`든
+`egl`든 즉시 import 단계에서 죽는다, 기존 wide_cam/top_cam 렌더링도 이미
+이 환경에서는 똑같이 불가능했다) 실제 픽셀 렌더링(mp4 프레임 내용)은
+이번 세션에서 확인하지 못했다 -- 렌더가 가능한 환경에서 직접 돌려서
+눈으로 확인 필요.
