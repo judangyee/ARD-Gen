@@ -627,12 +627,8 @@ class BimanualPegInHoleOpenArmSim:
                 self.model.body_gravcomp[i] = 1.0
 
         self._peg_qposadr = self.model.joint("peg_free").qposadr[0]
+        self._peg_dofadr = self.model.joint("peg_free").dofadr[0]
         self._hole_qposadr = self.model.joint("hole_free").qposadr[0]
-
-        force_adr = self.model.sensor("peg_force").adr[0]
-        torque_adr = self.model.sensor("peg_torque").adr[0]
-        self._force_slice = slice(force_adr, force_adr + 3)
-        self._torque_slice = slice(torque_adr, torque_adr + 3)
 
         # 관절 토크 센서(팔당 7, assets 파일의 <sensor> jointactuatorfrc 참고).
         self._right_torque_adr = [
@@ -892,21 +888,27 @@ class BimanualPegInHoleOpenArmSim:
         return outer_half
 
     def get_force_torque(self) -> tuple[np.ndarray, np.ndarray]:
-        """(관절 토크 센서 작업 중 실측으로 발견, 아직 안 고침 -- "peg_in_hole
-        재생성" Phase에서 다룰 예정) peg는 freejoint 바디라서, 이 site
-        force/torque 센서는 peg-hole 접촉력을 전혀 못 읽고 peg 자신의
-        무게(질량*g)만 고정값으로 반환한다(실측: z축 힘이 에피소드 내내
-        0.4905N에서 표준편차 6.6e-7 -- 완전히 상수, "force_max가 0.5N에
-        고정되던 문제"의 근본 원인으로 보인다). 이미 tacker/screw_driving
-        에서 겪은 것과 같은 freejoint-site-sensor 버그 계열(PIPELINE.md
-        tacker 절 "실측 버그 발견" 참고) -- 올바른 수정은 qfrc_constraint
-        기반 읽기로 바꾸는 것(실측 확인: 같은 에피소드에서 0.0000~0.253N,
-        표준편차 0.059로 실제 접촉 동역학을 반영함). 지금은 그대로 두고
-        다음 Phase에서 고친다."""
-        site_rot = self.data.site_xmat[self._peg_tip_site_id].reshape(3, 3)
-        force_local = self.data.sensordata[self._force_slice]
-        torque_local = self.data.sensordata[self._torque_slice]
-        return site_rot @ force_local, site_rot @ torque_local
+        """(고침, "peg_in_hole 재생성" Phase) 원래 peg_force/peg_torque
+        site 센서를 썼는데, peg가 freejoint 바디라서 peg-hole 접촉력을
+        전혀 못 읽고 peg 자신의 무게(질량*g)만 고정값으로 반환했다(실측:
+        z축 힘이 에피소드 내내 0.4905N, 표준편차 6.6e-7 -- 완전히 상수).
+        tacker/screw_driving에서 이미 겪은 것과 같은 freejoint-site-sensor
+        버그 계열이다(PIPELINE.md tacker 절 "실측 버그 발견" 참고).
+        qfrc_constraint(peg의 freejoint 6-DOF에 실제로 걸리는 구속력)
+        기반으로 바꿨다(실측 확인: 같은 에피소드에서 0.0000~0.253N,
+        표준편차 0.059로 실제 접촉 동역학을 반영함) -- "force_max가
+        0.5N에 고정되던 문제"의 수정이다. freejoint의 선형/각 DOF는 둘 다
+        월드 프레임이라(쿼터니언 적분과 무관하게 qvel 자체가 월드 프레임
+        각속도/선속도) 기존 함수처럼 site 회전행렬을 곱해 로컬->월드로
+        바꿀 필요가 없다 -- qfrc_constraint를 그대로 반환하면 이미 월드
+        프레임이다(기존 함수의 반환값도 사실은 월드 프레임이었다 --
+        site_rot이 site의 로컬->월드 회전행렬이고 force_local이 그 site
+        로컬 프레임으로 센서가 돌려준 값이라, site_rot @ force_local가
+        월드 프레임으로 변환하는 식이었다)."""
+        dofadr = self._peg_dofadr
+        force = self.data.qfrc_constraint[dofadr : dofadr + 3].copy()
+        torque = self.data.qfrc_constraint[dofadr + 3 : dofadr + 6].copy()
+        return force, torque
 
     def get_ee_pose(self) -> np.ndarray:
         pos = self.data.site_xpos[self._peg_tip_site_id]

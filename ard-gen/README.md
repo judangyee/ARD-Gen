@@ -10,6 +10,26 @@ MuJoCo 기반 peg-in-hole 태스크에서 admittance controller 게인을 CMA-ES
 마찰이 실측값)을 쓸 때만 드러나는 문제 3가지를 실제로 겪고 고쳤다. 아래
 "팔을 ALOHA(VX300s)로 교체하며 겪은 것들" 섹션 참고.
 
+> **로봇 확정: OpenArm 양팔 + 공식 그리퍼.** 이 문서는 초기 VX300s 단일팔
+> 버전을 다룬다(아래 대부분 섹션). 현재 등록된 태스크(`peg_in_hole`,
+> `tacker`, `cap_twist`, `screw_driving`)는 전부 OpenArm 양팔 버전으로
+> 전환됐고, 그 작업 전체(공식 모델 검증, 그리퍼 반영, 관절 토크 센서,
+> 손목 카메라, 각 태스크별 실측 버그)는 `PIPELINE.md`에 기록돼 있다 --
+> 이 README보다 `PIPELINE.md`가 더 최신이고 실제 현황을 반영한다.
+>
+> **검증됨 vs 미검증 (공식 OpenArm 모델 반영 작업, 요약 -- 전체는
+> PIPELINE.md 참고)**
+> - 검증됨: 공식 모델(enactic/openarm_mujoco v2)과 자산 완전 일치(발견된
+>   3개 차이 수정 완료), peg_in_hole의 누락된 `integrator="implicitfast"`
+>   수정(69.08mm -> 0.0000mm 드리프트), 조인트 공간 state/action(팔당
+>   7관절+그리퍼) 기록, 관절 토크 센서 값이 실제로 변함, `force_max`가
+>   0.5N에 고정되던 버그의 원인(freejoint site 센서)과 수정 결과
+>   (0.24~0.73N 분포, intensity 균등 분포).
+> - 미검증: 손목 카메라의 실제 픽셀 렌더링(이 작업 환경에 OSMesa/EGL이
+>   둘 다 없어 렌더 자체가 불가능했음), 그리퍼 스트로크의 공식 데이터시트
+>   수치 대조, 관절 토크 센서의 실기 대비 절대 정확도, 노이즈/지연 옵션을
+>   켠 상태에서의 전체 파이프라인 재검증.
+
 ## 디렉토리 구조
 
 ```
