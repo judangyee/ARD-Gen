@@ -249,6 +249,46 @@ def test_cap_twist_floor_contact_renamed_not_reclassified() -> None:
     print("[OK] cap_twist floor_contact(구 'table')의 충돌 물성이 그대로 보존됨")
 
 
+def test_visual_randomization_auto_applies_to_scaffolded_tasks() -> None:
+    """RoboTwin 2.0 이식 Part 3-4/최종 검증 항목: scaffold_task.py(Part
+    3-2)로 만든 새 태스크에도 Part 1의 시각 randomization이 코드 수정
+    없이 그냥 적용되는지 확인한다 -- 생성된 XML이 3개 기존 태스크와
+    같은 ground/table/clutter 이름 규칙을 그대로 포함하기 때문이다
+    (scaffold_task.py의 _VISUAL_ASSET_BLOCK/_VISUAL_WORLDBODY_BLOCK
+    참고)."""
+    from sim.task_registry import TASK_REGISTRY
+
+    scaffolded = [t for t in ("demo_block", "demo_peg", "demo_tack") if t in TASK_REGISTRY]
+    if not scaffolded:
+        print("[SKIP] demo_block/demo_peg/demo_tack이 아직 scaffold되지 않음")
+        return
+
+    for task_name in scaffolded:
+        task = load_task_config(task_name)
+        env = task.make_env()
+        model = env._sim.model
+
+        ground_before = int(model.geom_matid[model.geom("ground").id])
+        table_z_before = float(model.body_pos[model.body("table").id][2])
+        clutter_before = [model.body_pos[model.body(f"clutter_{i}").id].copy() for i in range(N_CLUTTER_SLOTS)]
+
+        cfg = None
+        for seed in range(10):
+            candidate = sample_visual_config(np.random.default_rng(seed))
+            if candidate["ground_variant"] != 0 or abs(candidate["table_height_offset"]) > 1e-6:
+                cfg = candidate
+                break
+        assert cfg is not None
+        env.apply_visual_config(cfg)
+
+        assert int(model.geom_matid[model.geom("ground").id]) != ground_before or cfg["ground_variant"] == 0
+        table_z_after = float(model.body_pos[model.body("table").id][2])
+        assert abs(table_z_after - (table_z_before + cfg["table_height_offset"])) < 1e-9
+        clutter_after = [model.body_pos[model.body(f"clutter_{i}").id].copy() for i in range(N_CLUTTER_SLOTS)]
+        assert any(not np.array_equal(a, b) for a, b in zip(clutter_before, clutter_after))
+        print(f"[OK] {task_name}(scaffold 생성): Part 1 시각 randomization 자동 적용됨")
+
+
 def test_default_visual_config_matches_xml_baseline() -> None:
     """default_visual_config()를 적용하면(아무 randomization도 안 한
     것과 동일해야 함) ground/table의 matid가 변형 0번(=XML 원본과 같은
@@ -275,6 +315,7 @@ if __name__ == "__main__":
     test_table_decoration_never_collides_structurally()
     test_table_height_range_safe_for_openarm_tasks()
     test_cap_twist_floor_contact_renamed_not_reclassified()
+    test_visual_randomization_auto_applies_to_scaffolded_tasks()
     test_default_visual_config_matches_xml_baseline()
     print()
     print("ALL TESTS PASSED (visual randomization)")
