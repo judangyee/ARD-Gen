@@ -64,6 +64,7 @@ from typing import Any
 import mujoco
 import numpy as np
 
+from patterns import impact_recoil
 from sim.base_task_env import BaseTaskEnv
 
 _DEFAULT_XML = os.path.join(os.path.dirname(__file__), "..", "assets", "tacker_openarm.xml")
@@ -534,39 +535,23 @@ class TackerOpenArmEnv(BaseTaskEnv):
         self._sim.step(np.asarray(action, dtype=float))
 
     def compute_reward(self, episode_result: dict[str, Any]) -> float:
-        """거리 페널티 + 발사 성공 보너스 - (발사 정착/후퇴 중/최종 정착)
-        변위 초과 페널티 3종 - 오버슈트 페널티 - 스텝 페널티 + 후퇴 완료
-        보너스 + 최종 성공 보너스. 페널티 3종을 따로 두는 이유: 어느 단계
-        에서 workpiece가 밀렸는지(발사 반동 자체 vs 후퇴 동작 vs 그립 해제)
-        를 리워드 신호에서도 구분할 수 있게 하기 위해서다."""
-        success_disp = episode_result.get("success_displacement_m", SUCCESS_DISPLACEMENT_M)
-        reward = (
-            -2.0 * episode_result["final_distance"]
-            + 20.0 * (1.0 if episode_result.get("fired") else 0.0)
-            - 500.0 * max(0.0, episode_result.get("displacement", 0.0) - success_disp)
-            - 500.0 * max(0.0, episode_result.get("retract_bump", 0.0) - success_disp)
-            - 500.0 * max(0.0, episode_result.get("final_bump", 0.0) - success_disp)
-            - 20.0 * episode_result.get("overshoot_penalty", 0.0)
-            - 0.01 * episode_result["step_count"]
-        )
-        if episode_result.get("retracted"):
-            reward += 10.0
-        if episode_result.get("success"):
-            reward += 50.0
-        return float(reward)
+        """RoboTwin 2.0 이식 Part 3-1: impact-recoil 패턴
+        (patterns/impact_recoil.py)으로 뽑아냈다 -- 거리 페널티 + 발사
+        성공 보너스 - (발사 정착/후퇴 중/최종 정착) 변위 초과 페널티
+        3종 - 오버슈트 페널티 - 스텝 페널티 + 후퇴 완료 보너스 + 최종
+        성공 보너스 공식은 원래 하드코딩 그대로(그 모듈의 DEFAULT_COEFS가
+        이 파일의 SUCCESS_DISPLACEMENT_M과 같은 값). 페널티 3종을 따로
+        두는 이유: 어느 단계에서 workpiece가 밀렸는지(발사 반동 자체 vs
+        후퇴 동작 vs 그립 해제)를 리워드 신호에서도 구분할 수 있게
+        하기 위해서다. tests/test_patterns_identity.py가 리팩토링
+        전후 reward가 bit-identical함을 확인한다."""
+        return impact_recoil.compute_reward(episode_result, impact_recoil.DEFAULT_COEFS)
 
     def is_success(self, episode_result: dict[str, Any]) -> bool:
         """발사 성공 + (발사 정착/후퇴 중/최종 정착) 변위가 전부 허용치
         이내 + 안전 거리까지 후퇴 완료, 전부 만족해야 성공(사용자 요청
         "발사 성공 + 변위 체크 + 안전 거리까지 후퇴 완료" 그대로 반영)."""
-        if not episode_result.get("fired") or not episode_result.get("retracted"):
-            return False
-        success_disp = episode_result.get("success_displacement_m", SUCCESS_DISPLACEMENT_M)
-        return bool(
-            episode_result.get("displacement", float("inf")) <= success_disp
-            and episode_result.get("retract_bump", float("inf")) <= success_disp
-            and episode_result.get("final_bump", float("inf")) <= success_disp
-        )
+        return impact_recoil.is_success(episode_result, impact_recoil.DEFAULT_COEFS)
 
     # ------------------------------------------------------------------
     def _record_step(

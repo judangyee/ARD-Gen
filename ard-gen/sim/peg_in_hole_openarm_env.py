@@ -44,6 +44,7 @@ from typing import Any
 
 import numpy as np
 
+from patterns import position_correction
 from sim.base_task_env import BaseTaskEnv
 from sim.peg_in_hole_bimanual_openarm_sim import (
     DT,
@@ -102,19 +103,17 @@ class PegInHoleOpenArmEnv(BaseTaskEnv):
         self._sim.step(action)
 
     def compute_reward(self, episode_result: dict[str, Any]) -> float:
-        """sim 모듈의 run_episode() 리워드 공식과 동일(VX300s와도 동일한 공식)."""
-        reward = (
-            -2.0 * episode_result["final_distance"]
-            + 20.0 * episode_result["insertion_depth"]
-            - 0.001 * max(0.0, episode_result["max_force"] - 5.0)
-            - 0.01 * episode_result["step_count"]
-        )
-        if episode_result.get("success"):
-            reward += 50.0
-        return float(reward)
+        """RoboTwin 2.0 이식 Part 3-1: position-correction 패턴
+        (patterns/position_correction.py)으로 뽑아냈다 -- 공식/계수는
+        VX300s 버전과도 동일했던 원래 하드코딩 그대로(그 모듈의
+        DEFAULT_COEFS), tests/test_patterns_identity.py가 리팩토링
+        전후 reward가 bit-identical함을 확인한다."""
+        return position_correction.compute_reward(episode_result, position_correction.DEFAULT_COEFS)
 
     def is_success(self, episode_result: dict[str, Any]) -> bool:
-        return episode_result["insertion_depth"] >= self._target_depth
+        return position_correction.is_success(
+            episode_result, {"target_depth": self._target_depth}
+        )
 
     # ------------------------------------------------------------------
     def run_episode(self, gains: dict[str, float], scene_config: dict[str, Any]) -> dict[str, Any]:

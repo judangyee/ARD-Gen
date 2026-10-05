@@ -65,6 +65,7 @@ from typing import Any
 import mujoco
 import numpy as np
 
+from patterns import torque_reactive
 from sim.base_task_env import BaseTaskEnv
 from sim.stabilizer import Stabilizer, run_approach_phase
 
@@ -85,6 +86,11 @@ TORQUE_DROP_THRESHOLD = 0.05  # N*m, disengage 이후 이 아래로 떨어지면
 _LOOSE_DAMPING = 0.01  # disengage 후 남는 잔여 저항(수치 안정성용, 거의 0)
 
 _SAFE_TORQUE = 0.5  # N*m, 이 이상 토크에는 리워드 페널티(과도한 힘 사용)
+# compute_reward/is_success는 이제 patterns/torque_reactive.py의
+# DEFAULT_COEFS를 쓴다(Part 3-1 리팩토링) -- 이 두 상수 자체는 이 파일
+# 안에서 더는 안 읽히지만, 그 DEFAULT_COEFS 값이 어디서 왔는지 보여주는
+# 문서용으로 남겨뒀다(값이 서로 어긋나면 안 되므로, 바꿀 때 두 군데 다
+# 확인할 것).
 
 # 3단계(Stabilizer): bottle이 freejoint가 되면서, reset() 때 테이블 접촉
 # 침투를 해소하기 위해 짧게 물리를 돌려 정착시킨다.
@@ -206,39 +212,24 @@ class CapTwistEnv(BaseTaskEnv):
         self._sim.step(action)
 
     def compute_reward(self, episode_result: dict[str, Any]) -> float:
-        """peg_in_hole의 리워드 구조(거리 페널티 + 진행도 보상 + 과도한
-        힘 페널티 + 스텝 페널티 + 성공 보너스)를 그대로 따르되, insertion_depth
-        자리에 누적 회전 진행도를, max_force 자리에 max_torque를 쓴다.
+        """RoboTwin 2.0 이식 Part 3-1: torque-reactive 패턴
+        (patterns/torque_reactive.py)으로 뽑아냈다 -- 공식/계수는
+        원래 하드코딩 그대로(그 모듈의 DEFAULT_COEFS가 이 파일의
+        _SAFE_TORQUE/TORQUE_DROP_THRESHOLD와 같은 값),
+        tests/test_patterns_identity.py가 리팩토링 전후 reward가
+        bit-identical함을 확인한다.
 
         진행도는 accumulated_rotation의 절대값이 아니라 forward_progress
         (목표 방향으로 투영한 회전량, run_episode() 참고)로 잰다 -- Kp_tau가
         너무 커서 되레 반대 방향으로 밀려버린 경우(실측 확인, 아래
         run_episode() docstring 참고) abs()만 보면 "방향은 틀렸지만 많이
-        돌았으니 성공"으로 잘못 판정하는 버그가 있었다."""
-        target_mag = abs(episode_result["target_rotation"])
-        forward_progress = episode_result["forward_progress"]
-        progress_fraction = max(0.0, min(forward_progress / target_mag, 1.0)) if target_mag > 0 else 0.0
-        shortfall = max(0.0, target_mag - forward_progress)
-        reward = (
-            -1.0 * shortfall
-            + 30.0 * progress_fraction
-            - 0.02 * max(0.0, episode_result["max_torque"] - _SAFE_TORQUE)
-            - 0.01 * episode_result["step_count"]
-        )
-        if episode_result.get("success"):
-            reward += 50.0
-        return float(reward)
+        돌았으니 성공"으로 잘못 판정하는 버그가 있었다(patterns/
+        torque_reactive.py의 forward_progress 처리가 이 설계를 그대로
+        옮겼다)."""
+        return torque_reactive.compute_reward(episode_result, torque_reactive.DEFAULT_COEFS)
 
     def is_success(self, episode_result: dict[str, Any]) -> bool:
-        """목표 방향으로의 누적 회전(forward_progress)이 목표 크기에
-        도달했거나, 이미 disengage된 상태에서 측정 토크가 거의 0으로
-        떨어졌으면(나사산이 풀려서 이제 저항 없이 헛돈다) 성공."""
-        target_mag = abs(episode_result["target_rotation"])
-        reached_target = episode_result["forward_progress"] >= target_mag
-        torque_dropped = episode_result.get("disengaged", False) and abs(
-            episode_result.get("current_torque", 1.0)
-        ) < TORQUE_DROP_THRESHOLD
-        return bool(reached_target or torque_dropped)
+        return torque_reactive.is_success(episode_result, torque_reactive.DEFAULT_COEFS)
 
     # ------------------------------------------------------------------
     def run_episode(self, gains: dict[str, float], scene_config: dict[str, Any]) -> dict[str, Any]:
