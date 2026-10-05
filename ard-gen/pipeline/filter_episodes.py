@@ -53,6 +53,7 @@ import torch
 from pipeline.diffusion_gains import load_checkpoint, sample_gains
 from pipeline.episode_io import save_episode
 from sim.task_registry import list_tasks, load_task_config
+from sim.visual_randomization import sample_visual_config
 
 
 # run_episode() 결과에서 이미 episode dict의 정해진 자리로 옮겨지는 필드들
@@ -83,6 +84,19 @@ def parse_args() -> argparse.Namespace:
         "--out-dir", type=str, default=None,
         help="생략하면 ./data/episodes/{task}/ (태스크별 분리, 위 docstring 참고)",
     )
+    parser.add_argument(
+        "--randomize-visual", action="store_true",
+        help="RoboTwin 2.0 이식 Part 1: 배경/조명/clutter/테이블 높이를 씬마다 "
+        "무작위화해서 episode['visual_config']로 같이 저장한다. 기본값 False -- "
+        "안 주면 기존 동작(시각 랜덤화 없음)과 완전히 동일하다.",
+    )
+    parser.add_argument(
+        "--visual-seed", type=int, default=None,
+        help="시각 randomization용 RNG 시드 -- --scene-seed와 **반드시 분리된** "
+        "스트림이어야 하므로 별도 인자로 둔다(물리 독립성, "
+        "sim/visual_randomization.py 모듈 docstring 참고). 생략하면 "
+        "scene-seed + 999_000_000.",
+    )
     return parser.parse_args()
 
 
@@ -101,12 +115,19 @@ def main() -> None:
     ckpt = load_checkpoint(args.diffusion_path)
     env = task.make_env()
     rng = np.random.default_rng(args.scene_seed)
+    visual_rng = np.random.default_rng(
+        args.visual_seed if args.visual_seed is not None else args.scene_seed + 999_000_000
+    )
 
     n_success = 0
     for i in range(args.n_scenes):
         scene_cfg = task.sample_scene_config(rng)
         gains = sample_gains(ckpt, task, scene_cfg)
         sim_cfg = task.to_sim_scene_config(scene_cfg)
+
+        visual_cfg = sample_visual_config(visual_rng) if args.randomize_visual else None
+        env.apply_visual_config(visual_cfg)
+
         result = env.run_episode(gains, sim_cfg)
 
         if not result["success"]:
@@ -130,6 +151,8 @@ def main() -> None:
             "scene_config": scene_cfg,
             "success": True,
         }
+        if visual_cfg is not None:
+            episode["visual_config"] = visual_cfg
         # 3단계(Stabilizer, 왼팔): env.run_episode()가 "left_arm_traj"를
         # 돌려줬으면(tasks/*.yaml에 stabilizer 절이 있는 태스크) 그대로
         # left_arm으로 실어 나른다 -- 같은 물리 시뮬레이션 안에서 오른팔과

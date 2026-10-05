@@ -10,9 +10,10 @@ Stabilizer 동시 실행 등)를 이 파일에 다시 옮겨 적으면 로직이
 -- 그러면 실제 파이프라인(pipeline/filter_episodes.py)이 쓰는 것과
 정확히 같은 코드 경로가 실행되면서, 매 스텝마다 프레임이 찍힌다.
 
-cap_twist는 assets/cap_twist.xml에 카메라가 정의돼 있지 않아서(단순
-bottle+cap 모델이라 필요 없었음), 자유 시점 카메라를 하나 만들어 쓴다.
-peg_in_hole은 assets/peg_in_hole.xml에 이미 정의된 top_cam을 그대로 쓴다.
+cap_twist는 RoboTwin 2.0 이식 Part 1에서 assets/cap_twist.xml에
+top_cam/wide_cam을 추가했다(그 전엔 카메라가 없어서 자유 시점 카메라로
+대체했었다 -- 아래 _NAMED_CAMERAS에 등록돼 있으면 더는 그 경로를 안 탄다).
+peg_in_hole/tacker는 각자 XML에 이미 정의된 top_cam을 그대로 쓴다.
 
 사용 예:
     MUJOCO_GL=osmesa python render_episode.py --task peg_in_hole \
@@ -39,7 +40,11 @@ from sim.task_registry import list_tasks, load_task_config
 # 카메라 이름이 있는 태스크만 여기 추가한다 -- 없으면 아래 기본 자유
 # 시점 카메라로 대체된다(tacker도 top_cam이 있지만 workpiece가 매 씬 다른
 # xy/yaw에 놓이므로 mode="targetbody"가 알아서 따라간다).
-_NAMED_CAMERAS = {"peg_in_hole": "top_cam", "tacker": "top_cam"}
+# cap_twist: RoboTwin 2.0 이식 Part 1에서 assets/cap_twist.xml에
+# top_cam/wide_cam을 추가했다(이 docstring의 예전 설명 "카메라가
+# 정의돼 있지 않아서"는 이제 해당 사항 없음 -- target="bottle"로
+# mode="targetbody"라 자유 시점 대체가 더는 필요 없다).
+_NAMED_CAMERAS = {"peg_in_hole": "top_cam", "tacker": "top_cam", "cap_twist": "top_cam"}
 
 
 def _camera_for(task_name: str, sim):
@@ -83,6 +88,11 @@ def main() -> None:
     # TypeError가 났다(실측 확인).
     env = task.make_env()
     sim = env._sim
+    # RoboTwin 2.0 이식 Part 1: 저장된 에피소드에 visual_config가 있으면
+    # (filter_episodes.py --randomize-visual로 생성된 것) 그 외형 그대로
+    # 재생한다 -- 없으면(기존 npz, 또는 --randomize-visual 없이 생성된
+    # episode) 아무것도 안 바꾼다(기존 동작 그대로, 하위호환).
+    env.apply_visual_config(episode.get("visual_config"))
     renderer = mujoco.Renderer(sim.model, height=args.height, width=args.width)
     camera = _camera_for(args.task, sim)
 

@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import numpy as np
 
 from sim.task_registry import list_tasks, load_task_config
+from sim.visual_randomization import sample_visual_config
 
 # seed 게인에 곱할 노이즈 배율 범위. 게인마다 독립적으로 적용한다(같은
 # 배율을 모든 게인에 동시에 곱하면 탐색이 seed 방향의 1차원 직선으로만
@@ -48,6 +49,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0, help="씬/게인 노이즈 샘플링용 RNG 시드")
     parser.add_argument("--out-path", type=str, default="./data/bootstrap/bootstrap_dataset.npz")
     parser.add_argument("--log-every", type=int, default=100)
+    parser.add_argument(
+        "--randomize-visual", action="store_true",
+        help="RoboTwin 2.0 이식 Part 1: 매 trial마다 배경/조명/clutter/테이블 "
+        "높이를 무작위화한다(물리/성공 판정과는 무관 -- "
+        "tests/test_visual_randomization.py::test_bootstrap_success_rate_unaffected가 "
+        "이 플래그를 켜고/끄고 성공률이 통계적으로 같음을 확인한다). 기본값 False.",
+    )
     return parser.parse_args()
 
 
@@ -72,6 +80,7 @@ def main() -> None:
     print(f"[bootstrap] 노이즈 범위: seed x [{_GAIN_NOISE_RANGE[0]}, {_GAIN_NOISE_RANGE[1]}] (게인별 독립)")
 
     rng = np.random.default_rng(args.seed)
+    visual_rng = np.random.default_rng(args.seed + 999_000_000)
     env = task.make_env()
 
     # 씬 조건 필드는 태스크마다 이름/개수/모양이 다르므로, 첫 샘플로
@@ -97,6 +106,9 @@ def main() -> None:
         gains = task.clip_gains(
             {name: value * rng.uniform(*_GAIN_NOISE_RANGE) for name, value in seed_gains.items()}
         )
+
+        if args.randomize_visual:
+            env.apply_visual_config(sample_visual_config(visual_rng))
 
         result = env.run_episode(gains, sim_cfg)
 

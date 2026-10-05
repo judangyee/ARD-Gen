@@ -66,6 +66,23 @@
 
   <asset>
     <model name="arm_pedestal" file="openarm/pedestal/openarm_pedestal.xml"/>
+
+    <!-- RoboTwin 2.0 이식 Part 1(시각 domain randomization): peg_in_hole_
+         bimanual_openarm.xml과 동일한 재질 팔레트(이름까지 동일) --
+         sim/visual_randomization.py가 이름만 보고 공통으로 동작한다. -->
+    <texture name="ground_tex_0" type="2d" builtin="checker" rgb1="0.5 0.5 0.52" rgb2="0.4 0.4 0.42" width="64" height="64"/>
+    <material name="ground_mat_0" texture="ground_tex_0" texrepeat="4 4" reflectance="0.1"/>
+    <texture name="ground_tex_1" type="2d" builtin="checker" rgb1="0.45 0.42 0.38" rgb2="0.3 0.28 0.25" width="64" height="64"/>
+    <material name="ground_mat_1" texture="ground_tex_1" texrepeat="6 6" reflectance="0.05"/>
+    <texture name="ground_tex_2" type="2d" builtin="gradient" rgb1="0.55 0.6 0.65" rgb2="0.25 0.28 0.32" width="64" height="64"/>
+    <material name="ground_mat_2" texture="ground_tex_2" reflectance="0.0"/>
+
+    <texture name="table_tex_0" type="2d" builtin="checker" rgb1="0.55 0.4 0.3" rgb2="0.45 0.32 0.24" width="64" height="64"/>
+    <material name="table_mat_0" texture="table_tex_0" texrepeat="3 3" reflectance="0.1"/>
+    <texture name="table_tex_1" type="2d" builtin="checker" rgb1="0.6 0.55 0.5" rgb2="0.4 0.36 0.3" width="64" height="64"/>
+    <material name="table_mat_1" texture="table_tex_1" texrepeat="2 2" reflectance="0.15"/>
+    <texture name="table_tex_2" type="2d" builtin="gradient" rgb1="0.5 0.35 0.25" rgb2="0.25 0.18 0.12" width="64" height="64"/>
+    <material name="table_mat_2" texture="table_tex_2" reflectance="0.05"/>
   </asset>
 
   <default>
@@ -78,10 +95,22 @@
     <light pos="0.4 0 1.5" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
     <light pos="0.7 -0.4 1.0" dir="-0.4 0.4 -0.7" diffuse="0.4 0.4 0.4"/>
 
-    <geom name="ground" type="plane" pos="0 0 0" size="0.8 0.8 0.01" contype="0" conaffinity="0" rgba="0.5 0.5 0.52 1"/>
+    <geom name="ground" type="plane" pos="0 0 0" size="0.8 0.8 0.01" contype="0" conaffinity="0" material="ground_mat_0" rgba="0.5 0.5 0.52 1"/>
+
+    <!-- RoboTwin 2.0 이식 Part 1: clutter 슬롯(peg_in_hole_bimanual_openarm.xml
+         과 동일 패턴/이름). -->
+    <body name="clutter_0" pos="-0.55 -0.55 0">
+      <geom name="clutter_0_geom" type="box" size="0.03 0.03 0.03" contype="0" conaffinity="0" rgba="0.5 0.5 0.5 1"/>
+    </body>
+    <body name="clutter_1" pos="-0.55 0.55 0">
+      <geom name="clutter_1_geom" type="box" size="0.03 0.03 0.03" contype="0" conaffinity="0" rgba="0.5 0.5 0.5 1"/>
+    </body>
+    <body name="clutter_2" pos="0.55 -0.55 0">
+      <geom name="clutter_2_geom" type="box" size="0.03 0.03 0.03" contype="0" conaffinity="0" rgba="0.5 0.5 0.5 1"/>
+    </body>
 
     <body name="table" pos="0.35 0 0">
-      <geom name="table_top" type="box" pos="0 0 0.38" size="0.25 0.25 0.015" contype="0" conaffinity="0" rgba="0.55 0.4 0.3 1"/>
+      <geom name="table_top" type="box" pos="0 0 0.38" size="0.25 0.25 0.015" contype="0" conaffinity="0" material="table_mat_0" rgba="0.55 0.4 0.3 1"/>
       <geom name="table_leg_1" type="box" pos="0.22 0.22 0.19" size="0.015 0.015 0.19" contype="0" conaffinity="0" rgba="0.35 0.25 0.18 1"/>
       <geom name="table_leg_2" type="box" pos="-0.22 0.22 0.19" size="0.015 0.015 0.19" contype="0" conaffinity="0" rgba="0.35 0.25 0.18 1"/>
       <geom name="table_leg_3" type="box" pos="0.22 -0.22 0.19" size="0.015 0.015 0.19" contype="0" conaffinity="0" rgba="0.35 0.25 0.18 1"/>

@@ -71,3 +71,24 @@ class BaseTaskEnv(ABC):
         "reset/step/... 4개만 필수로 강제" 참고) -- 다만 내부에서
         self.compute_reward()/self.is_success()를 호출해야 한다."""
         raise NotImplementedError(f"{type(self).__name__} must implement run_episode()")
+
+    # ------------------------------------------------------------------
+    # RoboTwin 2.0 이식, Part 1(시각 domain randomization)
+    # ------------------------------------------------------------------
+    def apply_visual_config(self, visual_config: dict[str, Any] | None) -> None:
+        """장면의 배경/조명/clutter/테이블 높이를 무작위화한다 -- 물리와는
+        무관한 순수 장식(sim/visual_randomization.py 모듈 docstring의
+        "완전히 독립적인 이유" 참고). reset()/step()/compute_reward()/
+        is_success()와 달리 서브클래스가 오버라이드할 필요가 없다 -- 3개
+        태스크(PegInHoleOpenArmEnv/CapTwistEnv/TackerOpenArmEnv) 전부
+        self._sim.model에 mujoco.MjModel을 들고 있는 동일한 패턴이라
+        여기 기본 구현 하나로 충분하다(render_episode.py가 이미
+        `env._sim.model`로 접근하는 것과 같은 전제).
+
+        visual_config가 None이면 아무것도 하지 않는다(호출 안 하는 것과
+        완전히 동일 -- 기존 호출자/테스트는 이 메서드를 몰라도 된다)."""
+        if visual_config is None:
+            return
+        from sim.visual_randomization import apply_visual_config as _apply
+
+        _apply(self._sim.model, visual_config)

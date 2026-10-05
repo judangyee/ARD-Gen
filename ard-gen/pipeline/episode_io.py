@@ -69,6 +69,7 @@ import numpy as np
 
 _FIXED_TOP_LEVEL_KEYS = {
     "task", "right_arm", "left_arm", "scene_config", "success", "insertion_depth", "force_max", "language",
+    "visual_config",
 }
 
 
@@ -94,6 +95,13 @@ def save_episode(path: str, episode: dict[str, Any]) -> None:
         kwargs["insertion_depth"] = np.array(episode["insertion_depth"], dtype=np.float32)
     if episode.get("force_max") is not None:
         kwargs["force_max"] = np.array(episode["force_max"], dtype=np.float32)
+    if episode.get("visual_config") is not None:
+        # RoboTwin 2.0 이식 Part 1: scene_config(물리)와 완전히 분리된
+        # 시각 randomization 설정 -- 같은 JSON 직렬화 패턴(위
+        # scene_config 참고). render_episode.py가 저장된 외형을 그대로
+        # 재생하려면 이게 있어야 한다(없으면 default_visual_config()로
+        # 대체 -- 하위호환, 이 필드가 없던 옛 npz도 그대로 읽힌다).
+        kwargs["visual_config"] = np.array(json.dumps(episode["visual_config"]))
     if episode.get("language") is not None:
         # 5단계(ARD-VLA role classifier 학습용 role_labels 포함)부터
         # language는 dict다 -- JSON 문자열로 직렬화해서 저장한다(scene_config와
@@ -140,6 +148,8 @@ def load_episode(path: str) -> dict[str, Any]:
         episode["insertion_depth"] = float(data["insertion_depth"])
     if "force_max" in data.files:
         episode["force_max"] = float(data["force_max"])
+    if "visual_config" in data.files:
+        episode["visual_config"] = json.loads(str(data["visual_config"]))
     if "language" in data.files:
         episode["language"] = json.loads(str(data["language"]))
     if "left_arm_traj" in data.files:
