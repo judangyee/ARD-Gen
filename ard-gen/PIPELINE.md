@@ -12,6 +12,12 @@
 > 붙이므로, 0→1→2-A→2-B→4→5단계 스크립트 어느 것도 코드를 고칠 필요가
 > 없었다(--task만 그대로 쓰면 양팔로 동작한다). 자세한 내용/실측 수치는
 > 아래 3단계 절 참고.
+>
+> **`ard-gen-v2` 브랜치**: RoboTwin 2.0에서 장면 다양화(시각
+> randomization, 텍스처 라이브러리)와 새 태스크 스캐폴딩(패턴 추출 +
+> 자동 생성 + lint + 검증 루프)만 이식했다 -- 제어/물리 핵심 설계는
+> 건드리지 않았다. 문서 맨 아래 "RoboTwin 2.0 이식: 장면 다양화 +
+> 태스크 스캐폴딩 (ard-gen-v2 브랜치)" 절 참고.
 
 ## 배경
 
@@ -945,3 +951,181 @@ tacker_openarm_env.py`).
   (후퇴(~30~40스텝) + 최종 정착(20스텝)이 추가된 만큼).
 - 언어 라벨링 force_max 범위 [5.9, 20.1]N, 강도 분포 gentle 83/normal
   83/firm 86 -- 이전과 사실상 동일(발사 반동 자체는 안 바뀌었으므로 당연).
+
+## RoboTwin 2.0 이식: 장면 다양화 + 태스크 스캐폴딩 (ard-gen-v2 브랜치)
+
+> **범위**: RoboTwin 2.0의 파이프라인 요소 중 "장면을 얼마나 다양하게
+> 만드는가"(Part 1/2)와 "새 태스크를 얼마나 빨리 추가하는가"(Part 3)만
+> 가져온다. ARD-Gen의 핵심 설계(OpenArm 양팔 통합 구조, admittance/
+> CMA-ES 기반 접촉 반응 제어, Stabilizer/Actuator 비대칭 역할)와
+> "로봇이 어떻게 움직이는가"는 명시적으로 건드리지 않았다(사용자 요청
+> 그대로). 기존 3개 태스크(peg_in_hole/cap_twist/tacker)만 대상이고,
+> screw_driving은 진행 중이라 제외했다. 작업은 `main`에서 새로 딴
+> `ard-gen-v2` 브랜치에서 했고, `main`으로 머지하지 않았다(사용자가
+> 검토 후 결정).
+
+### Part 1: 5축 시각(visual) domain randomization
+
+`sim/visual_randomization.py`가 배경 텍스처(프로시저럴 MuJoCo builtin
+checker/gradient, 외부 생성 모델 호출 없음), 조명(밝기/색온도), clutter
+(장애물, `contype=0 conaffinity=0`이라 구조적으로 무충돌), 테이블/작업대
+높이(-30mm~+15mm, 비대칭인 이유는 아래) 4가지 축을 다룬다(요청의 5축
+중 넷째 "clutter"와 다섯째 "테이블 높이"는 각각 하나의 축, 텍스처/조명은
+둘로 나눠 합이 5).
+
+**물리와 완전히 독립적인 이유 (실측으로 증명, 코드 리뷰가 아님)**:
+이 모듈이 건드리는 model 필드(`mat_rgba`/`geom_matid`/`geom_rgba`/
+`light_*`/clutter·table의 `body_pos`)는 전부 렌더링 전용이고 `mj_step()`
+동역학에 들어가지 않는다. `tests/test_visual_randomization.py::
+test_independent_of_physics_peg_in_hole`이 같은 물리 scene_config/게인에
+서로 다른 visual_cfg 3개를 적용해 reward/success/step_count/trajectory가
+bit-identical함을 직접 비교해서 확인한다. `pipeline/bootstrap.py`/
+`pipeline/filter_episodes.py`에 추가한 `--randomize-visual` 플래그를
+켜고/끄고 실제로 실행해서도(peg_in_hole, n=15/n=8) success/force_max/
+gains 배열이 완전히 동일함을 재확인했다.
+
+**테이블 높이 범위가 비대칭인 이유(실측)**: `mj_geomDistance`로 peg_in_hole
+의 home 자세에서 `table_top`과 `hole_socket`(왼팔이 쥔 hole) 사이 실제
+최소 거리를 스캔하니 offset=0에서 20.6mm, +10mm에서 17mm, +20mm에서
+7mm, **+30mm에서 -2.9mm(겹침)**로 테이블을 올릴수록 빠르게 줄었다(반대로
+내리는 쪽은 -50mm까지도 18mm 이상 여유가 유지됨 -- hole이 테이블보다
+훨씬 위에 떠 있어서 내리는 방향엔 애초에 아무것도 없기 때문). 그래서
+위로는 15mm(최소 clearance 약 12mm 확보), 아래로는 30mm까지 허용한다
+(`tests/test_visual_randomization.py::test_table_height_range_safe_for_openarm_tasks`
+가 이 스캔을 그대로 재현해서 회귀 가드로 남긴다).
+
+**3개 태스크 공통 로직인 이유**: `peg_in_hole_bimanual_openarm.xml`/
+`tacker_openarm.xml`은 원래부터 같은 이름 규칙(`ground`, `table`+
+`table_top`+`table_leg_1..4`, light 2개)을 쓰고 있었다. `cap_twist.xml`
+에는 없어서 이번에 추가했다 -- 물리에 쓰이던 실제 충돌 평면(원래 이름
+`"table"`)은 **이름만** `floor_contact`로 바꾸고(grep으로 아무 코드도
+이름으로 참조하지 않는 것을 확인 후 변경, 물성은 그대로) `"table"`
+이라는 이름을 새 순수 장식 바디에 썼다. 그 결과 `apply_visual_config()`
+하나가 세 XML 전부에 동일하게 동작한다(`BaseTaskEnv.apply_visual_config()`
+공통 헬퍼가 `self._sim.model`을 통해 호출, 개별 Env가 오버라이드할
+필요 없음).
+
+**알려진 한계**: 이 샌드박스에는 OSMesa/EGL이 없고(apt 미러도 네트워크
+제한으로 설치 실패, 실측 확인) `mujoco.Renderer()`가 OpenGL 컨텍스트를
+못 만든다. 그래서 "카메라가 실제로 이 randomization을 반영하는 렌더
+이미지"는 이 세션에서 직접 볼 수 없었다 -- model 레벨 수치(geom_matid/
+geom_rgba/body_pos/light_* 실제 변화)까지만 검증했다. OSMesa가 있는
+환경에서 `render_episode.py --task peg_in_hole --episode-path ... `
+(저장된 episode의 `visual_config`를 자동으로 재적용한다)로 mp4를 직접
+열어 눈으로 확인하는 건 사용자가 할 일로 남는다.
+
+### Part 2: 텍스처/배경 에셋 라이브러리 구조
+
+`assets/textures/manifest.yaml` + `sim/texture_library.py`: Part 1의
+프로시저럴 텍스처 6개(`ground_mat_0..2`, `table_mat_0..2`)를 id/category/
+description/source 메타데이터로 등록했다. RoboTwin의 실제 생성형
+텍스처 파이프라인(이미지 생성 API 호출)은 만들지 않았다 --
+`request_external_texture(description, category)`는 함수 시그니처만
+정의하고 호출하면 명시적으로 `NotImplementedError`를 낸다(요청
+"실제 외부 API 호출은 구현하지 말 것" 그대로). `texture_to_mjcf()`는
+procedural 텍스처를 `<texture>`/`<material>` MJCF 조각으로 변환하고,
+Part 3-2(`scaffold_task.py`)가 새 태스크를 만들 때 이 조각을 그대로
+가져다 쓴다.
+
+### Part 3: 자동화 새 태스크 스캐폴딩 (Level 1)
+
+"물체를 검증된 패턴에 끼워 넣는" 수준의 자동화다 -- LLM이 매번 물리를
+새로 설계/작성하지 않는다(요청 "완전 자동화가 아니다" 그대로, 자유형
+XML 작성 없음).
+
+**3-1 (패턴 추출)**: 기존 3개 태스크의 `compute_reward()`/`is_success()`
+를 나란히 보니 셋 다 "진행도 보상 + 거리/부족분 페널티 - 과도한 힘/
+토크 페널티 - 스텝 페널티 + 조건부 보너스" 같은 모양이었다. 그 공통
+뼈대를 `patterns/common.py:shaped_reward()`로 뽑고, 태스크별 특화는
+`patterns/{position_correction,torque_reactive,impact_recoil}.py`
+(각각 peg_in_hole/cap_twist/tacker가 실제 예시)로 나눴다. 리팩토링
+전/후 공식이 한 글자도 안 바뀌었다는 걸 `tests/test_patterns_identity.py`
+가 **리팩토링 전에 직접 실행해서 뽑은 실측값**(3태스크 x 3씬 = 9개
+시나리오의 reward/success/step_count)과 bit-identical 비교로 증명한다.
+각 패턴 모듈의 `mjcf_substructure()`(새 태스크용 MJCF 골격 생성기)는
+기존 3개 태스크의 **이미 검증된 XML을 그대로 재생성하지 않는다** --
+고치면 손으로 튜닝한 home 자세/weld anchor가 흔들릴 위험이 있어서,
+앞으로 만들 새 태스크에만 쓰기로 했다(요청 범위 "로봇이 어떻게
+움직이는가는 손대지 않음"을 지키는 선택).
+
+**3-2 (`scaffold_task.py`)**: "물체 설명(모양/치수) + 패턴 이름"을
+받아 `assets/{name}.xml` + `sim/{name}_env.py` + `tasks/{name}.yaml`을
+생성하고 `TASK_REGISTRY`에 등록한다. 실제 control-loop는 새로 쓰지
+않고 `sim/generic_pattern_env.py`의 패턴 공용 엔진(3개 Scaffolded*Env
+클래스)을 재사용한다 -- 이 엔진도 기존 OpenArm 7-DOF control-loop를
+가져다 쓰지 않고, 이미 있던 기구학 불필요 범용 메커니즘만 재사용한다
+(`sim/stabilizer.py:Stabilizer`의 3-슬라이드 가상 EE, 힌지+위치
+액추에이터+`jointactuatorfrc` 센서). 생성된 XML은 Part 1의 시각
+randomization 공통 블록을 그대로 포함해서, 새 태스크에도 자동으로
+적용된다(아래 "전체 검증" 참고). 생성된 `sim/{name}_env.py`는 그
+엔진을 가리키는 1줄 서브클래스 + `default_scene_config`/
+`sample_scene_config`/`to_sim_scene_config` 3개 함수뿐, 자유형
+로직이 없다.
+
+개발 중 실측으로 발견/수정한 버그 3개(전부 "범용 엔진이 틀렸다"는
+신호였지 패턴 자체의 결함은 아니었음):
+
+1. freejoint 자유 바디에 `gravcomp="1"`이 없으면 중력으로 자유낙하
+   한다 -- impact_recoil의 workpiece가 1200스텝(2.4s) 동안 **약 29m**
+   떨어진 걸 실측하고 나서야 발견(기존 3개 태스크의 peg/hole_socket은
+   원래부터 `gravcomp="1"`을 쓰고 있었는데, 그 이유를 범용 엔진에
+   옮기면서 놓쳤다).
+2. D항(미분)을 매 물리 스텝(timestep=0.002s)마다 계산하면 1/dt=500배로
+   증폭돼 `Kd_pos`가 0.007만 돼도 final_distance가 즉시 발산했다 --
+   `peg_in_hole_bimanual_openarm_sim.py`의 `N_SUBSTEPS=5`(제어 주기
+   0.01s)와 같은 장치를 position-correction 엔진에도 적용해서 해결.
+3. impact_recoil의 `strike_distance_m`이 "가상 EE 반지름 + 물체
+   반치수"(실제로 맞닿는 거리)보다 작으면 충돌에 막혀 `fired` 판정이
+   영원히 안 나는 걸 실측(기본값 0.02로는 거의 항상 실패) -- 물체
+   크기 기반으로 자동 계산하도록 수정.
+
+**3-3 (`lint_task.py`)**: 이 레포가 실제로 겪은 과거 버그 4종(① 
+`implicitfast` 누락 ② weld `eq_data` 레이아웃 `[anchor(3),relpos(3),
+relquat(4),torquescale(1)]` 뒤집힘 ③ weld로 고정된 바디 간 충돌 제외
+누락 ④ `TASK_REGISTRY`/드라이버 매칭 오류)를 검사한다. `scaffold_task.py`
+가 생성 직후 자동 실행. 각 검사가 "진짜로 버그를 잡아내는지"를 버그를
+일부러 주입한 최소 모델로 확인했다(기존 3개 태스크가 전부 통과하는
+것만으로는 "항상 통과하는 lint"와 구분이 안 되기 때문).
+
+**3-4 (`validate_new_task.py`)**: 새 태스크를 0단계(`cma_search.py`,
+짧게) → 1단계(`sample_scene_config()`, 2-A가 매 trial 호출하므로
+자동 포함) → 2-A단계(`bootstrap.py`)까지 자동 실행하고, 부트스트랩
+성공률이 20% 미만(너무 가혹) 또는 95% 초과(너무 쉬움, diffusion이
+성공/실패 경계를 배울 신호 부족)면 경고한다.
+
+### 전체 검증
+
+- `demo_block`(torque_reactive)/`demo_peg`(position_correction)/
+  `demo_tack`(impact_recoil) 3개를 `scaffold_task.py`로 실제 생성,
+  셋 다 `lint_task.py` 4개 검사 통과.
+- `demo_block`/`demo_peg` 둘 다 `validate_new_task.py`로 0→1→2-A를
+  끝까지 실행: 둘 다 성공률 100%를 뽑아내고 "너무 쉬움" 경고가
+  정확히 뜨는 것까지 확인(경고 로직 자체가 작동한다는 증거 -- 이
+  Level 1 데모들은 생산 품질 데이터용이 아니라 스캐폴딩 메커니즘
+  시연용이라, 난이도를 20~95% 구간으로 다시 튜닝하지는 않았다).
+- 3개 기존 태스크(peg_in_hole/cap_twist/tacker)의 `patterns/` 리팩토링
+  전/후 reward/success/step_count가 bit-identical(`tests/
+  test_patterns_identity.py`).
+- Part 1 시각 randomization이 scaffold로 만든 새 태스크에도 **코드
+  수정 없이** 적용됨을 확인(`tests/test_visual_randomization.py::
+  test_visual_randomization_auto_applies_to_scaffolded_tasks`) --
+  생성된 XML이 기존 3개 태스크와 같은 ground/table/clutter 이름
+  규칙을 그대로 포함하기 때문.
+- 전체 테스트 스위트(`pytest tests/`) 33개 전부 통과.
+
+### 포팅하지 않은 것 (그리고 그 이유)
+
+- **IK waypoint coarse motion**: RoboTwin 2.0은 그립 전 접근을 여러
+  IK 중간 목표점(waypoint)을 거치는 경로 계획으로 처리한다. ARD-Gen의
+  OpenArm 태스크는 대신 CMA-ES로 찾은 고정 home 자세 + resolved-rate
+  (Jacobian) 제어로 접근을 처리한다(관절 한계 freezing, 널스페이스
+  복귀 포함, `sim/resolved_rate_ik.py`). waypoint 기반 경로 계획을
+  들여오면 이 home 자세/anchor 체계를 다시 흔들게 되는데, 이건 정확히
+  "로봇이 어떻게 움직이는가"의 영역이라 사용자가 명시적으로 건드리지
+  말라고 한 범위다. 포팅하지 않았다.
+- **대칭적(symmetric) 양팔 처리**: RoboTwin 2.0은 보통 양팔을 대칭적
+  (역할 교환 가능)으로 다룬다. ARD-Gen의 핵심 설계는 반대로 **비대칭**
+  이다(Stabilizer=수동/고정 그립, Actuator=admittance/CMA-ES 기반
+  반응 제어 -- 둘은 근본적으로 다른 역할을 한다). 대칭 처리를 들여오면
+  이 비대칭 설계 자체를 없애야 하는데, 이건 사용자가 "절대 건드리지
+  말라"고 명시한 핵심 설계 항목이다. 포팅하지 않았다.
