@@ -1,0 +1,14 @@
+# scaffold_task.py가 생성함 (RoboTwin 2.0 이식 Part 3-2, pattern=torque_reactive).
+name: demo_block
+
+gains:
+  names: ['Kp_tau']
+  bounds:
+    Kp_tau: [0.05, 5.0]
+  x0: [0.3]
+  sigma0: [0.2]
+
+eval_scenarios:
+  - {}
+
+condition_fields: ['resistance_torque']

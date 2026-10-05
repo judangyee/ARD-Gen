@@ -77,16 +77,23 @@ def mjcf_substructure(params: dict[str, Any]) -> str:
     가져다 쓴다.
 
     params 필수 키: hinge_body_name, hinge_joint_name, actuator_kp,
-    actuator_forcerange(2), frictionloss(기본 0.05)."""
+    actuator_forcerange(2), body_half_size(3), body_mass. frictionloss는
+    선택(기본 0.05) -- body_half_size/body_mass로 geom을 같이 만드는
+    이유: 힌지는 움직이는 바디라 질량/관성이 0이면 MuJoCo가 컴파일을
+    거부한다(실측 확인: "mass and inertia of moving bodies must be
+    larger than mjMINVAL")."""
     body = params["hinge_body_name"]
     joint = params["hinge_joint_name"]
     kp = params["actuator_kp"]
     frlo, frhi = params["actuator_forcerange"]
     frictionloss = params.get("frictionloss", 0.05)
+    hs = " ".join(str(x) for x in params["body_half_size"])
+    mass = params["body_mass"]
     return f"""<!-- torque-reactive 패턴: {body}(힌지 1개, 저항은 dof_damping으로 모델링) -->
 <body name="{body}" pos="0 0 0">
   <joint name="{joint}" type="hinge" axis="0 0 1" pos="0 0 0"
          damping="0.0" frictionloss="{frictionloss}" limited="false"/>
+  <geom name="{body}_geom" type="box" size="{hs}" mass="{mass}" rgba="0.8 0.3 0.2 1"/>
 </body>
 <actuator>
   <position name="{joint}_drive" joint="{joint}" kp="{kp}" forcerange="{frlo} {frhi}"/>
