@@ -1,0 +1,97 @@
+# RoboTwin 2.0 이식 Part 2: 텍스처/배경 에셋 라이브러리 메타데이터.
+#
+# 지금 등록된 항목은 전부 source: procedural다 -- Part 1(sim/
+# visual_randomization.py)이 쓰는 프로시저럴 MuJoCo builtin 텍스처
+# (checker/gradient)이고, assets/peg_in_hole_bimanual_openarm.xml,
+# assets/tacker_openarm.xml, assets/cap_twist.xml 3개 파일에 이름/정의가
+# 동일하게 구워져 있다(MuJoCo는 모델 간 에셋 공유 문법이 없어서 물리적
+# 파일 하나를 세 군데서 참조하는 게 아니라 "같은 정의를 복제"하는
+# 방식 -- 이 manifest가 그 복제된 정의들의 단일 진실 소스 역할을 한다.
+# tests/test_texture_library.py가 이 파일과 실제 3개 XML의 <asset>
+# 블록이 서로 어긋나지 않았는지 확인한다).
+#
+# source: external 항목은 아직 하나도 없다 -- 실제 이미지 생성 API
+# 연동은 sim/texture_library.py의 request_external_texture()에
+# 인터페이스만 정의해뒀고, 구현은 이번 작업 범위 밖이다.
+textures:
+  - id: ground_mat_0
+    category: floor
+    description: "중성 회색 체커 바닥 (기본값 -- 무작위화 안 했을 때와 동일)"
+    source: procedural
+    mujoco:
+      type: "2d"
+      builtin: checker
+      rgb1: [0.5, 0.5, 0.52]
+      rgb2: [0.4, 0.4, 0.42]
+      width: 64
+      height: 64
+      texrepeat: [4, 4]
+      reflectance: 0.1
+
+  - id: ground_mat_1
+    category: floor
+    description: "따뜻한 갈색 체커 바닥 (타일 더 촘촘함)"
+    source: procedural
+    mujoco:
+      type: "2d"
+      builtin: checker
+      rgb1: [0.45, 0.42, 0.38]
+      rgb2: [0.3, 0.28, 0.25]
+      width: 64
+      height: 64
+      texrepeat: [6, 6]
+      reflectance: 0.05
+
+  - id: ground_mat_2
+    category: floor
+    description: "차가운 톤 그라디언트 바닥 (패턴 없이 위->아래 색 변화)"
+    source: procedural
+    mujoco:
+      type: "2d"
+      builtin: gradient
+      rgb1: [0.55, 0.6, 0.65]
+      rgb2: [0.25, 0.28, 0.32]
+      width: 64
+      height: 64
+      reflectance: 0.0
+
+  - id: table_mat_0
+    category: table
+    description: "기본 나무색 체커 테이블 (기본값)"
+    source: procedural
+    mujoco:
+      type: "2d"
+      builtin: checker
+      rgb1: [0.55, 0.4, 0.3]
+      rgb2: [0.45, 0.32, 0.24]
+      width: 64
+      height: 64
+      texrepeat: [3, 3]
+      reflectance: 0.1
+
+  - id: table_mat_1
+    category: table
+    description: "밝은 베이지 체커 테이블 (타일 큼)"
+    source: procedural
+    mujoco:
+      type: "2d"
+      builtin: checker
+      rgb1: [0.6, 0.55, 0.5]
+      rgb2: [0.4, 0.36, 0.3]
+      width: 64
+      height: 64
+      texrepeat: [2, 2]
+      reflectance: 0.15
+
+  - id: table_mat_2
+    category: table
+    description: "짙은 갈색 그라디언트 테이블"
+    source: procedural
+    mujoco:
+      type: "2d"
+      builtin: gradient
+      rgb1: [0.5, 0.35, 0.25]
+      rgb2: [0.25, 0.18, 0.12]
+      width: 64
+      height: 64
+      reflectance: 0.05
