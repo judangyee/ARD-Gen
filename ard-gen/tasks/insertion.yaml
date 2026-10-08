@@ -1,0 +1,59 @@
+# insertion 태스크 설정. sim/insertion_openarm_env.py:InsertionOpenArmEnv가
+# 실제 구현이다(TASK_REGISTRY 매핑). gym-aloha(huggingface)의
+# InsertionTask를 "소켓/peg 물체 + 단계형 보상 규칙"만 이식한 것 -- 로봇은
+# 그대로 OpenArm 양팔(tasks/peg_in_hole.yaml, "원본"과 같은 팔/그리퍼/home
+# 자세/admittance 컨트롤러). 게인 bounds/x0/sigma0/eval_scenarios/
+# condition_fields는 원본과 완전히 동일한 값을 그대로 썼다 -- socket 내부
+# 구조(pin 추가, clearance 완화)만 바뀌었을 뿐 팔 기구학/grasp anchor는
+# 안 바뀌어서 재탐색이 필요 없었고, 실제로 원본 게인으로 이 3개 시나리오가
+# 전부 stage=4(pin 접촉)에 도달하는 것을 실측 확인했다(sim 모듈의
+# __main__/BimanualInsertionOpenArmSim.get_stage 참고).
+name: insertion
+
+gains:
+  names: [Kp_xy, Kd_xy]
+  # 원본(tasks/peg_in_hole.yaml)과 동일 -- 팔 기구학이 안 바뀌었으므로
+  # 재탐색 없이 그대로 재사용 가능함을 실측 확인(위 주석 참고).
+  bounds:
+    Kp_xy: [0.001, 0.5]
+    Kd_xy: [0.0, 0.02]
+  x0: [0.01, 0.0001]
+  sigma0: [0.05, 0.002]
+
+# 원본과 동일한 peg_init_offset_xy 값 -- 실측 확인: 이 게인(Kp_xy=0.124630,
+# Kd_xy=0.001125)으로 3개 전부 stage=4(pin 접촉) 도달, step 112~134.
+eval_scenarios:
+  - peg_init_offset_xy: [0.014, 0.0]
+  - peg_init_offset_xy: [0.0099, 0.0099]
+  - peg_init_offset_xy: [0.0099, -0.0099]
+
+success:
+  # reward가 gym-aloha의 0~4 단계(sim 모듈 get_stage() 참고, 이 설계에서는
+  # 2가 바닥값)라 4.0(= 전부 pin 접촉)을 그대로 CMA-ES 조기 종료 기준으로
+  # 쓴다 -- peg_in_hole처럼 "여유 있게 낮춘 값"이 아니라 가장 엄격한
+  # 값(만점) 자체다. sparse해서 CMA-ES가 이 기준에 도달하지 못할 수 있다는
+  # 걸 알고도 gym-aloha 설계를 그대로 포팅했다(PIPELINE.md 기록 참고).
+  reward_threshold: 4.0
+
+# sim/insertion_openarm_env.py의 sample_scene_config() 스키마 =
+# friction(1)+clearance_m(1)+peg_init_offset_xy(2) = 4차원. 원본과 동일한
+# 필드(socket 위치는 scene_config로 옮길 수 있는 자유도가 아님, 원본과
+# 같은 이유).
+condition_fields: [friction, clearance_m, peg_init_offset_xy]
+
+# 3단계(Stabilizer, 왼팔) 절 없음 -- 원본과 동일한 이유(진짜 7-DOF 팔이
+# socket을 쥔 채 고정, tasks/peg_in_hole.yaml 참고).
+
+# 5단계(언어 라벨링)용 어휘. gym-aloha InsertionTask를 반영해 "소켓"/"핀"
+# 어휘로 바꿨다 -- peg-in-hole과 마찬가지로 "삽입 강도"만 표현.
+language:
+  templates:
+    - "오른손으로 peg를 소켓 안의 핀에 {intensity} 꽂아라."
+    - "오른팔을 이용해 페그를 소켓 중앙 핀까지 {intensity} 밀어 넣어라."
+    - "오른손으로 핀을 향해 페그를 {intensity} 삽입하라."
+  intensity_words:
+    gentle: 살짝
+    normal: 적당한 힘으로
+    firm: 힘있게
+  direction_words: {}
+  quantity_words: {}

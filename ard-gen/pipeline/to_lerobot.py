@@ -62,10 +62,17 @@ _STATE_NAMES = {
     "peg_in_hole": ["right_ee_x", "right_ee_y", "right_ee_z", "right_wrist_rotate",
                     "left_ee_x", "left_ee_y", "left_ee_z"],
     "cap_twist": ["cap_angle_rad", "left_ee_x", "left_ee_y", "left_ee_z"],
+    # peg_in_hole과 완전히 동일한 EE pose 기반 스키마(사용자 확인: insertion도
+    # "기존 컨벤션"인 EE pose 기반을 그대로 쓰기로 함, peg_in_hole과 똑같이
+    # sim/insertion_bimanual_openarm_sim.py의 get_ee_pose()/get_left_ee_pos()
+    # 가 그대로 4+3차원을 낸다).
+    "insertion": ["right_ee_x", "right_ee_y", "right_ee_z", "right_wrist_rotate",
+                  "left_ee_x", "left_ee_y", "left_ee_z"],
 }
 _ACTION_NAMES = {
     "peg_in_hole": ["delta_x", "delta_y", "delta_z"],
     "cap_twist": ["omega_command_rad_s"],
+    "insertion": ["delta_x", "delta_y", "delta_z"],
 }
 
 

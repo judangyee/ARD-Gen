@@ -37,6 +37,10 @@ TASK_REGISTRY: dict[str, str] = {
     # 코드/자산(assets/tacker.xml, sim/tacker_env.py)은 참고용으로 남겨뒀지만
     # 더 이상 등록돼 있지 않다.
     "tacker": "sim.tacker_openarm_env:TackerOpenArmEnv",
+    # gym-aloha(huggingface) InsertionTask를 "소켓/peg 물체 + 단계형 보상"만
+    # 이식한 것(로봇은 그대로 OpenArm 양팔, peg_in_hole과 같은 admittance
+    # 패턴) -- sim/insertion_openarm_env.py 상단 docstring 참고.
+    "insertion": "sim.insertion_openarm_env:InsertionOpenArmEnv",
 }
 
 

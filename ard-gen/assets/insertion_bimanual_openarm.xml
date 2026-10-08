@@ -1,0 +1,195 @@
+<mujoco model="ard_gen_insertion_bimanual_openarm">
+  <!--
+    ARD-Gen insertion 태스크, OpenArm 양팔 버전. gym-aloha(huggingface)의
+    InsertionTask(bimanual_viperx_insertion.xml)를 "소켓+peg 물체와 단계형
+    보상 규칙만" 이식한 것 -- 로봇 자체를 ViperX에서 바꾸는 게 아니라,
+    assets/peg_in_hole_bimanual_openarm.xml(이하 "원본") 위에 물체/보상만
+    교체했다. 받침대/팔/그리퍼/home 자세/grasp anchor/컨트롤러는 원본과
+    **완전히 동일**하다 -- 이 파일에서 바뀐 건 worldbody의 "socket"/"peg"
+    바디뿐이다. 왼팔(Stabilizer)이 socket을 쥐고, 오른팔(Actuator)이 peg를
+    쥐고 삽입한다(원본과 같은 역할 배정).
+
+    ## 원본과 다른 점: socket 설계 (gym-aloha 포팅)
+
+    원본 hole_socket은 4벽+바닥뿐이라 "바닥까지 얼마나 깊이 들어갔는지"로
+    성공을 판정했다(TARGET_INSERTION_DEPTH). gym-aloha의 InsertionTask는
+    대신 socket 벽 4개(socket-1..4)로 만든 통로 **안쪽 중앙에 고정된 "pin"
+    바디**가 있어서, peg가 그 pin에 닿아야만 완전 삽입(reward=4)으로
+    친다(gym-aloha gym_aloha/tasks/sim.py:InsertionTask.get_reward 참고,
+    pin_touched 조건). 이 파일은 그 "바닥 깊이" 대신 "중앙 pin에 닿기"
+    방식을 그대로 들여왔다 -- 바닥에 소켓 벽과 같은 재질로 수직 원기둥
+    pin을 하나 세웠다(아래 socket 바디 참고).
+
+    gym-aloha 원본은 peg를 **수평**(x축 방향)으로 긴 통로에 밀어넣는
+    구조(peg 0.06×0.01×0.01, socket 통로 길이 0.12m)지만, 여기서는 원본
+    ARD-Gen OpenArm peg_in_hole의 **수직** 삽입(admittance xy + 게이팅된
+    z 하강, adaptive_z_rate)을 그대로 쓴다 -- 수평 슬라이드로 바꾸면
+    IK/admittance 전체를 다른 축 기준으로 새로 설계해야 해서 "기존
+    peg_in_hole_openarm 패턴을 따를 것"이라는 요구와 맞지 않는다. 그래서
+    pin은 눕지 않고 바닥에서 위로 솟아오른 원기둥이다.
+
+    clearance(소켓 내경 - peg 폭)도 gym-aloha 값을 기본으로 채택했다 --
+    gym-aloha는 socket 벽 pos=±0.02, 두께(반) 0.002, peg 반폭 0.01이라
+    한쪽 틈새 0.008m(원본 ARD-Gen은 한쪽 틈새 0.0015m로 훨씬 빡빡했다).
+    `sim/insertion_bimanual_openarm_sim.py`의 `_NOMINAL_CLEARANCE_M`
+    상수가 이 값을 반영한다(원본 0.003m -> 0.016m, 한쪽 틈새 기준 2배
+    이상 느슨해짐) -- 실측 검증은 그 파일 참고.
+
+    ## 원본과 완전히 동일한 것 (손대지 않음, 설명은 원본 docstring 참고)
+
+    - 받침대/팔/그리퍼 자산(assets/openarm/), <attach> 패턴
+    - peg/socket을 weld로 붙이는 이유, mj_jac(point, body) 우회
+      (peg_tip_site가 weld 전용 자유 바디 위에 있어서 mj_jacSite가 안 먹힘)
+    - home 자세(양팔 14관절, CMA-ES로 관절 한계 여유까지 만족하도록 재탐색된 값)
+    - peg/socket grasp anchor(relpose) -- 손끝 corner 기준으로 5~6차
+      재조정된 값, anchor가 socket 모양과 무관(오른팔 ee 로컬 좌표
+      기준이라 socket 내부를 넓혀도 안 바뀜)
+    - 그리퍼를 열어두는 이유(ctrl=0, 완전히 닫으면 빈 손끝끼리 자기충돌)
+    - gravcomp, pos_left_j*(왼팔 고정)/torque_right_j*(오른팔 역동역학) 액추에이터
+    - <contact><exclude> (peg/socket과 쥐고 있는 손 사이 자기충돌 방지)
+  -->
+  <compiler angle="radian"/>
+  <option cone="elliptic" impratio="10"/>
+  <visual>
+    <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6" specular="0.1 0.1 0.1"/>
+  </visual>
+
+  <asset>
+    <model name="arm_pedestal" file="openarm/pedestal/openarm_pedestal.xml"/>
+  </asset>
+
+  <default>
+    <default class="peg_contact">
+      <geom contype="1" conaffinity="1" condim="4" friction="0.5 0.01 0.001" solref="0.002 1" solimp="0.9 0.95 0.001"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <light pos="0.4 0 1.5" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+    <light pos="0.7 -0.4 1.0" dir="-0.4 0.4 -0.7" diffuse="0.4 0.4 0.4"/>
+
+    <geom name="ground" type="plane" pos="0 0 0" size="0.8 0.8 0.01" contype="0" conaffinity="0" rgba="0.5 0.5 0.52 1"/>
+
+    <!-- 테이블 -- 원본과 동일(순수 시각 요소, 충돌 없음). -->
+    <body name="table" pos="0.35 0 0">
+      <geom name="table_top" type="box" pos="0 0 0.38" size="0.25 0.25 0.015" contype="0" conaffinity="0" rgba="0.55 0.4 0.3 1"/>
+      <geom name="table_leg_1" type="box" pos="0.22 0.22 0.19" size="0.015 0.015 0.19" contype="0" conaffinity="0" rgba="0.35 0.25 0.18 1"/>
+      <geom name="table_leg_2" type="box" pos="-0.22 0.22 0.19" size="0.015 0.015 0.19" contype="0" conaffinity="0" rgba="0.35 0.25 0.18 1"/>
+      <geom name="table_leg_3" type="box" pos="0.22 -0.22 0.19" size="0.015 0.015 0.19" contype="0" conaffinity="0" rgba="0.35 0.25 0.18 1"/>
+      <geom name="table_leg_4" type="box" pos="-0.22 -0.22 0.19" size="0.015 0.015 0.19" contype="0" conaffinity="0" rgba="0.35 0.25 0.18 1"/>
+    </body>
+
+    <camera name="wide_cam" mode="targetbody" target="socket" pos="1.03597 0.54521 0.9"/>
+    <camera name="top_cam" mode="targetbody" target="socket" pos="0.05 0.0 0.75"/>
+
+    <!-- Socket: 왼팔(Stabilizer)이 쥐는 자유 바디. 위치/quat/grasp anchor는
+         원본 hole_socket과 완전히 동일(왼팔 home 자세가 안 바뀌었으므로) --
+         이름만 socket으로 바꿨다(gym-aloha 네이밍을 따름). 벽/바닥 치수는
+         런타임에 sim 모듈의 _apply_clearance()가 scene_config["clearance_m"]
+         기준으로 덮어쓴다(아래 값은 컴파일 타임 placeholder) -- 원본과 동일한
+         메커니즘, 상수만 더 느슨해졌다(위 모듈 docstring 참고).
+
+         pin: gym-aloha의 "닿아야 완전 삽입"인 고정 막대를 수직으로 세운
+         것 -- socket 바닥(로컬 z=-0.055, 벽/바닥과 같은 peg_contact 재질)에서
+         위로 솟아오른 원기둥. 높이는 1차 추정치이고, 실측(smoke test)으로
+         "현재 admittance 게인이 거기까지 실제로 내려가는지" 확인 후 필요하면
+         조정한다 -- sim 모듈 _PIN_HALF_HEIGHT 주석 참고. -->
+    <body name="socket" pos="0.21559240 -0.07038191 0.48106862" gravcomp="1">
+      <freejoint name="socket_free"/>
+      <geom class="peg_contact" name="socket_wall_px" type="box" pos="0.0155 0 -0.0275" size="0.004 0.0195 0.0275" rgba="0.2 0.2 0.9 1"/>
+      <geom class="peg_contact" name="socket_wall_nx" type="box" pos="-0.0155 0 -0.0275" size="0.004 0.0195 0.0275" rgba="0.2 0.2 0.9 1"/>
+      <geom class="peg_contact" name="socket_wall_py" type="box" pos="0 0.0155 -0.0275" size="0.0195 0.004 0.0275" rgba="0.2 0.2 0.9 1"/>
+      <geom class="peg_contact" name="socket_wall_ny" type="box" pos="0 -0.0155 -0.0275" size="0.0195 0.004 0.0275" rgba="0.2 0.2 0.9 1"/>
+      <geom class="peg_contact" name="socket_floor" type="box" pos="0 0 -0.057" size="0.0115 0.0115 0.002" rgba="0.2 0.2 0.9 1"/>
+      <geom class="peg_contact" name="pin" type="cylinder" pos="0 0 -0.0425" size="0.006 0.0125" rgba="0.95 0.35 0.05 1"/>
+      <site name="socket_center_site" pos="0 0 0" size="0.002" rgba="1 0 0 0.5"/>
+      <site name="pin_top_site" pos="0 0 -0.03" size="0.002" rgba="1 1 0 0.5"/>
+    </body>
+
+    <!-- Peg: 오른팔(Actuator)이 쥐는 자유 바디 -- 원본과 완전히 동일(모양/
+         질량/grasp anchor 전부 그대로, socket 설계와 무관). -->
+    <body name="peg" pos="0.21564624 -0.07035550 0.56015799"
+          quat="-0.0247387074 -0.0000234851 0.0001681527 0.9996939370" gravcomp="1">
+      <freejoint name="peg_free"/>
+      <geom class="peg_contact" name="peg_shaft" type="box" size="0.01 0.01 0.03" mass="0.04" rgba="0.95 0.35 0.05 1"/>
+      <geom class="peg_contact" name="peg_tip_ball" type="sphere" pos="0 0 -0.03" size="0.01" mass="0.01" rgba="0.95 0.35 0.05 1"/>
+      <site name="peg_tip_site" pos="0 0 -0.04" size="0.003" rgba="0 1 0 1"/>
+    </body>
+
+    <!-- OpenArm 양팔 + 받침대 (공식 자산, assets/openarm/ 참고) -->
+    <attach model="arm_pedestal" prefix=""/>
+  </worldbody>
+
+  <equality>
+    <!-- 원본과 완전히 동일한 relpose(오른팔이 peg를 쥔다). -->
+    <weld name="peg_grasp" body1="openarm_right_ee_base_link" body2="peg"
+          relpose="-0.02222 0 -0.21214 1 0 0 0"
+          solref="0.002 1" solimp="0.95 0.99 0.0001 0.5 2"
+          active="true"/>
+    <!-- 원본과 완전히 동일한 relpose(왼팔이 socket을 쥔다, 원본 body명은
+         hole_socket이었지만 이 파일에서는 socket). -->
+    <weld name="socket_grasp" body1="openarm_left_ee_base_link" body2="socket"
+          relpose="-0.01772 -0.00214 -0.19274 0.66481967 0.50297462 0.44306384 0.3297359"
+          solref="0.002 1" solimp="0.95 0.99 0.0001 0.5 2"
+          active="true"/>
+  </equality>
+
+  <sensor>
+    <force name="peg_force" site="peg_tip_site"/>
+    <torque name="peg_torque" site="peg_tip_site"/>
+  </sensor>
+
+  <contact>
+    <!-- 원본과 동일한 이유(peg/socket과 쥐고 있는 손 사이 자기충돌 방지). -->
+    <exclude body1="peg" body2="openarm_right_ee_base_link"/>
+    <exclude body1="peg" body2="openarm_right_ee_inner_finger"/>
+    <exclude body1="peg" body2="openarm_right_ee_outer_finger"/>
+    <exclude body1="socket" body2="openarm_left_ee_base_link"/>
+    <exclude body1="socket" body2="openarm_left_ee_inner_finger"/>
+    <exclude body1="socket" body2="openarm_left_ee_outer_finger"/>
+  </contact>
+
+  <!-- 원본과 완전히 동일(팔 home 자세/grasp anchor가 안 바뀌었으므로 게인도
+       그대로 재사용 가능 -- sim 모듈에서 실측 검증). -->
+  <actuator>
+    <position name="pos_right_j1" joint="openarm_right_joint1" kp="2273.98" kv="1568.18" ctrlrange="-1.3963 3.4907"/>
+    <position name="pos_right_j2" joint="openarm_right_joint2" kp="2273.98" kv="1568.18" ctrlrange="-0.17453 3.3161"/>
+    <position name="pos_right_j3" joint="openarm_right_joint3" kp="87.90" kv="894.41" ctrlrange="-1.5708 1.5708"/>
+    <position name="pos_right_j4" joint="openarm_right_joint4" kp="87.90" kv="894.41" ctrlrange="0 2.4435"/>
+    <position name="pos_right_j5" joint="openarm_right_joint5" kp="411.75" kv="663.96" ctrlrange="-1.5708 1.5708"/>
+    <position name="pos_right_j6" joint="openarm_right_joint6" kp="411.75" kv="663.96" ctrlrange="-0.7854 0.7854"/>
+    <position name="pos_right_j7" joint="openarm_right_joint7" kp="411.75" kv="663.96" ctrlrange="-1.5708 1.5708"/>
+    <position name="pos_left_j1" joint="openarm_left_joint1" kp="2273.98" kv="1568.18" ctrlrange="-3.4907 1.3963"/>
+    <position name="pos_left_j2" joint="openarm_left_joint2" kp="2273.98" kv="1568.18" ctrlrange="-3.3161 0.17453"/>
+    <position name="pos_left_j3" joint="openarm_left_joint3" kp="87.90" kv="894.41" ctrlrange="-1.5708 1.5708"/>
+    <position name="pos_left_j4" joint="openarm_left_joint4" kp="87.90" kv="894.41" ctrlrange="0 2.4435"/>
+    <position name="pos_left_j5" joint="openarm_left_joint5" kp="411.75" kv="663.96" ctrlrange="-1.5708 1.5708"/>
+    <position name="pos_left_j6" joint="openarm_left_joint6" kp="411.75" kv="663.96" ctrlrange="-0.7854 0.7854"/>
+    <position name="pos_left_j7" joint="openarm_left_joint7" kp="411.75" kv="663.96" ctrlrange="-1.5708 1.5708"/>
+
+    <motor name="torque_right_j1" joint="openarm_right_joint1" ctrlrange="-40 40"/>
+    <motor name="torque_right_j2" joint="openarm_right_joint2" ctrlrange="-40 40"/>
+    <motor name="torque_right_j3" joint="openarm_right_joint3" ctrlrange="-27 27"/>
+    <motor name="torque_right_j4" joint="openarm_right_joint4" ctrlrange="-27 27"/>
+    <motor name="torque_right_j5" joint="openarm_right_joint5" ctrlrange="-7 7"/>
+    <motor name="torque_right_j6" joint="openarm_right_joint6" ctrlrange="-7 7"/>
+    <motor name="torque_right_j7" joint="openarm_right_joint7" ctrlrange="-7 7"/>
+  </actuator>
+
+  <keyframe>
+    <!-- 원본과 완전히 동일한 qpos/ctrl (socket/peg 자유조인트 값도 원본
+         hole_socket/peg와 동일 -- body 이름만 바뀌었을 뿐 pos/quat은 그대로).
+         reset()이 항상 이 값들을 다시 계산해서 덮어쓰므로, 이 키프레임은
+         Python 래퍼 없이 raw XML을 직접 로드하는 경우를 위한 것뿐이다. -->
+    <key name="home"
+      qpos="0.21559240 -0.07038191 0.48106862 1 0 0 0
+            0.21564624 -0.07035550 0.56015799 -0.0247387074 -0.0000234851 0.0001681527 0.9996939370
+            -0.33119160341930914 -0.6927695819191171 1.0264533366778317 1.8918419565784326 -0.9724271650596741 -0.11753742523671289 -0.306424166993611 0.110 0.110
+            -0.4932859043730308 2.7728121142883237 0.7779694449047385 2.068501962471789 0.5568966487876724 -0.5030469209189363 0.973709272141154 -0.030 -0.030"
+      ctrl="-0.4932859043730308 2.7728121142883237 0.7779694449047385 2.068501962471789 0.5568966487876724 -0.5030469209189363 0.973709272141154
+            -0.33119160341930914 -0.6927695819191171 1.0264533366778317 1.8918419565784326 -0.9724271650596741 -0.11753742523671289 -0.306424166993611
+            0 0 0 0 0 0 0 0.110
+            0 0 0 0 0 0 0 -0.030
+            0 0 0 0 0 0 0"/>
+  </keyframe>
+</mujoco>

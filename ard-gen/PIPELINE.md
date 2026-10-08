@@ -945,3 +945,87 @@ tacker_openarm_env.py`).
   (후퇴(~30~40스텝) + 최종 정착(20스텝)이 추가된 만큼).
 - 언어 라벨링 force_max 범위 [5.9, 20.1]N, 강도 분포 gentle 83/normal
   83/firm 86 -- 이전과 사실상 동일(발사 반동 자체는 안 바뀌었으므로 당연).
+
+## 신규 태스크: insertion -- gym-aloha(huggingface) InsertionTask 포팅
+
+ARD-Gen의 OpenArm peg_in_hole(왼팔=Stabilizer가 socket, 오른팔=Actuator가
+peg를 쥐고 삽입) 구조 위에, gym-aloha(huggingface)의 InsertionTask가 쓰는
+"소켓 통로 중앙에 고정 pin" 물체와 0~4단계 접촉 기반 보상을 그대로
+이식했다 -- 로봇을 ViperX로 바꾸는 게 아니라 물체/보상 규칙만 가져온
+것(사용자 요청). 새 파일: `assets/insertion_bimanual_openarm.xml`,
+`sim/insertion_bimanual_openarm_sim.py`, `sim/insertion_openarm_env.py`,
+`tasks/insertion.yaml`. `TASK_REGISTRY["insertion"]`에 등록, `pipeline/
+to_lerobot.py`에 peg_in_hole과 동일한 EE pose 기반 스키마(state 7차원,
+action 3차원)로 연결했다.
+
+### 설계: gym-aloha와 다를 수밖에 없었던 지점
+
+- **삽입 축**: gym-aloha는 peg를 수평으로 긴 통로에 미는 구조지만, 여기는
+  원본 peg_in_hole의 수직 admittance+adaptive_z_rate를 그대로 썼다 --
+  수평으로 바꾸면 IK/제어 전체를 다시 설계해야 해서 "기존 패턴을 따를
+  것"이라는 요구와 안 맞는다. pin도 눕지 않고 바닥에서 솟아오른 원기둥으로
+  바꿨다.
+- **clearance**: gym-aloha 값(한쪽 틈새 8mm)을 기본으로 채택 -- 원본
+  peg_in_hole(한쪽 틈새 1.5mm)보다 5배 이상 느슨하다(지시대로 "Aloha
+  원본 값을 기본으로" 적용, `sim/insertion_bimanual_openarm_sim.py`의
+  `_NOMINAL_CLEARANCE_M` 주석 참고).
+- **보상 1~2단계(그리퍼 접촉/들어올림)**: gym-aloha는 그리퍼-물체 접촉으로
+  판정하지만, ARD-Gen의 weld-grasp 설계는 자기충돌 방지를 위해 그 접촉
+  자체를 `<contact><exclude>`로 꺼둔다 -- 그래서 이 설계에서는 그 접촉이
+  구조적으로 영원히 안 일어난다(peg/socket이 reset부터 이미 쥐어진 채
+  공중에 있어서 이 두 단계는 항상 참이기도 하다). 1~2단계를 접촉으로
+  재현하면 보상이 영원히 0에서 안 움직이는 버그가 되므로, 바닥값 2로
+  압축하고 3~4단계(peg-socket 접촉/peg-pin 접촉)만 실제 접촉으로
+  판정한다(`sim/insertion_bimanual_openarm_sim.py`의 `get_stage()` 참고).
+  gym-aloha를 "그대로" 포팅하면서도 이 설계 차이 때문에 생긴 필연적인
+  조정이다.
+- **성공 판정의 hold-count 제거**: 원본 peg_in_hole은 깊이 기반 판정의
+  거짓 성공을 막으려고 20스텝 연속 유지를 요구했는데, pin(반지름 6mm)이
+  peg tip(반지름 1cm)보다 얇아서 완전히 정렬돼도 윗면 가장자리에서 접촉이
+  매 스텝 미세하게 깜빡여 20스텝 연속 유지가 거의 불가능했다(실측으로
+  발견). gym-aloha 원본도 그런 유지 조건이 없어서(매 스텝 독립 판정),
+  "그대로 이식"하려면 빼는 게 맞다고 판단해 제거했다 -- pin 접촉 한 번이면
+  유효한 성공으로 본다(`sim/insertion_openarm_env.py` 상단 docstring
+  참고).
+- **CMA-ES 목적함수**: reward가 연속값이 아니라 gym-aloha의 0~4 정수
+  단계 그 자체다(사용자가 sparse 보상의 수렴 위험을 알고도 확인). 실측
+  해보니 오히려 1세대 만에 수렴했다(아래 참고) -- 팔 기구학/home 자세/
+  grasp anchor가 peg_in_hole과 완전히 같아서 게인 자체를 거의 재탐색할
+  필요가 없었기 때문으로 보인다.
+
+### 검증된 것
+
+- `sim/insertion_bimanual_openarm_sim.py`를 작성하면서 peg_in_hole의
+  게인(Kp_xy=0.124630, Kd_xy=0.001125)을 그대로 재사용해서 eval_scenarios
+  3개 전부가 stage=4(pin 접촉)에 도달함을 실측 확인(step 112~134) --
+  팔 기구학/home 자세/grasp anchor를 안 바꿔서 재탐색이 필요 없었다는
+  가설이 맞았다.
+- `tests/test_insertion_task.py`(5개, pytest로 전부 통과): reset/step
+  스모크, 무작위 액션 3 에피소드 무사고, eval_scenarios 3개 전부 pin
+  접촉, clearance가 실제로 peg_in_hole보다 느슨함.
+- `optimize/cma_search.py --task insertion`(5세대 한도)이 **1세대 만에
+  목표 리워드(4.0) 도달**로 조기 종료.
+- 그 결과를 이어서 `pipeline/bootstrap.py`(30 trial, 성공률 100%) ->
+  `pipeline/diffusion_gains.py`(20 epoch, 부트스트랩/diffusion 둘 다
+  성공률 100%) -> `pipeline/filter_episodes.py`(8개 씬 중 7개 필터링
+  성공) -> `pipeline/language_labeling.py`(7개 에피소드 모두 language
+  필드 채워짐) -> `pipeline/to_lerobot.py`(state_dim=7, action_dim=3,
+  842프레임 변환 성공, 검증 로드까지 확인)까지 **0→1→2-A→2-B→4→5단계 +
+  LeRobotDataset 변환 전체를 소규모로 끝까지 실행해 전부 통과함을
+  확인했다.**
+
+### 아직 확인되지 않은 것
+
+- 위 파이프라인 전체 실행은 소규모(30/8개 씬)였다 -- peg_in_hole/tacker
+  처럼 수백 개 규모의 정식 데이터셋으로는 아직 안 돌려봤다(필터링
+  성공률이 소규모 표본과 같이 유지되는지 등).
+- clearance를 gym-aloha 값으로 느슨하게 만든 게 실제로 난이도를 낮추는
+  방향으로만 작용하는지(의도대로), 아니면 너무 느슨해서 peg가 중심에서
+  벗어나도 pin에 안 닿고 지나가는 경우가 생기는지는 좁은 범위의 무작위
+  오프셋(샘플링 반경 9~14mm)에서만 확인했다 -- 더 넓은 오프셋/다른
+  friction 조합에서의 견고성은 확인 못 했다.
+- pin 접촉 판정이 매 스텝 깜빡이는 현상(위 "hold-count 제거" 절) 자체가
+  실제 로봇에서도 발생할 성질의 문제인지, 아니면 이 시뮬레이션의 solver
+  파라미터(solref/solimp)나 pin 반지름이 유난히 얇아서 생기는 것인지는
+  더 확인이 필요하다 -- pin을 좀 더 두껍게 만들면 이 떨림이 줄어들지도
+  확인 못 했다(이번 작업에서는 기존 반지름을 그대로 가져다 썼다).
