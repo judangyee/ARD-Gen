@@ -37,6 +37,13 @@ TASK_REGISTRY: dict[str, str] = {
     # 코드/자산(assets/tacker.xml, sim/tacker_env.py)은 참고용으로 남겨뒀지만
     # 더 이상 등록돼 있지 않다.
     "tacker": "sim.tacker_openarm_env:TackerOpenArmEnv",
+    # gym-aloha AlohaInsertionTask 포팅 -- 아직 성공하는 게인을 못 찾은
+    # 미검증 태스크다(tasks/insertion.yaml, sim/insertion_openarm_env.py
+    # 모듈 docstring의 "미검증 상태" 절 참고). 그래도 등록은 해둔다 --
+    # TASK_REGISTRY에 없으면 --task insertion으로 파이프라인 스크립트가
+    # 접근할 방법이 아예 없어서, 다음에 이어서 풀 사람이 기존 CMA-ES/
+    # smoke-test 인프라를 그대로 쓸 수 있어야 한다.
+    "insertion": "sim.insertion_openarm_env:InsertionOpenArmEnv",
 }
 
 

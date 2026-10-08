@@ -945,3 +945,58 @@ tacker_openarm_env.py`).
   (후퇴(~30~40스텝) + 최종 정착(20스텝)이 추가된 만큼).
 - 언어 라벨링 force_max 범위 [5.9, 20.1]N, 강도 분포 gentle 83/normal
   83/firm 86 -- 이전과 사실상 동일(발사 반동 자체는 안 바뀌었으므로 당연).
+
+## `sim/openarm_bimanual_base.py`: OpenArm 양팔 공통 메커니즘 추출 ✅ 완료
+
+`sim/peg_in_hole_bimanual_openarm_sim.py`와 `sim/tacker_openarm_env.py`에
+거의 동일한 코드(vendor 액추에이터 무력화, gravcomp 주입, shadow-state
+resolved-rate IK + nullspace 투영 + 관절 한계 freeze, 역동역학
+computed-torque step, 반복 IK initial-pose solve)가 복붙돼 있던 걸 보고,
+이 메커니즘을 `OpenArmBimanualBase`로 뽑아 `BimanualPegInHoleOpenArmSim`이
+상속하도록 리팩토링했다(이번 작업 범위상 tacker는 안 건드림). 리팩토링
+전/후가 바이트 단위로 동일한지 `tests/fixtures/peg_in_hole_openarm_pre_refactor.npz`
+(리팩토링 전 run_episode() 출력, 성공 3케이스+실패/진동 2케이스)와 대조하는
+`tests/test_regression_peg_in_hole_openarm_base.py`로 확인했고, 기존
+`tests/test_regression_peg_in_hole.py`/`tests/test_tacker_task.py`도 모두
+그대로 통과한다.
+
+## 신규 태스크: insertion (gym-aloha AlohaInsertionTask 포팅) ⚠️ 미완료 -- 성공하는 게인을 못 찾음
+
+gym-aloha(huggingface)의 `AlohaInsertionTask`를 OpenArm 양팔로 포팅했다 --
+오른팔이 peg를, 왼팔이 socket을 쥐고 **수평으로 슬라이드해서** 꽂는다(Aloha
+원본 구조, peg_in_hole의 수직 낙하와는 다른 방향). `assets/
+insertion_bimanual_openarm.xml` + `sim/insertion_openarm_env.py` +
+`tasks/insertion.yaml`, `TASK_REGISTRY["insertion"]`에 등록.
+
+**설계**: peg_in_hole의 socket(hole) 채널 geometry(벽 4개+바닥, ARD-Gen
+타이트 clearance 2-5mm 컨벤션)를 그대로 재사용하면서, socket을 쥐는 weld의
+relpose orientation만 world X축 기준 90도 돌려서(채널의 local -z 삽입축이
+world +y 근처를 향하게) "수직 삽입"을 "수평 슬라이드"로 바꿨다 -- 양팔
+home 자세/그리퍼 grasp anchor는 peg_in_hole 값을 그대로 재사용(물체 크기가
+같아서 같은 CMA-ES 탐색 결과를 재사용할 수 있다고 판단). 성공 판정은
+Aloha 원본처럼 **hold 없이 pin에 한 번이라도 접촉하면 즉시 성공**(사용자가
+명시적으로 "Aloha 원본 방식"을 선택, peg_in_hole의 `_SUCCESS_HOLD_STEPS`
+컨벤션과 다른 점).
+
+**결과: reset()은 수렴하지만(충돌 0개, 관절 한계 15% 여유) step() 루프가
+삽입 방향으로 전진하지 못하고 xy로 발산한다.** 진단(peg_in_hole과 같은
+"하나씩 격리" 방식):
+1. admittance 게인을 완전히 꺼도(kp=kd=0, 순수 z_rate push) 똑같이
+   발산한다(1000스텝에 dx=84mm/dy=-82mm, 채널 반폭 19.5mm의 4배 이상) --
+   **게인 문제가 아니다.**
+2. hover_gap을 39/25/15/8mm로 줄여도(이동 거리 자체를 줄여도) 발산
+   패턴이 그대로다(오히려 더 심해짐) -- **이동 거리 문제도 아니다.**
+3. reset() 직후 Jacobian 조건수는 peg_in_hole과 거의 동일하다(둘 다
+   ~3.38) -- **정적 조건수 문제가 아니다.**
+4. 순수 z_rate push를 오래 돌리면 오른팔 joint1/joint2가 금방 관절
+   한계 근처(frac 0.08/0.92대)까지 밀린다 -- **peg_in_hole의 CMA-ES
+   home 자세는 "수직 하강"에는 관절 한계 여유가 충분하지만, 이 삽입축
+   (수평) 방향 동작에는 그렇지 않다**는 뜻으로 보인다.
+
+사용자 지시("성공 못 하면 억지로 넘어가지 말고 어느 단계에서 막혔는지
+보고") 따라 여기서 멈췄다 -- 다음 단계로 보이는 것: 이 삽입축 방향 전용
+CMA-ES 홈 자세 재탐색(`optimize/peg_in_hole_openarm_home_pose_search.py`와
+같은 방식, 비용 함수를 "이 방향으로 움직일 때의 xy 누출"로). `tests/
+test_insertion_task.py`는 이 미해결 상태를 반영해 success=True를 요구하지
+않고, reset/step smoke test(충돌 없음·NaN 없음·관절 한계 준수) + 무작위
+액션 생존만 확인한다 -- TASK_REGISTRY 연결은 정상이다.
