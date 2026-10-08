@@ -216,6 +216,8 @@ from typing import Any
 import mujoco
 import numpy as np
 
+from sim.openarm_bimanual_base import OpenArmBimanualBase
+
 _DEFAULT_XML = os.path.join(os.path.dirname(__file__), "..", "assets", "peg_in_hole_bimanual_openarm.xml")
 
 N_SUBSTEPS = 5  # mj_step 호출당 substep 수 (timestep=0.002 -> 제어 주기 dt=0.01s)
@@ -499,16 +501,40 @@ def sample_scene_config(rng: np.random.Generator) -> dict[str, Any]:
     }
 
 
-class BimanualPegInHoleOpenArmSim:
+class BimanualPegInHoleOpenArmSim(OpenArmBimanualBase):
+    """역동역학/resolved-rate IK/vendor 액추에이터 무력화/gravcomp 주입 등
+    OpenArm 양팔 공통 메커니즘은 sim/openarm_bimanual_base.py:OpenArmBimanualBase로
+    옮겼다(sim/tacker_openarm_env.py에도 거의 동일한 코드가 있던 걸 보고 뽑아낸
+    공통 부분 -- 이 리팩토링으로 peg_in_hole의 물리/제어 결과는 바이트 단위로
+    그대로다, tests/test_regression_peg_in_hole_openarm_base.py 참고). 이 클래스는
+    peg/hole geometry, clearance, force 센서, reset 오케스트레이션처럼 이
+    태스크에만 있는 부분만 남겼다."""
+
     def __init__(self, xml_path: str | None = None):
-        self.xml_path = xml_path or _DEFAULT_XML
-        self.model = mujoco.MjModel.from_xml_path(self.xml_path)
-        self.data = mujoco.MjData(self.model)
+        xml_path = xml_path or _DEFAULT_XML
+        super().__init__(
+            xml_path=xml_path,
+            right_home_qpos=_HOME_QPOS,
+            left_home_qpos=_LEFT_ARM_HOME_QPOS,
+            # 앵커(그리퍼가 쥔 peg 원점 오프셋)와 추적점(peg tip, hole에 꽂히는
+            # 끝)은 서로 다르다 -- base 모듈 docstring "오른팔이 쥔 포인트의 두
+            # 오프셋" 절 참고. 기존 _virtual_peg_tip_and_jac()이 anchor에 추가로
+            # 더하던 [0,0,-0.04]를 여기서 합쳐 넘긴다(동작은 완전히 동일).
+            right_anchor_offset_ee=_PEG_LOCAL_OFFSET,
+            right_track_point_offset_ee=_PEG_LOCAL_OFFSET + np.array([0.0, 0.0, -0.04]),
+            right_held_free_joint="peg_free",
+            nullspace_gain=_NULLSPACE_GAIN,
+            limit_freeze_margin=_LIMIT_FREEZE_MARGIN,
+            jac_damping=_JAC_DAMPING,
+            ik_max_iters=_IK_MAX_ITERS,
+            ik_step_scale=_IK_STEP_SCALE,
+            torque_omega_n=_TORQUE_OMEGA_N,
+            torque_zeta=_TORQUE_ZETA,
+            n_substeps=N_SUBSTEPS,
+        )
 
         self._hole_body_id = self.model.body("hole_socket").id
         self._peg_body_id = self.model.body("peg").id
-        self._right_ee_body_id = self.model.body("openarm_right_ee_base_link").id
-        self._left_ee_body_id = self.model.body("openarm_left_ee_base_link").id
         self._hole_site_id = self.model.site("hole_center_site").id
         self._peg_tip_site_id = self.model.site("peg_tip_site").id
         self._peg_geom_ids = [self.model.geom("peg_shaft").id, self.model.geom("peg_tip_ball").id]
@@ -518,91 +544,6 @@ class BimanualPegInHoleOpenArmSim:
         }
         self._floor_geom_id = self.model.geom("hole_floor").id
 
-        self._arm_qposadr = {name: self.model.joint(name).qposadr[0] for name in _ARM_JOINTS}
-        self._arm_dofadr = {name: self.model.joint(name).dofadr[0] for name in _ARM_JOINTS}
-        # pos_right_j1..7 -- 이 파일이 직접 추가한 강화 게인 액추에이터
-        # (vendor의 right_joint{i}_ctrl은 기본 게인이라 안 쓴다 -- assets/
-        # peg_in_hole_bimanual_openarm.xml 상단 docstring "3. 왼팔도..." 참고).
-        self._arm_actuator_ids = {
-            name: self.model.actuator(f"pos_right_j{i}").id for i, name in enumerate(_ARM_JOINTS, start=1)
-        }
-        self._gripper_actuator_id = self.model.actuator("right_finger1_ctrl").id
-        self._right_finger_qposadr = self.model.joint("openarm_right_finger_joint1").qposadr[0]
-        # joint2는 자체 액추에이터가 없고 mimic equality(openarm_right_ee_finger_joint_mimic)로
-        # joint1을 따라가지만, 그건 mj_step의 제약 solve 중에만 적용된다 --
-        # reset()은 mj_forward만 쓰므로(이 프로젝트에서 반복 확인한 패턴,
-        # "mj_forward만으로는 weld/equality로 연결된 자유도가 안 움직인다")
-        # qpos를 직접 맞춰줘야 한다(안 그러면 reset 직후 첫 프레임에서
-        # 손가락 두 개가 비대칭으로 보인다 -- joint1은 grasp 각도인데
-        # joint2는 mj_resetData의 기본값 0에 그대로 남음).
-        self._right_finger2_qposadr = self.model.joint("openarm_right_finger_joint2").qposadr[0]
-
-        self._left_arm_qposadr = {
-            name: self.model.joint(name).qposadr[0] for name in _LEFT_ARM_HOME_QPOS
-        }
-        # pos_left_j1..7 -- 오른팔과 같은 이유로 vendor 액추에이터 대신 씀.
-        self._left_arm_actuator_ids = {
-            name: self.model.actuator(f"pos_left_j{i}").id for i, name in enumerate(_LEFT_ARM_HOME_QPOS, start=1)
-        }
-        self._left_gripper_actuator_id = self.model.actuator("left_finger1_ctrl").id
-        self._left_finger_qposadr = self.model.joint("openarm_left_finger_joint1").qposadr[0]
-        # 오른팔과 같은 이유(joint2는 mimic equality로만 joint1을 따라가고,
-        # 그건 mj_step에서만 적용됨)로 joint2도 직접 맞춰줘야 한다.
-        self._left_finger2_qposadr = self.model.joint("openarm_left_finger_joint2").qposadr[0]
-
-        # vendor(assets/openarm/openarm_bimanual.xml)의 팔 관절용 <position>
-        # 액추에이터 14개(left/right_joint{1..7}_ctrl)를 무력화한다. 실측에서
-        # 발견한 버그: 이 액추에이터들은 ctrl이 기본값 0인 채로 계속 남아있는데,
-        # <position> 타입이라 "토크 0"이 아니라 "그 관절을 각도 0으로 끌어당김"
-        # 이다 -- home 자세 자체가 대부분 관절에서 0이 아니므로(예: joint2=2.79),
-        # 이게 우리가 추가한 pos_right_j*/pos_left_j*(위 강화 게인)와 정면으로
-        # 싸운다(실측: right_joint2_ctrl이 -40N, 즉 forcerange 한계까지 포화된
-        # 반대 방향 토크를 계속 냄). 그리퍼 액추에이터(*_finger1_ctrl)는 그대로
-        # 둔다(우리가 대체 액추에이터를 안 만들었고, ctrl=0=완전히 벌림이 실제로
-        # 의도한 값이라 문제 없음). gainprm/biasprm을 전부 0으로 만들면 ctrl/qpos/
-        # qvel과 무관하게 힘이 항상 0이 된다(MuJoCo position 액추에이터의
-        # force = gainprm[0]*ctrl + biasprm[0] + biasprm[1]*qpos + biasprm[2]*qvel).
-        for prefix, joints in (("right", _ARM_JOINTS), ("left", list(_LEFT_ARM_HOME_QPOS))):
-            for i in range(1, 8):
-                act_id = self.model.actuator(f"{prefix}_joint{i}_ctrl").id
-                self.model.actuator_gainprm[act_id] = 0.0
-                self.model.actuator_biasprm[act_id] = 0.0
-
-        # 오른팔은 이제 pos_right_j*(<position>, 관절별 독립 PD)가 아니라
-        # torque_right_j*(<motor>, step()이 매 스텝 계산하는 역동역학
-        # 토크)로 구동한다 -- pos_right_j*는 vendor 액추에이터와 같은
-        # 이유(위)로 무력화한다. 왼팔은 안 움직이는 "고정" 역할이라 그대로
-        # pos_left_j*를 쓴다.
-        for act_id in self._arm_actuator_ids.values():
-            self.model.actuator_gainprm[act_id] = 0.0
-            self.model.actuator_biasprm[act_id] = 0.0
-        self._torque_actuator_ids = {
-            name: self.model.actuator(f"torque_right_j{i}").id for i, name in enumerate(_ARM_JOINTS, start=1)
-        }
-        self._arm_dofs = [self._arm_dofadr[name] for name in _ARM_JOINTS]
-
-        # vendor(assets/openarm/openarm_bimanual.xml)에는 gravcomp가 어디에도
-        # 없다(VX300s는 이 프로젝트가 모든 팔 바디에 gravcomp="1"을 직접
-        # 넣어뒀음 -- assets/peg_in_hole.xml 상단 docstring 참고). 그 결과
-        # 모든 관절이 자기 아래 팔 전체 무게를 순수 위치오차(kp*error)만으로
-        # 버텨야 했다 -- 실측해보니 kp/kv를 아무리 올려도(최대 6000/1800까지
-        # 시도) qpos-ctrl 오차가 관절당 최대 0.07rad(4도)까지 남았고, 그게
-        # Jacobian(칼럼 크기 0.1~0.27 m/rad, 조건수는 2.6으로 정상이라
-        # 특이점 문제는 아니었음)을 통해 증폭되어 peg tip이 400스텝 동안
-        # hole 목표에서 최대 7cm까지 드리프트했다(z 방향 삽입은 되는데
-        # xy가 틀어져서 "xy_within_hole_footprint" 판정에 걸려 실패). vendor
-        # XML은 안 건드리고(다른 파일들과 같은 원칙) 여기서 컴파일된 모델의
-        # body_gravcomp를 직접 1.0으로 덮어썼다 -- geom_pos/geom_size를
-        # 런타임에 덮어쓰는 것과 같은 방식. 이후 위 드리프트가 사실상 사라짐
-        # (아래 __main__ 결과 참고).
-        for i in range(self.model.nbody):
-            name = self.model.body(i).name
-            if name.startswith("openarm_left_") or name.startswith("openarm_right_"):
-                self.model.body_gravcomp[i] = 1.0
-
-        self._peg_qposadr = self.model.joint("peg_free").qposadr[0]
-        self._hole_qposadr = self.model.joint("hole_free").qposadr[0]
-
         force_adr = self.model.sensor("peg_force").adr[0]
         torque_adr = self.model.sensor("peg_torque").adr[0]
         self._force_slice = slice(force_adr, force_adr + 3)
@@ -610,31 +551,11 @@ class BimanualPegInHoleOpenArmSim:
 
         # "home" 키프레임에서 hole_socket의 qpos(7) -- 왼팔이 안 움직이므로
         # 매 reset()마다 그대로 복사해서 쓴다 (재계산 불필요).
+        self._hole_qposadr = self.model.joint("hole_free").qposadr[0]
         key_id = self.model.key("home").id
         self._hole_home_qpos = self.model.key_qpos[key_id][
             self._hole_qposadr : self._hole_qposadr + 7
         ].copy()
-
-        self._jacp = np.zeros((3, self.model.nv))
-        self._jacr = np.zeros((3, self.model.nv))
-
-        # gravcomp를 넣어도 관절당 최대 0.1rad 안팎의 qpos-ctrl 오차는 안
-        # 없어졌다(실측, __main__ 결과 참고) -- 실측해보니 이 정도 오차로도
-        # step()이 그 "약간 어긋난 실제 위치"에서 매번 새로 Jacobian을 구해
-        # 다음 dq를 계산하면, 오차가 시간(스텝 수)이 아니라 **이동 거리에
-        # 비례해서** 누적된다(Z_RATE를 4배 늦춰도 같은 거리를 가면 똑같은
-        # 드리프트가 남는 걸 실측으로 확인함 -- 대역폭/랙 문제가 아니라
-        # "약간 틀린 지점에서 계산한 Jacobian"이 매번 조금씩 잘못된 방향으로
-        # 미는 게 누적되는 기하학적 문제라는 뜻). 그래서 planning은 실제
-        # 시뮬레이션 상태(self.data, PD 지연이 낀 상태)가 아니라 별도의
-        # "가상" 순수 기구학 상태(self._shadow_data, self._virtual_qpos)에서
-        # 한다 -- ctrl은 이 가상 상태를 그대로 목표값으로 받고, 실제 팔은
-        # 그걸 쫓아가기만 한다(오차가 있어도 그 오차가 다음 Jacobian 계산을
-        # 오염시키지 않음). admittance의 force 피드백은 여전히 진짜 센서
-        # 값(self.data)을 쓴다 -- 이건 원래도 실제 물리를 반영해야 하는
-        # 값이라 문제 없다.
-        self._shadow_data = mujoco.MjData(self.model)
-        self._virtual_qpos: dict[str, float] = dict(_HOME_QPOS)
 
     # ------------------------------------------------------------------
     def _apply_clearance(self, clearance_m: float) -> float:
@@ -655,162 +576,6 @@ class BimanualPegInHoleOpenArmSim:
         self.model.geom_size[self._floor_geom_id] = [inner_half, inner_half, _FLOOR_HALF_THICKNESS]
         return outer_half
 
-    def _jac_at_point(self, world_point: np.ndarray) -> np.ndarray:
-        """world_point가 openarm_right_ee_base_link에 강체로 붙어있다고 가정한
-        3xnv 위치 Jacobian. peg는 weld로만 연결된 자유 바디라 mj_jacSite로는
-        (screw_driving.xml에서 이미 겪은 버그와 동일하게) 제대로 된 Jacobian이
-        안 나온다 -- mj_jac(point, body)는 site 없이 임의의 월드 좌표에 대해
-        직접 계산해줘서 이 문제를 피한다(파일 상단 docstring 참고)."""
-        mujoco.mj_jac(self.model, self.data, self._jacp, self._jacr, world_point, self._right_ee_body_id)
-        return self._jacp
-
-    def _jac_solve(self, delta_pos_world: np.ndarray) -> np.ndarray:
-        peg_tip = self.data.site_xpos[self._peg_tip_site_id].copy()
-        jacp = self._jac_at_point(peg_tip)
-        jjt = jacp @ jacp.T + _JAC_DAMPING * np.eye(3)
-        return jacp.T @ np.linalg.solve(jjt, delta_pos_world)
-
-    def _virtual_peg_tip_and_jac(self) -> tuple[np.ndarray, np.ndarray]:
-        """self._virtual_qpos(순수 기구학 상태)에서의 peg tip 위치와, 거기서
-        openarm_right_ee_base_link에 강체로 붙어있다고 가정한 Jacobian.
-        self._shadow_data에만 쓰고 self.data(진짜 시뮬레이션 상태)는 절대
-        건드리지 않는다(파일 상단 docstring, __init__의 self._shadow_data
-        주석 참고)."""
-        sd = self._shadow_data
-        for name, value in self._virtual_qpos.items():
-            sd.qpos[self._arm_qposadr[name]] = value
-        mujoco.mj_forward(self.model, sd)
-        ee_pos = sd.xpos[self._right_ee_body_id]
-        R = sd.xmat[self._right_ee_body_id].reshape(3, 3)
-        peg_tip = ee_pos + R @ _PEG_LOCAL_OFFSET + R @ np.array([0, 0, -0.04])
-        mujoco.mj_jac(self.model, sd, self._jacp, self._jacr, peg_tip, self._right_ee_body_id)
-        return peg_tip, self._jacp
-
-    def _advance_virtual(self, delta_pos_world: np.ndarray) -> None:
-        """가상 상태를 delta_pos_world만큼 전진시킨다(resolved-rate). 결과는
-        self._virtual_qpos에 그대로 반영된다 -- step()이 이 값을 ctrl로 쓴다.
-
-        7-DOF라 3개(xyz) 목표를 만족하고도 여유(널스페이스) 자유도가
-        4개 남는다. 실측해보니 이 널스페이스가 감쇠 없이 방치되면 관절
-        속도가 0.4~0.8rad/s로 "제자리 회전"(self-motion)해버리고(수백
-        스텝 동안 거의 일정한 방향으로 돌다가 어느 순간 방향이 확 바뀜 --
-        진동이 아니라 표류), 그게 peg tip 자체는 목표를 (Jacobian
-        정의상) 여전히 만족시키면서도 hole과의 xy 정렬을 최대 7cm까지
-        깨뜨렸다(VX300s는 6-DOF/3목표라 널스페이스가 3차원뿐이고 이
-        문제가 안 드러났던 것으로 보임 -- 확실친 않음, OpenArm 쪽만
-        실측 확인했다). 표준적인 해법(2차 목표를 널스페이스에 투영)을
-        썼다: N = I - J^+J로 널스페이스에 투영한 "home 자세로 되돌아가려는"
-        보조 속도를 더한다. _NULLSPACE_GAIN=0.05로 실측 확인(그 이상은
-        딱히 개선 없었고 낮추면 표류가 다시 나타남, __main__ 결과 참고).
-
-        관절 한계 회피 -- 1차 시도(폐기): computed-torque 전환
-        (_TORQUE_OMEGA_N 주석 참고) 후에도 admittance 루프를 4000스텝
-        돌리면 이전과 거의 똑같은 패턴(2000스텝까지 34~48mm, 그 뒤
-        4000스텝에 273mm)으로 발산했다. 관절 fraction을 스텝별로
-        찍어보니 openarm_right_joint1이 하한(range 0%)에 눌어붙고 그대로
-        있었다. 처음엔 최종 dq에 "한계 근접 시 그 방향 성분을 선형으로
-        줄이는" 항을 사후 적용했는데, xy 명령 없이 순수 -Z 명령만 줘서
-        격리 테스트해보니(admittance 없이도 같은 발산이 재현됨을 먼저
-        확인) 이 사후 조정 자체가 누출의 원인이었다: null-space를
-        꺼봐도(_NULLSPACE_GAIN=0) 발산이 그대로였고, 반대로 이 사후
-        조정만 꺼보니(관절이 진짜 하드 리밋에 부딪힐 때까지는) 누출이
-        거의 사라졌다 -- 즉 "한계 근처에서 dq를 사후에 줄이는" 접근
-        자체가 J@dq_actual != delta_pos_world를 만들어서 그 차이가
-        그대로 peg tip의 원치 않는 xy 속도로 새는 것이었다(하드 클립도
-        같은 종류의 사후 조정이라 똑같이 샌다).
-
-        2차 시도(현재 채택): 사후에 dq를 자르는 대신, 한계에 아주
-        가깝고(_LIMIT_FREEZE_MARGIN 이내) **이번 스텝의 미정정
-        (unconstrained) 풀이가 그 방향으로 더 미는** 관절만 Jacobian에서
-        그 열을 아예 0으로 만들고 다시 풀어서(그 관절은 "이번 스텝엔
-        없는 자유도"로 취급) 나머지 관절들이 J^+ 재계산을 통해 자연스럽게
-        그 몫을 대신 맡게 한다 -- 이러면 (수정된) J@dq=delta_pos_world
-        관계가 계속 성립해서 사후 clip류의 누출이 구조적으로 없다.
-        한계에서 멀어지는 방향(그 관절을 다시 살릴 수 있는 방향)은
-        얼리지 않는다."""
-        _, jacp = self._virtual_peg_tip_and_jac()
-
-        def _solve(J: np.ndarray) -> np.ndarray:
-            jjt = J @ J.T + _JAC_DAMPING * np.eye(3)
-            return J.T @ np.linalg.inv(jjt)
-
-        # 1단계: 미정정(unconstrained) 풀이로 "이번 스텝에 한계 쪽으로 더
-        # 밀릴" 관절을 찾는다.
-        jacp_pinv0 = _solve(jacp)
-        dq_task0 = jacp_pinv0 @ delta_pos_world
-        jacp_frozen = jacp.copy()
-        frozen_dofs = []
-        for name in _ARM_JOINTS:
-            dof = self._arm_dofadr[name]
-            lo, hi = self.model.jnt_range[self.model.joint(name).id]
-            frac = (self._virtual_qpos[name] - lo) / (hi - lo)
-            if (frac < _LIMIT_FREEZE_MARGIN and dq_task0[dof] < 0.0) or (
-                frac > 1.0 - _LIMIT_FREEZE_MARGIN and dq_task0[dof] > 0.0
-            ):
-                jacp_frozen[:, dof] = 0.0
-                frozen_dofs.append(dof)
-
-        # 2단계: 얼린 관절을 뺀 Jacobian으로 다시 풀어서 나머지 관절이
-        # 대신하게 한다 -- 이러면 (수정된) J@dq=delta_pos_world 관계가
-        # 계속 성립해서 사후 clip류의 xy 누출이 구조적으로 없다.
-        jacp_pinv = _solve(jacp_frozen)
-        dq_task = jacp_pinv @ delta_pos_world
-
-        nv = self.model.nv
-        null_proj = np.eye(nv) - jacp_pinv @ jacp_frozen
-        dq_null = np.zeros(nv)
-        for name in _ARM_JOINTS:
-            dof = self._arm_dofadr[name]
-            dq_null[dof] = _NULLSPACE_GAIN * (_HOME_QPOS[name] - self._virtual_qpos[name])
-        dq = dq_task + null_proj @ dq_null
-        for dof in frozen_dofs:
-            dq[dof] = 0.0
-
-        for name in _ARM_JOINTS:
-            dof = self._arm_dofadr[name]
-            lo, hi = self.model.jnt_range[self.model.joint(name).id]
-            self._virtual_qpos[name] = float(np.clip(self._virtual_qpos[name] + dq[dof], lo, hi))
-
-    def _sync_peg_to_arm_fk(self) -> None:
-        """peg free body의 qpos를 지금 오른팔 ee pose로부터 FK로 직접
-        계산해서 덮어쓴다 (mj_forward만으로는 weld로 연결된 자유 바디가
-        안 움직이므로 -- 이 프로젝트에서 반복 확인한 패턴, 파일 상단
-        docstring 참고). reset()의 반복 IK 중에만 쓴다(실제 접촉 물리가
-        시작되는 step()에서는 절대 안 씀 -- 그때부터는 진짜 시뮬레이션이
-        peg 위치를 결정해야 함)."""
-        ee_pos = self.data.xpos[self._right_ee_body_id]
-        ee_quat = self.data.xquat[self._right_ee_body_id]
-        R = self.data.xmat[self._right_ee_body_id].reshape(3, 3)
-        peg_pos = ee_pos + R @ _PEG_LOCAL_OFFSET
-        qadr = self._peg_qposadr
-        self.data.qpos[qadr : qadr + 3] = peg_pos
-        self.data.qpos[qadr + 3 : qadr + 7] = ee_quat
-
-    def _solve_initial_pose(self, target_pos_world: np.ndarray) -> None:
-        for name, value in _HOME_QPOS.items():
-            self.data.qpos[self._arm_qposadr[name]] = value
-        mujoco.mj_forward(self.model, self.data)
-        self._sync_peg_to_arm_fk()
-        mujoco.mj_forward(self.model, self.data)
-
-        for _ in range(_IK_MAX_ITERS):
-            current = self.data.site_xpos[self._peg_tip_site_id]
-            err = target_pos_world - current
-            if np.linalg.norm(err) < 1e-5:
-                break
-            dq = self._jac_solve(err * _IK_STEP_SCALE)
-            for name in _ARM_JOINTS:
-                dof = self._arm_dofadr[name]
-                qadr = self._arm_qposadr[name]
-                lo, hi = self.model.jnt_range[self.model.joint(name).id]
-                self.data.qpos[qadr] = np.clip(self.data.qpos[qadr] + dq[dof], lo, hi)
-            mujoco.mj_forward(self.model, self.data)
-            self._sync_peg_to_arm_fk()
-            mujoco.mj_forward(self.model, self.data)
-        # pos_right_j*(무력화됨)에 ctrl을 맞출 필요가 없다 -- 오른팔은
-        # torque_right_j*로 구동되고, 그 토크는 step()이 매 스텝 새로
-        # 계산한다(reset() 직후 첫 step() 호출에서 바로 올바른 값이 들어감).
-
     def reset(self, scene_config: dict[str, Any]) -> float:
         mujoco.mj_resetData(self.model, self.data)
 
@@ -819,15 +584,14 @@ class BimanualPegInHoleOpenArmSim:
 
         outer_half = self._apply_clearance(scene_config["clearance_m"])
 
-        # 왼팔(고정) + hole_socket: home 키프레임 값 그대로 복사.
-        for name, value in _LEFT_ARM_HOME_QPOS.items():
-            self.data.qpos[self._left_arm_qposadr[name]] = value
-            self.data.ctrl[self._left_arm_actuator_ids[name]] = value
-        self.data.qpos[self._left_finger_qposadr] = _LEFT_GRIPPER_GRASP_CTRL
-        self.data.qpos[self._left_finger2_qposadr] = _LEFT_GRIPPER_GRASP_CTRL
-        self.data.ctrl[self._left_gripper_actuator_id] = _LEFT_GRIPPER_GRASP_CTRL
-        qadr = self._hole_qposadr
-        self.data.qpos[qadr : qadr + 7] = self._hole_home_qpos
+        # 왼팔(고정) + hole_socket: home 키프레임 값 그대로 복사 (base의
+        # reset_left_arm_fixed_hold가 왼팔 qpos/ctrl + 그리퍼 + 쥔 물체 qpos를
+        # 한 번에 설정 -- 기존 로직과 동일, sim/openarm_bimanual_base.py 참고).
+        self.reset_left_arm_fixed_hold(
+            _LEFT_GRIPPER_GRASP_CTRL,
+            left_held_free_joint="hole_free",
+            left_held_home_qpos=self._hole_home_qpos,
+        )
         mujoco.mj_forward(self.model, self.data)
 
         hole_center = self.data.site_xpos[self._hole_site_id].copy()
@@ -844,14 +608,12 @@ class BimanualPegInHoleOpenArmSim:
                 hole_center[2] + _HOVER_GAP_M,
             ]
         )
-        self._solve_initial_pose(target_pos)
+        self.solve_right_initial_pose(target_pos, lambda: self.data.site_xpos[self._peg_tip_site_id])
         # step()의 resolved-rate 계획은 이 시점부터 실제 상태가 아니라 이
-        # 값에서 이어간다(위 __init__의 self._virtual_qpos 주석 참고).
-        self._virtual_qpos = {name: float(self.data.qpos[self._arm_qposadr[name]]) for name in _ARM_JOINTS}
+        # 값에서 이어간다(base __init__의 self._virtual_qpos 주석 참고).
+        self.capture_virtual_qpos_from_data()
 
-        self.data.qpos[self._right_finger_qposadr] = _RIGHT_GRIPPER_GRASP_CTRL
-        self.data.qpos[self._right_finger2_qposadr] = _RIGHT_GRIPPER_GRASP_CTRL
-        self.data.ctrl[self._gripper_actuator_id] = _RIGHT_GRIPPER_GRASP_CTRL
+        self.set_right_gripper(_RIGHT_GRIPPER_GRASP_CTRL)
 
         mujoco.mj_forward(self.model, self.data)
         return outer_half
@@ -864,7 +626,7 @@ class BimanualPegInHoleOpenArmSim:
 
     def get_ee_pose(self) -> np.ndarray:
         pos = self.data.site_xpos[self._peg_tip_site_id]
-        joint7 = self.data.qpos[self._arm_qposadr["openarm_right_joint7"]]
+        joint7 = self.data.qpos[self._right_arm_qposadr["openarm_right_joint7"]]
         return np.array([pos[0], pos[1], pos[2], joint7])
 
     def get_peg_tip_pos(self) -> np.ndarray:
@@ -873,61 +635,8 @@ class BimanualPegInHoleOpenArmSim:
     def get_hole_center_pos(self) -> np.ndarray:
         return self.data.site_xpos[self._hole_site_id].copy()
 
-    def get_left_ee_pos(self) -> np.ndarray:
-        """왼팔(hole_socket을 쥔 채 이 태스크 내내 고정) EE 위치. 실제로는
-        거의 안 움직이지만(강화 게인으로 고정, assets 파일 docstring "3. 왼팔도
-        능동 제어가 필요해서..." 참고), sim/peg_in_hole_openarm_env.py가 이걸
-        매 스텝 기록해서 right_arm과 길이가 같은 left_arm_traj를 만든다(5단계
-        role classifier 학습용 스키마 일관성, 그 파일 모듈 docstring 참고)."""
-        return self.data.xpos[self._left_ee_body_id].copy()
-
-    def step(self, delta_pos_world: np.ndarray) -> None:
-        """가상(순수 기구학) 상태를 delta_pos_world만큼 전진시키고, 그 결과를
-        목표(q_des)로 삼아 오른팔에 역동역학(computed-torque) 토크를 넣는다
-        (위 __init__/​_advance_virtual 주석 참고, 실제 상태를 다시 읽어 다음
-        계획에 반영하지 않는다 -- 그게 드리프트의 원인이었다).
-
-        관절별 독립 PD(pos_right_j*)에서 이 방식으로 바꾼 이유는
-        _TORQUE_OMEGA_N 주석 참고 -- 관절 kp/kv와 admittance 게인 둘 다
-        재탐색해도 cost가 거의 안 움직이는 평평한 landscape였어서, 게인이
-        아니라 "관절이 서로 결합된 채로 독립 PD를 쓰는" 구조 자체가
-        한계였다고 보고 바꿨다. (1차 시도 -- home 자세에서 한 번만 잰
-        관절별 고정 Kp/Kd -- 는 실측으로 폐기했다: 처음 2000스텝은
-        괜찮다가 팔이 home에서 멀어지면서 그 자세의 실제 관성이 한 번
-        잰 값과 달라져 과소감쇠로 발산했다, _TORQUE_OMEGA_N 주석 참고.)
-
-        가속도 공간에서 목표를 정하고(qacc_cmd, 관절마다 같은 omega_n/
-        zeta) 그 순간의 mj_fullM 7x7 부분행렬을 곱해 토크로 바꾼다:
-            qacc_cmd_i = omega_n^2*(q_des_i - q_i) - 2*zeta*omega_n*qvel_i
-            tau = M(q)_rr @ qacc_cmd + (qfrc_bias_r - qfrc_passive_r)
-
-        qfrc_bias - qfrc_passive는 Coriolis/원심력 항만 남긴다 -- 중력은
-        이미 body_gravcomp(위 __init__ 참고)가 qfrc_passive로 상쇄하고
-        있어서, qfrc_bias(중력+Coriolis+원심력을 전부 포함)를 그대로 더하면
-        중력을 두 번 상쇄하게 된다(실측으로 확인: qvel=0일 때 qfrc_bias와
-        qfrc_passive가 정확히 같았다 -- 즉 그 차이는 항상 속도 항뿐).
-        가속도 feedforward(목표 궤적 자체의 q̈_des)는 안 넣는다 --
-        resolved-rate 계획이 가속도 궤적을 안 주기 때문에, 이건 완전한
-        computed-torque가 아니라 "매 스텝 새로 잰 M(q)로 결합/관성을
-        상쇄한 뒤의 PD"에 가깝다."""
-        self._advance_virtual(delta_pos_world)
-        mujoco.mj_forward(self.model, self.data)  # 이번 스텝 시작 상태로 M(q)/qfrc_bias/qfrc_passive 갱신
-        M = np.zeros((self.model.nv, self.model.nv))
-        mujoco.mj_fullM(self.model, self.data, M)
-        M_rr = M[np.ix_(self._arm_dofs, self._arm_dofs)]
-        qacc_cmd = np.empty(len(_ARM_JOINTS))
-        bias = np.empty(len(_ARM_JOINTS))
-        for i, name in enumerate(_ARM_JOINTS):
-            dof = self._arm_dofadr[name]
-            qpos = self.data.qpos[self._arm_qposadr[name]]
-            qvel = self.data.qvel[dof]
-            q_des = self._virtual_qpos[name]
-            qacc_cmd[i] = _TORQUE_OMEGA_N**2 * (q_des - qpos) - 2.0 * _TORQUE_ZETA * _TORQUE_OMEGA_N * qvel
-            bias[i] = self.data.qfrc_bias[dof] - self.data.qfrc_passive[dof]
-        tau = M_rr @ qacc_cmd + bias
-        for i, name in enumerate(_ARM_JOINTS):
-            self.data.ctrl[self._torque_actuator_ids[name]] = tau[i]
-        mujoco.mj_step(self.model, self.data, nstep=N_SUBSTEPS)
+    # get_left_ee_pos()/step()은 sim/openarm_bimanual_base.py:OpenArmBimanualBase에서
+    # 그대로 상속한다(동작 동일 -- tests/test_regression_peg_in_hole_openarm_base.py로 확인).
 
 
 def run_episode(gains: dict[str, float], scene_config: dict[str, Any] | None = None) -> dict[str, Any]:
