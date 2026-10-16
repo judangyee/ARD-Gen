@@ -36,3 +36,29 @@ insert:
   completion:
     type: depth_above_target_held
     hold_steps: 20  # sim/peg_in_hole_bimanual_openarm_sim.py의 _SUCCESS_HOLD_STEPS와 동일
+
+# 후속 작업("timeout 진단 -> 실패 유형 재정의", PIPELINE.md 참고) -- 새
+# 기본 실패 유형(F1a/F1b/F2/F3/timeout, classify_failure_by_subtask())
+# 마다 기본 복구를 다르게 매핑한다. decision_logic.load_task_graph()는
+# 이 키를 모르므로 무시한다(ARD-Gen 쪽 generate_closed_loop_episodes.py/
+# diagnose_timeout_boundaries.py가 직접 읽는 전용 필드 -- align/insert의
+# max_steps/completion과 같은 패턴). `legacy_failure_rule=True`면 이
+# 맵을 안 쓰고 예전처럼 전부 R2다(ARD-Gen 전용 단순화 로컬 규칙, ARD-VLA
+# 의 DecisionLogic은 자기 자신의 failure_type_to_recovery로 매핑하므로
+# 이 맵과 무관하다).
+#
+# 근거(아래 "완료 보고"의 유형별 복구 성공률 실측, N>=20):
+# - F1a(정렬 미수렴/진동 발산) -> R2: 컨트롤러가 나쁜 상태(엉뚱한 자세·
+#   속도)에 갇혀 못 빠져나오는 쪽이라, 시작 자세로 완전히 되돌리는 R2가
+#   맞다(F2/F3가 기존에 R2로 복구되던 것과 같은 메커니즘).
+# - F1b(걸림/jam) -> R3: 물리적으로 끼인 경우라 R2(제자리로 되돌림)만
+#   으로는 같은 조건이면 또 끼일 수 있다 -- R3(게인 상승+재파지)로 더
+#   세게 밀어붙이는 쪽을 시도한다.
+# - timeout(예산 소진 직전, 거의 성공) -> R1: 상태를 안 건드리고 그
+#   자리에서 재시도만 하면 충분할 가능성이 높다(이미 거의 다 됐으므로).
+failure_recovery:
+  F1a: R2
+  F1b: R3
+  F2: R2
+  F3: R2
+  timeout: R1

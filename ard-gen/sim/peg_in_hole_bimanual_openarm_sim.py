@@ -428,6 +428,159 @@ def classify_failure(
     return "F1"  # 깊이 미달인데 위 어느 것도 아니면(걸림은 아니지만 정렬 실패) 기본값으로 F1
 
 
+# ---- 실패 유형 재정의 (후속 작업, PIPELINE.md "실패 유형 재정의" 절) ----
+#
+# 위 classify_failure()는 **판정 순간 한 시점**의 peg_touching_hole_wall만
+# 보고 F1/timeout을 가른다 -- 실측(pipeline/diagnose_timeout_boundaries.py,
+# A/B/C 350개 에피소드에서 timeout 경계 228개 수집)으로 이 한계를 직접
+# 확인했다: subtask_finished()가 non-natural(timeout)로 끝나는 경로는
+# "max_steps 예산 소진" 단 하나뿐이라, 위 함수의 `timed_out` 분기는 이
+# 지점에 도달하면 항상 True다 -- 그래서 F1 vs timeout 구분이 실질적으로
+# "그 찰나에 벽에 닿아있었나"라는, 실패의 근본 원인과 무관한 우연에
+# 좌우된다.
+#
+# 228개 사례를 서브태스크 구간 전체 시계열(xy오차/원시깊이/벽접촉비율/
+# 정체구간/진동률)로 유형화한 결과(아래 classify_failure_by_subtask()가
+# 쓰는 바로 그 특징/임계값):
+#   거의성공(예산 소진 직전)   27개 -- 깊이가 목표의 90%+ 도달
+#   걸림(jam)                 88개 -- 벽접촉비율>0.3 & 깊이가 목표의 80% 미달
+#     (narrow/very_narrow_clearance에 집중 -- 물리적으로 끼인 경우)
+#   정렬_미수렴               74개 -- 위 둘도 아니고 진동도 아님
+#     (wide_friction에 집중 -- 마찰이 재정렬 자체를 막음)
+#   진동_발산                 39개 -- xy오차/깊이가 부호를 반복해서 바꿈
+#     (bad_gains/xy_target_bias에 집중 -- 나쁜 게인·편향된 목표가 전형적 원인)
+# "그냥_느림"(꾸준히 진행했지만 예산 부족) 후보는 실측에서 0건이라 이
+# 시뮬·그래프 설정에서는 사실상 안 나타난다(코드에는 분기를 남겨두되
+# timeout으로 합류시킴, 아래 참고).
+#
+# 복구 방법이 다른 것끼리만 유형을 나눈다(사용자 지시 "너무 잘게 나누지
+# 않는다") -- 걸림은 R3(게인 상승+재파지, 물리적으로 더 세게 밀어붙여야
+# 함)가 어울리고, 정렬_미수렴/진동_발산은 둘 다 "컨트롤러가 수렴 못 함"
+# 이라는 같은 근본 원인이라 R2(체크포인트 복귀 후 재실행)로 합친다
+# (F1a). 거의성공/그냥_느림은 "예산만 더 있으면 됐다"는 뜻이라 R1(그
+# 자리에서 재시도, 상태 유지)이 어울리므로 기존 "timeout" 라벨 그대로
+# 둔다(그래프 yaml의 복구 매핑은 tasks/peg_in_hole.graph.yaml 참고).
+# F2/F3 우선순위는 유지한다 -- 228개 사례 전부 classify_failure()가 이미
+# "F2/F3 아님"으로 걸러낸 뒤의 timeout 경계만 모은 것이라 이번 실측은
+# F2/F3 우선순위 자체를 재검증하지는 않았다(정직하게 기록).
+FAILURE_TYPES_V2 = ["F1a", "F1b", "F2", "F3", "timeout"]
+
+
+def _longest_stall_fraction(series: np.ndarray, eps: float) -> float:
+    """series가 eps 이내로만 변하는 가장 긴 연속 구간의 길이 비율(0~1)."""
+    if len(series) < 2:
+        return 0.0
+    best = cur = 1
+    for i in range(1, len(series)):
+        if abs(series[i] - series[i - 1]) <= eps:
+            cur += 1
+            best = max(best, cur)
+        else:
+            cur = 1
+    return best / len(series)
+
+
+def _count_local_extrema(series: np.ndarray) -> int:
+    """부호가 바뀌는 1차 차분 개수 -- 진동 정도."""
+    d = np.diff(series)
+    d = d[np.abs(d) > 1e-9]
+    if len(d) < 2:
+        return 0
+    signs = np.sign(d)
+    return int(np.sum(signs[1:] != signs[:-1]))
+
+
+def compute_subtask_features(
+    history: dict[str, Any], node: str, outer_half: float, target_depth: float
+) -> dict[str, Any]:
+    """서브태스크 구간(이번 attempt) 전체 시계열에서 classify_failure_by_
+    subtask()가 쓰는 특징을 계산한다. `history`는 {"dx","dy","raw_depth",
+    "wall_contact"}(각 리스트/배열, 그 attempt의 매 스텝) -- `PegInHole
+    ClosedLoopEnv`가 `execute()`마다 채워서 들고 있다가 판정 시점에 그대로
+    넘긴다. `pipeline/diagnose_timeout_boundaries.py`의 동명 분석과 같은
+    정의(이 함수로 교체·통합됐다)."""
+    dx = np.asarray(history["dx"], dtype=float)
+    dy = np.asarray(history["dy"], dtype=float)
+    raw_depth = np.asarray(history["raw_depth"], dtype=float)
+    wall = np.asarray(history["wall_contact"], dtype=bool)
+    n = max(len(dx), 1)
+    xy_err = np.hypot(dx, dy) if len(dx) else np.zeros(1)
+    if len(raw_depth) == 0:
+        raw_depth = np.zeros(1)
+    if len(wall) == 0:
+        wall = np.zeros(1, dtype=bool)
+
+    key_series = xy_err if node == "align" else raw_depth
+    eps = outer_half * 0.05 if node == "align" else target_depth * 0.05
+    n_extrema = _count_local_extrema(key_series)
+    return {
+        "node": node,
+        "n_steps": n,
+        "xy_err_start_mm": float(xy_err[0] * 1000),
+        "xy_err_end_mm": float(xy_err[-1] * 1000),
+        "depth_max_mm": float(raw_depth.max() * 1000),
+        "depth_end_mm": float(raw_depth[-1] * 1000),
+        "wall_contact_ratio": float(wall.mean()),
+        "stall_len_frac": _longest_stall_fraction(key_series, eps),
+        "oscillation_rate": n_extrema / n,
+    }
+
+
+def classify_f1_or_timeout(feats: dict[str, Any], outer_half: float, target_depth: float) -> str:
+    """F2/F3/success가 전부 아닌 경우에만 호출 -- 위 "실패 유형 재정의"
+    절의 실측 임계값 그대로(F1a=정렬_미수렴+진동_발산, F1b=걸림,
+    timeout=거의성공/그냥_느림 -- "그냥_느림"은 실측 0건이라 timeout으로
+    합류)."""
+    outer_half_mm = outer_half * 1000
+    target_depth_mm = target_depth * 1000
+    if feats["node"] == "align":
+        if feats["xy_err_end_mm"] <= outer_half_mm:
+            return "timeout"  # 거의성공(align, hold 직전 예산소진)
+        if feats["oscillation_rate"] > 0.2:
+            return "F1a"  # 진동_발산
+        if feats["xy_err_end_mm"] < feats["xy_err_start_mm"] * 0.7:
+            return "timeout"  # 그냥_느림(실측 0건, 분기는 남겨둠)
+        return "F1a"  # 정렬_미수렴
+    # insert
+    if feats["depth_max_mm"] >= target_depth_mm * 0.9:
+        return "timeout"  # 거의성공(insert, hold 직전 예산소진)
+    if feats["wall_contact_ratio"] > 0.3 and feats["depth_max_mm"] < target_depth_mm * 0.8:
+        return "F1b"  # 걸림(jam)
+    if feats["oscillation_rate"] > 0.2:
+        return "F1a"  # 진동_발산
+    if feats["depth_end_mm"] > feats["depth_max_mm"] * 0.5 and feats["stall_len_frac"] < 0.5:
+        return "timeout"  # 그냥_느림(실측 0건, 분기는 남겨둠)
+    return "F1a"  # 정렬_미수렴(insert 중 재정렬 실패)
+
+
+def classify_failure_by_subtask(
+    node: str,
+    history: dict[str, Any],
+    success: bool,
+    right_weld_active: bool,
+    right_cumulative_shift_m: float,
+    left_weld_active: bool,
+    left_cumulative_shift_m: float,
+    outer_half: float,
+    target_depth: float,
+    slip_distance_threshold_m: float = 0.003,
+) -> str:
+    """새 기본 실패 유형 규칙(사용자 지시 "서브태스크별 규칙으로... 판정
+    순간 한 시점이 아니라 구간 전체 시계열") -- F2 > F3 > F1a/F1b/timeout >
+    none 우선순위는 classify_failure()(legacy)와 동일하게 유지한다(위
+    "실패 유형 재정의" 절 참고, F2/F3 자체의 판정 로직은 안 바꿨다 --
+    weld 상태는 순간값이 아니라 그 attempt 동안의 최종 누적량이라 원래도
+    시점 문제가 없었다)."""
+    if success:
+        return "none"
+    if (not right_weld_active) or right_cumulative_shift_m > slip_distance_threshold_m:
+        return "F2"
+    if (not left_weld_active) or left_cumulative_shift_m > slip_distance_threshold_m:
+        return "F3"
+    feats = compute_subtask_features(history, node, outer_half, target_depth)
+    return classify_f1_or_timeout(feats, outer_half, target_depth)
+
+
 # reset()에서 IK 목표의 z를 잡는 값 -- peg anchor 재조정 3차(위
 # _PEG_LOCAL_OFFSET 참고) 전에는 "home 팔 자세에서 peg tip이 자연히
 # 가 있는 z"(home_tip_z)를 그대로 썼는데, anchor가 손목에서 멀어지면서

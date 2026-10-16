@@ -56,12 +56,21 @@ from sim.peg_in_hole_bimanual_openarm_sim import (
     align_progress,
     align_subtask_finished,
     classify_failure,
+    classify_failure_by_subtask,
     controller_step,
     insert_progress,
     insert_subtask_finished,
 )
 
-FAILURE_TYPES = ["F1", "F2", "F3", "timeout"]
+# 후속 작업("timeout 진단 -> 실패 유형 규칙 재정의", PIPELINE.md 참고)으로
+# 기본값이 5개짜리 새 체계(F1a/F1b로 F1을 복구 방법 기준으로 나누고,
+# 판정도 순간 스냅샷이 아니라 구간 시계열 기반)로 바뀌었다 -- 이전 4개
+# 체계는 FAILURE_TYPES_LEGACY로 그대로 남겨뒀다(사용자 지시 "기본값
+# 변경은 허용하되 이전 규칙을 legacy로 남긴다", `legacy_failure_rule=True`
+# 로 선택). ARD-VLA의 judge_num_failure_types와 맞출 최종 인덱스 순서는
+# PIPELINE.md "실패 유형 재정의" 절 표에 고정해뒀다.
+FAILURE_TYPES_LEGACY = ["F1", "F2", "F3", "timeout"]
+FAILURE_TYPES = ["F1a", "F1b", "F2", "F3", "timeout"]
 
 
 class PegInHoleClosedLoopEnv:
@@ -82,6 +91,7 @@ class PegInHoleClosedLoopEnv:
         gains: dict[str, float],
         render: bool = False,
         r3_kp_boost: float = 1.3,
+        legacy_failure_rule: bool = False,
     ):
         self.sim = sim
         self.graph = graph
@@ -89,6 +99,7 @@ class PegInHoleClosedLoopEnv:
         self.gains = dict(gains)
         self._render = render
         self._r3_kp_boost = r3_kp_boost
+        self._legacy_failure_rule = legacy_failure_rule
 
         self.current_node: str | None = None
         self._step_in_subtask = 0
@@ -102,6 +113,12 @@ class PegInHoleClosedLoopEnv:
         self._stopped = False
         self._subtask_done_naturally = False
         self._subtask_timed_out = False
+        # 새 실패 유형 규칙(기본, legacy_failure_rule=False)이 쓰는 이번
+        # attempt의 구간 시계열 -- set_subtask()마다 리셋, execute()마다
+        # 한 스텝씩 쌓인다(sim/peg_in_hole_bimanual_openarm_sim.py의
+        # compute_subtask_features()가 쓰는 바로 그 형식). legacy
+        # 모드에서도 채우기는 하지만(비용이 작아서 끄지 않음) 안 읽는다.
+        self._history: dict[str, list] = {"dx": [], "dy": [], "raw_depth": [], "wall_contact": []}
 
         self._renderer = None
         if render:
@@ -132,6 +149,7 @@ class PegInHoleClosedLoopEnv:
         self._hold_count = 0
         self._subtask_done_naturally = False
         self._subtask_timed_out = False
+        self._history = {"dx": [], "dy": [], "raw_depth": [], "wall_contact": []}
         self._checkpoint = (
             self.sim.data.qpos.copy(),
             self.sim.data.qvel.copy(),
@@ -157,6 +175,16 @@ class PegInHoleClosedLoopEnv:
             return
         self.sim.step(np.asarray(action, dtype=float))
         self._step_in_subtask += 1
+        # 새 실패 유형 규칙용 구간 시계열 기록(위 __init__의 self._history
+        # docstring 참고) -- 비용이 작아서 legacy 모드에서도 채운다(안
+        # 읽히기만 할 뿐).
+        dx, dy = self.current_dx_dy()
+        hole_center = self.sim.get_hole_center_pos()
+        peg_tip = self.sim.get_peg_tip_pos()
+        self._history["dx"].append(dx)
+        self._history["dy"].append(dy)
+        self._history["raw_depth"].append(float(hole_center[2] - peg_tip[2]))
+        self._history["wall_contact"].append(bool(self.sim.is_peg_touching_hole_wall()))
 
     def subtask_finished(self) -> bool:
         """true를 돌려줄 때 그 이유(자연 완료 vs 스텝 예산 초과)를
@@ -239,6 +267,7 @@ class PegInHoleClosedLoopEnv:
             mujoco.mj_forward(self.sim.model, self.sim.data)
             self._step_in_subtask = 0
             self._hold_count = 0
+            self._history = {"dx": [], "dy": [], "raw_depth": [], "wall_contact": []}
             return
         if recovery_id == "R3":
             self.gains = {k: v * self._r3_kp_boost for k, v in self.gains.items()}
@@ -253,6 +282,7 @@ class PegInHoleClosedLoopEnv:
                 self.sim._left_slip.regrasp(self.sim.model, self.sim.data)
             self._step_in_subtask = 0
             self._hold_count = 0
+            self._history = {"dx": [], "dy": [], "raw_depth": [], "wall_contact": []}
             return
         if recovery_id == "R4":
             self.safe_stop()
@@ -314,20 +344,35 @@ class ScriptedOraclePolicy:
         left_active = True if left_state is None else left_state.weld_active
         left_shift = 0.0 if left_state is None else float(np.linalg.norm(left_state.cumulative_shift_pos))
 
-        label = classify_failure(
-            success=env._subtask_done_naturally,
-            right_weld_active=right_active,
-            right_cumulative_shift_m=right_shift,
-            left_weld_active=left_active,
-            left_cumulative_shift_m=left_shift,
-            peg_touching_hole_wall=env.sim.is_peg_touching_hole_wall(),
-            raw_depth=env.current_depth(),
-            target_depth=env._target_depth,
-            timed_out=env._subtask_timed_out,
-        )
-        failure_probs = [0.0] * len(FAILURE_TYPES)
-        if label in FAILURE_TYPES:
-            failure_probs[FAILURE_TYPES.index(label)] = 1.0
+        if env._legacy_failure_rule:
+            label = classify_failure(
+                success=env._subtask_done_naturally,
+                right_weld_active=right_active,
+                right_cumulative_shift_m=right_shift,
+                left_weld_active=left_active,
+                left_cumulative_shift_m=left_shift,
+                peg_touching_hole_wall=env.sim.is_peg_touching_hole_wall(),
+                raw_depth=env.current_depth(),
+                target_depth=env._target_depth,
+                timed_out=env._subtask_timed_out,
+            )
+            active_types = FAILURE_TYPES_LEGACY
+        else:
+            label = classify_failure_by_subtask(
+                node=env.current_node,
+                history=env._history,
+                success=env._subtask_done_naturally,
+                right_weld_active=right_active,
+                right_cumulative_shift_m=right_shift,
+                left_weld_active=left_active,
+                left_cumulative_shift_m=left_shift,
+                outer_half=env._outer_half,
+                target_depth=env._target_depth,
+            )
+            active_types = FAILURE_TYPES
+        failure_probs = [0.0] * len(active_types)
+        if label in active_types:
+            failure_probs[active_types.index(label)] = 1.0
 
         decisions = {
             "success_prob": success_prob,

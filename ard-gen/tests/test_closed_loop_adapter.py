@@ -38,11 +38,13 @@ def _load_graph() -> dict:
         return yaml.safe_load(f)
 
 
-def _make_env(grasp_slip_config=None) -> PegInHoleClosedLoopEnv:
+def _make_env(grasp_slip_config=None, legacy_failure_rule: bool = False) -> PegInHoleClosedLoopEnv:
     sim = BimanualPegInHoleOpenArmSim(grasp_slip_config=grasp_slip_config)
     cfg = _default_scene_config()
     cfg["peg_init_offset_xy"] = (0.014, 0.0)
-    return PegInHoleClosedLoopEnv(sim, _load_graph(), cfg, dict(_GAINS), render=False)
+    return PegInHoleClosedLoopEnv(
+        sim, _load_graph(), cfg, dict(_GAINS), render=False, legacy_failure_rule=legacy_failure_rule
+    )
 
 
 def test_protocol_smoke_no_ard_vla() -> None:
@@ -138,6 +140,16 @@ def test_ard_vla_integration() -> None:
     # injected 교란(15mm, 스텝 80)은 그립만 고쳐서는(R3) 600스텝 예산 안에
     # 복구가 안 됐다(물리적으로 흐트러진 위치/속도까지 R2가 되돌려야
     # 복구됨). 그래서 이 통합 테스트는 F1/F2/F3를 전부 R2로 매핑한다.
+    #
+    # 이 인덱스 매핑(0=F1,1=F2,2=F3,3=timeout)은 FAILURE_TYPES_LEGACY
+    # 순서를 그대로 가정한다 -- 후속 작업("실패 유형 재정의")으로 기본
+    # FAILURE_TYPES가 5개(F1a/F1b/F2/F3/timeout)로 바뀌었지만, 이 통합
+    # 테스트는 실제 ARD-VLA decision_logic.py(이 리포에는 없음, 환경변수로
+    # 외부 체크아웃 경로만 받음)와의 좌표를 이 세션에서 다시 맞출 수
+    # 없어서(ARD-VLA 쪽 judge_num_failure_types 조정은 범위 밖) 의도적으로
+    # `legacy_failure_rule=True`로 예전 4개 체계를 그대로 쓴다 -- 새 기본
+    # 규칙 자체는 `tests/test_subtask_graph.py`의 `classify_failure_by_
+    # subtask` 전용 테스트가 검증한다.
     decision_logic = DecisionLogic(
         task_graph=graph,
         option_vocab=["R1", "R2", "R3", "R4"],
@@ -150,7 +162,7 @@ def test_ard_vla_integration() -> None:
     slip_cfg = GraspSlipConfig(
         right=ArmSlipConfig(mode="injected", injected_at_step=80, injected_offset_local=np.array([0.015, 0.0, 0.0]))
     )
-    env = _make_env(slip_cfg)
+    env = _make_env(slip_cfg, legacy_failure_rule=True)
     env.reset_episode("align")
     policy = ScriptedOraclePolicy(env)
 

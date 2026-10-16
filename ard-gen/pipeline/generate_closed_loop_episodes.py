@@ -391,15 +391,20 @@ def run_one_episode(
     render: bool = False,
     visual_disturbance: VisualDisturbanceConfig | None = None,
     disturbance_config: dict | None = None,
+    legacy_failure_rule: bool = False,
 ) -> dict[str, Any]:
     """`render=True`면 후속 작업 "작업 1" 방법 A대로 서브태스크 경계
-    (+ R2 복구 점프)마다 top_cam/wide_cam을 생성 중에 바로 캡처한다 --
+    (+ 복구 점프)마다 top_cam/wide_cam을 생성 중에 바로 캡처한다 --
     `render_closed_loop_boundaries.py`처럼 별도 프로세스에서 액션을
     재생하지 않으므로 복구 점프도 그대로 커버된다. `visual_disturbance`는
     C세트에서만 뜻이 있다(사용자 지시 "C-only"). `disturbance_config`는
     B세트에서만 뜻이 있다(작업 2(2-2) 재조정, `sample_scene_and_
     disturbance_B()` docstring 참고 -- None이면 5단계 원래 동작과
-    bit-identical)."""
+    bit-identical). `legacy_failure_rule=True`면 실패 유형 판정
+    (classify_failure, F1/F2/F3/timeout 4종)과 복구(항상 R2)가 후속
+    작업("실패 유형 재정의") 이전과 완전히 동일하다 -- 기본값(False)은
+    새 유형(F1a/F1b/F2/F3/timeout)과 유형별 복구(tasks/peg_in_hole.
+    graph.yaml의 failure_recovery)를 쓴다."""
     if render:
         assert_no_torch_imported()
     disturbance: dict[str, Any] | None = None
@@ -428,7 +433,8 @@ def run_one_episode(
         if visual_applied:
             disturbance = dict(disturbance or {"type": "none"})
             disturbance["visual"] = visual_applied
-    env = PegInHoleClosedLoopEnv(sim, _load_graph(), cfg, gains, render=render)
+    graph = _load_graph()
+    env = PegInHoleClosedLoopEnv(sim, graph, cfg, gains, render=render, legacy_failure_rule=legacy_failure_rule)
     env.reset_episode("align")
     policy = ScriptedOraclePolicy(env)
 
@@ -531,13 +537,20 @@ def run_one_episode(
                 if render:
                     pending_start_frames = end_frames  # 점프 없음 -- 끝난 순간 그대로가 다음 경계의 시작.
             elif attempt < _MAX_ATTEMPTS_PER_NODE:
-                boundary["recovery_applied"] = "R2"
+                if legacy_failure_rule:
+                    recovery_id = "R2"  # 이전 동작 그대로(유형 무관, 항상 R2).
+                else:
+                    recovery_id = graph.get("failure_recovery", {}).get(boundary["failure_type"], "R2")
+                boundary["recovery_applied"] = recovery_id
                 subtask_boundaries.append(boundary)
-                env.run_recovery("R2")
+                env.run_recovery(recovery_id)
                 recovery_happened = True
                 attempt += 1
                 if render:
-                    pending_start_frames = env.render_frames()  # 체크포인트로 점프했으니 다시 찍어야 함.
+                    # R1(그 자리에서 재시도)은 물리 상태를 안 바꾸므로 end_frames를
+                    # 그대로 재사용한다(점프 없음과 같은 경우) -- R2/R3는 물리
+                    # 상태가 바뀌므로 다시 찍어야 한다.
+                    pending_start_frames = end_frames if recovery_id == "R1" else env.render_frames()
             else:
                 subtask_boundaries.append(boundary)
                 success_final = False
@@ -605,6 +618,11 @@ def main() -> None:
         help="B세트에서만 뜻이 있음(작업 2 2-2 재조정) -- YAML 경로(기본 pipeline/disturbance_config.yaml 형식). "
         "안 주면 5단계 원래 동작(균등분포, injected 고정 15mm)과 bit-identical.",
     )
+    parser.add_argument(
+        "--legacy-failure-rule", action="store_true",
+        help="후속 작업('실패 유형 재정의') 이전의 판정(F1/F2/F3/timeout, 판정 순간 단일 시점)·복구(항상 R2)로 되돌린다. "
+        "기본(안 주면)은 새 유형(F1a/F1b/F2/F3/timeout, 구간 시계열)과 유형별 복구(graph yaml의 failure_recovery).",
+    )
     args = parser.parse_args()
 
     if args.render:
@@ -622,6 +640,7 @@ def main() -> None:
         episode = run_one_episode(
             rng, args.split, episode_seed, k_branch=(args.k_branch and i == 0),
             render=args.render, visual_disturbance=visual_cfg, disturbance_config=disturbance_cfg,
+            legacy_failure_rule=args.legacy_failure_rule,
         )
         n_success += int(episode["success"])
         total_boundaries += len(episode["subtask_boundaries"])
