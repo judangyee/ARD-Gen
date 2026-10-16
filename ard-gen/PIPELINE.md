@@ -1292,3 +1292,122 @@ run_closed_loop`를 import해서(둘 다 `third_party/lerobot/src`에 있고,
 있다. 기존 회귀 스위트 전부 여전히 통과(새 getter/모듈 추가뿐, 기존
 경로 비영향).
 
+### 5단계 — 통합 데이터 스키마 + 소규모 생성 ✅ 완료
+
+**스키마 확장** (`pipeline/episode_io.py`, 기존 키 전부 유지): 선택적
+최상위 필드 4개 추가 -- `closed_loop`(매 스텝: `joint_16dof`(T+1,16),
+`progress`(T,), `subtask_id`(T,), `grasp_right`/`grasp_left`(각각
+`weld_active`/`weld_force`/`slipped`/`cumulative_shift`, 2단계
+GraspState 그대로)), `subtask_boundaries`(서브태스크 경계마다
+node/start_step/end_step/finished_naturally/failure_type/attempt/
+recovery_applied를 담은 JSON 리스트, scene_config와 같은 직렬화
+패턴), `disturbance`(교란 종류·강도 JSON), `candidate_chunks`(K-분기
+결과, 기본 안 씀). `split`/`loop_mode`는 이미 있던 "스칼라 자동 저장"
+경로(`extra_*`)를 그대로 탄다. 경계 이미지는 `add_boundary_images()`
+(신규)로 **나중에** 별도 npz 키(`boundary_step{N}_{camera}`)로
+덧붙인다 -- dict 추상화를 안 타고 npz를 직접 읽고 써서 큰 이미지
+배열의 불필요한 복사를 줄였다. `tests/test_closed_loop_data_schema.py`
+의 `test_old_style_episode_unaffected`로 옛 에피소드 왕복이 그대로인지
+확인.
+
+**16 DoF 레이아웃**: `[왼팔 7, 왼팔 그리퍼 1, 오른팔 7, 오른팔 그리퍼 1]`
+(사용자 지시 "앞 8=왼팔, 뒤 8=오른팔" 그대로) -- 4단계에서 추가한
+`joint_observation_16dof()`가 애초에 반대 순서(오른팔 먼저)였던 걸
+이번 단계에서 바로잡았다(그 getter를 그때까지 아무도 안 썼어서 안전하게
+고칠 수 있었다).
+
+**생성 스크립트** (`pipeline/generate_closed_loop_episodes.py`, 신규):
+4단계의 `PegInHoleClosedLoopEnv`/`ScriptedOraclePolicy`를 그대로
+재사용한다(ARD-VLA의 `DecisionLogic`은 안 씀 -- 이 생성 스크립트는
+외부 저장소 없이 독립적으로 돌아야 해서, 실패 감지 시 R2 복구를
+최대 1회만 시도하는 아주 단순한 로컬 규칙으로 폐루프를 만든다).
+`--k-branch`로 K-분기(기본 꺼짐, 비용 큼)도 지원 -- 서브태스크 시작
+체크포인트에서 Kp_xy를 바꾼 K=4개 분기를 짧게(50스텝) 돌려 진행도만
+기록하고 복귀한다.
+
+**교란 세트 B** (학습용, 매 에피소드 7종 중 하나 무작위): action_noise/
+xy_target_bias/bad_gains(CMA-ES x0)/narrow_clearance/high_friction/
+injected_slip_F2/injected_slip_F3. 씬 자체는 명목 분포(오프셋 반경
+0.009-0.014m, ±45°) 그대로 두고 교란만 다르게 해서, "교란이 실패
+원인"이라는 라벨이 깨끗하게 나오게 했다.
+
+**교란 세트 C** (테스트 전용, 학습에 안 씀 -- B보다 넓은 범위 3종):
+wide_friction(1.8-2.2, B의 high_friction 1.0-1.8 바로 위)/
+very_narrow_clearance(0.0012-0.0018m, B의 narrow_clearance
+0.0012-0.0020m과 겹치지만 더 좁은 쪽 포함)/action_delay(5스텝).
+**조명·카메라 자세 변화는 렌더링 단계 항목이라 이 물리 생성
+스크립트에는 없다** -- Part 1의 시각 랜덤화 코드는 `ard-gen-v2`
+브랜치에 있고 이번 작업은 그 브랜치를 병합하지 않는다(0단계 브랜치
+관계 절 참고). 실측(N=20 단일 유형 격리 테스트): friction 1.8-2.2는
+1/20, 1.4-1.8(B와 겹침, 참고용)은 7/20, clearance 0.0010-0.0014는
+0/20, 0.0014-0.0018은 1/20 성공 -- **C는 의도적으로 거의 항상 실패하는
+난이도다**(B 바로 위 경계를 썼더니 이 태스크 동역학이 그 근방에서
+급격히 어려워졌다, 실측). 소규모 생성(N=16) 결과 7/16(43.8%) 성공 --
+action_delay(5스텝) 비중이 높아서 wide_friction/very_narrow_clearance
+단독 실측보다는 성공률이 높게 나왔다.
+
+**교란 세트 A** (자연 실패, 0단계 7번 기준선 대비): 교란 없이 오프셋
+반경만 0.009-0.020m(명목 0.009-0.014m보다 넓힘)·각도를 ±45°에서 전체
+원(±180°)으로 넓혔다. 실측(명목 clearance/friction 그대로, 알려진
+좋은 게인, N=60/시드777 그리고 N=100/시드999 두 번 재확인): **개루프
+실패율 정확히 20.0%**(10-30% 목표 범위 안쪽) -- clearance를 같이
+좁히거나 friction도 같이 올리면 실패율이 50%를 넘어서(A2/A3 실측,
+각각 50.0%/53.3%) 목표 범위를 벗어났다, 그래서 오프셋 반경만 넓히는
+걸로 확정. 소규모 생성(N=20, 다른 시드) 결과 17/20(85.0%) 성공 --
+20% 목표와 거의 일치(15.0% 실패, 작은 N의 샘플링 변동 안쪽).
+
+**분할**: `split` 필드는 `train`/`val`/`test_B`/`test_C`/`test_A` 중
+하나(사용자 지시 그대로) -- B만 80:20으로 train/val을 더 나누고, C/A는
+전부 test_*(C는 "학습에 안 씀", A는 자연 실패라 애초에 평가용). 분할은
+에피소드(= 독립 시드) 단위라 같은 씬이 두 분할에 걸치는 일이 없다.
+
+**실제 생성 결과** (`data/closed_loop/{A,B,C}/`, `.gitignore`에
+`data/closed_loop/` 추가 -- 기존 `data/episodes`, `data/lerobot` 등과
+같은 컨벤션, 커밋 안 함):
+
+| 세트 | N | 분할 | 성공:실패 | loop_mode(open:closed) |
+|---|---|---|---|---|
+| A | 20 | test_A ×20 | 17:3 (85.0%) | 17:3 |
+| B | 24 | train ×18, val ×6 | 11:13 (45.8%) | 7:17 |
+| C | 16 | test_C ×16 | 7:9 (43.8%) | 7:9 |
+
+서브태스크 경계 전체(세 세트 합산)의 `failure_type` 분포: `none`
+94(성공), `timeout` 52, `F2` 1, `F3` 1 -- `injected_slip_F2`/`F3`를
+고른 에피소드가 적어서(무작위 7종 중 하나, N이 작음) F2/F3 표본이
+적다(소규모 생성의 한계로 그대로 기록 -- 더 많이 보려면 B의
+disturbance_type 샘플링에서 injected_slip_* 비중을 올리거나 N을
+늘리면 된다).
+
+**렌더링** (`pipeline/render_closed_loop_boundaries.py`, 신규, 별도
+프로세스/`MUJOCO_GL=osmesa`): 저장된 `right_arm.action`(매 스텝 실제
+실행된 행동, 노이즈/편향/지연까지 이미 반영됨)을 그대로 재생해서
+서브태스크 경계(시작/끝) 시점에 top_cam/wide_cam을 캡처한다 -- 제어
+로직을 다시 계산하지 않고 액션을 그대로 재실행하므로 결정론적으로
+똑같은 물리 경로가 나온다. **한계(정직하게 기록)**: R2 복구는 물리
+상태를 체크포인트로 되돌리는 불연속 점프인데 그 시점 qpos/qvel 자체는
+저장 용량 때문에 안 남겨둬서, 액션만 재생하는 이 방식으로는 복구가
+일어난(`loop_mode=="closed"`) 에피소드를 재현할 수 없다 -- 그래서 이
+스크립트는 `loop_mode=="open"`인 에피소드만 렌더링하고 나머지는 skip
+한다(로그로 명시). 실제 결과: A 17/20 렌더링(3개 skip), B 7/24(17개
+skip -- B는 injected_slip/narrow_clearance/bad_gains 등으로 closed
+비중이 높아서), C 7/16(9개 skip). 다음에 이어서 풀 사람에게: 체크포인트
+시점 qpos/qvel도 같이 저장하거나(용량이 커지는 트레이드오프),
+`subtask_boundaries`에 "jump_to_step" 필드를 추가해서 재생 스크립트가
+액션 재생 중간에 그 지점으로 다시 reset+재생하게 만들면 closed-loop
+에피소드도 풀린다.
+
+**실측으로 발견한 버그 하나 더(판정 한 박자 늦음, 4단계와 같은
+함정)**: 생성 스크립트 초안은 `subtask_finished()`로 서브태스크 종료를
+확인한 뒤 **그 직전에 받아둔(한 스텝 전 상태를 반영한) decisions**로
+`failure_type`을 기록했다 -- 그래서 align이 방금 자연 성공으로 끝났는데도
+`failure_type`이 "F1"로 잘못 찍혔다(실측으로 발견). ARD-VLA의
+`closed_loop.py` 모듈 docstring이 경고하는 것과 똑같은 함정이라서, 같은
+해법(경계를 감지한 **뒤에** 오라클을 한 번 더 불러 그 결과를 쓴다)으로
+고쳤다 -- 수정 후 재확인: 자연 성공 경계는 전부 `failure_type=="none"`.
+
+**새 테스트**: `tests/test_closed_loop_data_schema.py`(5개) -- 확장
+필드 왕복, 옛 스타일 에피소드 비영향, A/B/C 각각 소규모 생성 스키마
+확인, A세트 오프셋 반경이 실측 기록한 범위와 일치하는지(조용히 바뀌면
+10-30% 보증이 깨지므로), 렌더링이 open-loop에 이미지를 추가하고
+closed-loop을 skip하는지. 기존 회귀 스위트 전부 여전히 통과.
+

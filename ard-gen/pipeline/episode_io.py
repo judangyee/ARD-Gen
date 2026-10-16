@@ -69,6 +69,10 @@ import numpy as np
 
 _FIXED_TOP_LEVEL_KEYS = {
     "task", "right_arm", "left_arm", "scene_config", "success", "insertion_depth", "force_max", "language",
+    # ARD-VLA 폐루프 작업(5단계, PIPELINE.md "폐루프 데이터" 절 참고)이
+    # 추가한 선택적 필드 -- 전부 dict/list라 아래 "그 외 태스크별 스칼라
+    # 필드" auto-save 경로(스칼라만 받음)를 못 타므로 명시적으로 처리한다.
+    "closed_loop", "subtask_boundaries", "disturbance", "candidate_chunks",
 }
 
 
@@ -108,6 +112,41 @@ def save_episode(path: str, episode: dict[str, Any]) -> None:
         left = episode["left_arm"]
         kwargs["left_arm_traj"] = np.asarray(left["traj"], dtype=np.float32)
         kwargs["left_arm_role"] = np.array(left.get("role", "stabilizer"))
+    # ARD-VLA 폐루프(5단계) 확장 필드 -- 전부 선택적(없으면 기존 에피소드와
+    # 동일한 npz가 나온다, "기존 키는 유지" 지시 그대로). 모듈 docstring
+    # "폐루프 데이터 확장" 절 참고.
+    if episode.get("closed_loop") is not None:
+        cl = episode["closed_loop"]
+        kwargs["closed_loop_joint_16dof"] = np.asarray(cl["joint_16dof"], dtype=np.float32)
+        kwargs["closed_loop_progress"] = np.asarray(cl["progress"], dtype=np.float32)
+        kwargs["closed_loop_subtask_id"] = np.array(cl["subtask_id"])
+        for side in ("right", "left"):
+            grasp = cl.get(f"grasp_{side}")
+            if grasp is None:
+                continue
+            kwargs[f"closed_loop_grasp_{side}_weld_active"] = np.asarray(grasp["weld_active"], dtype=bool)
+            kwargs[f"closed_loop_grasp_{side}_weld_force"] = np.asarray(grasp["weld_force"], dtype=np.float32)
+            kwargs[f"closed_loop_grasp_{side}_slipped"] = np.asarray(grasp["slipped"], dtype=bool)
+            kwargs[f"closed_loop_grasp_{side}_cumulative_shift"] = np.asarray(
+                grasp["cumulative_shift"], dtype=np.float32
+            )
+    if episode.get("subtask_boundaries") is not None:
+        # [{"node":str,"start_step":int,"end_step":int,"finished_naturally":bool,
+        #   "failure_type":str,"attempt":int,"recovery_applied":str|None}, ...]
+        # -- scene_config와 같은 패턴(작은 구조라 JSON으로). 경계 이미지는
+        # 여기 안 들어간다 -- pipeline/render_closed_loop_boundaries.py가
+        # 같은 시드로 재생해서 "boundary_{i}_{camera}_{start|end}" 키로
+        # 나중에 따로 덧붙인다(별도 프로세스, osmesa 필요 -- 모듈 docstring
+        # "별도 렌더링" 절 참고).
+        kwargs["subtask_boundaries"] = np.array(json.dumps(episode["subtask_boundaries"]))
+    if episode.get("disturbance") is not None:
+        kwargs["disturbance"] = np.array(json.dumps(episode["disturbance"]))
+    if episode.get("candidate_chunks") is not None:
+        # 실행 전 검증 학습용 -- 같은 서브태스크 시작 상태에서 K개 변형으로
+        # 분기 실행한 결과 요약 리스트(subtask_boundaries와 같은 JSON
+        # 패턴). 기본 꺼짐(비용이 커서) -- 사용자 지시 "비용이 크면
+        # 플래그로 끄고" 그대로.
+        kwargs["candidate_chunks"] = np.array(json.dumps(episode["candidate_chunks"]))
     for key, value in episode.items():
         if key in _FIXED_TOP_LEVEL_KEYS or value is None:
             continue
@@ -147,12 +186,50 @@ def load_episode(path: str) -> dict[str, Any]:
             "traj": data["left_arm_traj"],
             "role": str(data["left_arm_role"]) if "left_arm_role" in data.files else "stabilizer",
         }
+    if "closed_loop_joint_16dof" in data.files:
+        cl: dict[str, Any] = {
+            "joint_16dof": data["closed_loop_joint_16dof"],
+            "progress": data["closed_loop_progress"],
+            "subtask_id": data["closed_loop_subtask_id"],
+        }
+        for side in ("right", "left"):
+            if f"closed_loop_grasp_{side}_weld_active" not in data.files:
+                continue
+            cl[f"grasp_{side}"] = {
+                "weld_active": data[f"closed_loop_grasp_{side}_weld_active"],
+                "weld_force": data[f"closed_loop_grasp_{side}_weld_force"],
+                "slipped": data[f"closed_loop_grasp_{side}_slipped"],
+                "cumulative_shift": data[f"closed_loop_grasp_{side}_cumulative_shift"],
+            }
+        episode["closed_loop"] = cl
+    if "subtask_boundaries" in data.files:
+        episode["subtask_boundaries"] = json.loads(str(data["subtask_boundaries"]))
+    if "disturbance" in data.files:
+        episode["disturbance"] = json.loads(str(data["disturbance"]))
+    if "candidate_chunks" in data.files:
+        episode["candidate_chunks"] = json.loads(str(data["candidate_chunks"]))
+    episode["boundary_images"] = {
+        key: data[key] for key in data.files if key.startswith("boundary_")
+    }
     for key in data.files:
         if not key.startswith("extra_"):
             continue
         value = data[key]
         episode[key[len("extra_"):]] = value.item() if value.dtype.kind != "U" else str(value)
     return episode
+
+
+def add_boundary_images(path: str, images: dict[str, np.ndarray]) -> None:
+    """subtask_boundaries 각 항목의 시작/끝 시점 이미지를 기존 npz 파일에
+    덧붙인다. `pipeline/render_closed_loop_boundaries.py`가 저장된
+    (seed, scene_config, gains)로 같은 에피소드를 다시 재생해서(osmesa
+    필요, 별도 프로세스) 캡처한 뒤 부른다 -- load_episode()/save_episode()
+    의 dict 추상화를 타지 않고 npz 키를 직접 조작한다(이미지가 커서
+    불필요한 복사를 줄이려고). 키 형식: "boundary_{i}_{camera}_
+    {start|end}"(예: "boundary_0_top_cam_start")."""
+    data = dict(np.load(path, allow_pickle=False))
+    data.update(images)
+    np.savez(path, **data)
 
 
 def save_language(path: str, language: dict[str, Any]) -> None:

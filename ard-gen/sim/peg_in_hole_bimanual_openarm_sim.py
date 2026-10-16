@@ -1057,14 +1057,14 @@ class BimanualPegInHoleOpenArmSim:
         return float(self.data.qpos[self._left_finger_qposadr])
 
     def joint_observation_16dof(self) -> np.ndarray:
-        """[오른팔 7, 오른팔 그리퍼 1, 왼팔 7, 왼팔 그리퍼 1] = 16차원.
-        액션 스페이스가 아니라 observation 전용 -- 이 태스크의 CMA-ES
-        게인 탐색은 delta-position 액션 + 내부 resolved-rate IK에 의존
-        하므로, 액션 자체를 절대 관절각으로 바꾸지 않는다(사용자 지시
-        "렌더링/학습 코드와 섞지 않는다"와는 별개로, 애초에 이번 작업
-        범위가 액션 스페이스를 바꾸는 게 아님)."""
+        """[왼팔 7, 왼팔 그리퍼 1, 오른팔 7, 오른팔 그리퍼 1] = 16차원
+        (5단계 사용자 지시 "앞 8=왼팔 7관절+그리퍼, 뒤 8=오른팔" 순서
+        그대로). 액션 스페이스가 아니라 observation 전용 -- 이 태스크의
+        CMA-ES 게인 탐색은 delta-position 액션 + 내부 resolved-rate
+        IK에 의존하므로, 액션 자체를 절대 관절각으로 바꾸지 않는다(이번
+        작업 범위가 액션 스페이스를 바꾸는 게 아님)."""
         return np.concatenate(
-            [self.right_arm_qpos(), [self.right_gripper_qpos()], self.left_arm_qpos(), [self.left_gripper_qpos()]]
+            [self.left_arm_qpos(), [self.left_gripper_qpos()], self.right_arm_qpos(), [self.right_gripper_qpos()]]
         ).astype(np.float32)
 
     def get_left_ee_pos(self) -> np.ndarray:
