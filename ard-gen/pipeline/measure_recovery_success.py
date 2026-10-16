@@ -22,7 +22,7 @@ import numpy as np
 from pipeline.generate_closed_loop_episodes import load_disturbance_config, run_one_episode
 
 _MIN_N_PER_TYPE = 20
-_MAX_EPISODES_PER_SPLIT = 400
+_EPISODES_PER_SPLIT = {"A": 150, "B": 250, "C": 150}  # 실측: timeout류가 드물어 고정 예산으로 돈다(조건부 조기종료 대신)
 
 
 def main() -> None:
@@ -31,8 +31,8 @@ def main() -> None:
     # (failure_type, recovery_applied) -> [n_total, n_recovered(=다음 attempt가 자연완료)]
     stats: dict[tuple[str, str], list[int]] = {}
 
-    for split in ("A", "B", "C"):
-        for i in range(_MAX_EPISODES_PER_SPLIT):
+    for split, n_episodes in _EPISODES_PER_SPLIT.items():
+        for i in range(n_episodes):
             ep = run_one_episode(
                 rng, split, seed=i, disturbance_config=disturbance_cfg if split == "B" else None
             )
@@ -48,9 +48,7 @@ def main() -> None:
                     nxt = boundaries[idx + 1]
                     if nxt["node"] == b["node"] and nxt["attempt"] == b["attempt"] + 1 and nxt["finished_naturally"]:
                         stats[key][1] += 1
-            if min((v[0] for v in stats.values()), default=0) >= _MIN_N_PER_TYPE and len(stats) >= 4:
-                break
-        print(f"[{split}] {i + 1}개 에피소드 실행")
+        print(f"[{split}] {n_episodes}개 에피소드 실행")
 
     print(f"\n유형별 복구 성공률 (목표 N>={_MIN_N_PER_TYPE}):")
     print(f"{'failure_type':<14}{'recovery':<10}{'N':>6}{'recovered':>11}{'rate':>8}")
