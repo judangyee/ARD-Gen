@@ -1,0 +1,52 @@
+# 작업 2(교란 분포 재조정, 2-2) 설정 -- B세트 교란 타입 가중치 + injected
+# 미끄러짐(F2/F3)의 연속분포 범위. 전부 숫자 상수라 코드를 안 고치고 이
+# 파일만 바꿔서 다시 조정할 수 있다(사용자 지시 "코드 상수로 남기지
+# 않고 YAML/CLI로 뺀다"). 이 파일을 안 주면(`--disturbance-config` 생략)
+# generate_closed_loop_episodes.py는 5단계 때의 원래 동작(균등분포,
+# injected는 고정 15mm/step randint(60,150))을 그대로 쓴다(새 기능 기본
+# 꺼짐 규칙 -- PIPELINE.md "작업2" 절의 "껐을 때 bit-identical" 테스트가
+# 이걸 확인한다).
+#
+# 아래 기본값은 pipeline/sweep_injected_slip.py(2-1 스윕, PIPELINE.md
+# "작업2" 절의 결과 표) 실측 기준으로 골랐다:
+# - F2(오른팔, Actuator): 진행도 비율 0.6(= timing_effective) 근방에서
+#   방향/크기 대부분이 16.7~96.7% 실패 -- 효과가 뚜렷해서 가중치를 다른
+#   타입(각 1.0)보다 높였다.
+# - F3(왼팔, Stabilizer): -x 방향으로만 유의미하게 실패(+x는 거의 항상
+#   성공) -- 30mm면 방향 상관없이(실제로는 각도 전체를 샘플하므로 절반
+#   가량의 방향에서만) 100% 실패. F2보다 더 큰 magnitude가 필요해서
+#   범위를 더 넓게 잡았다.
+# - timing_effective/timing_hard_negative 절대 스텝 범위는 2-1 스윕의
+#   dry-run 실측(B 난이도 씬에서 insert_start~10, insert_len 중앙값 146,
+#   범위 121-152 -- 씬마다 꽤 일정함)을 "진행도 비율 0.45-0.85"(효과적) /
+#   "0.05-0.3"(거의 안 실패 -- hard negative용)로 환산한 값이다.
+
+b_weights:
+  action_noise: 1.0
+  xy_target_bias: 1.0
+  bad_gains: 1.0
+  narrow_clearance: 1.0
+  high_friction: 1.0
+  injected_slip_F2: 9.0
+  injected_slip_F3: 10.0
+
+injected:
+  magnitude_mm:
+    F2: [10, 30]
+    F3: [20, 35]
+  # 방향: F2는 2-1 스윕에서 +x/-x 둘 다 꽤 효과적이라 전체 원에서 고르게
+  # 뽑는다. F3는 -x(180도)에서만 뚜렷이 실패하므로(+x는 거의 항상
+  # 성공) 그 방향 주변으로 몰아 뽑고, off_target_prob만큼만 전체 원에서
+  # 뽑아 "방향이 안 맞아서 실패 안 함" 자연 발생 hard negative를 공급한다.
+  direction:
+    F2: {mode: full_circle}
+    F3: {mode: concentrated, center_deg: 180, spread_deg: 40, off_target_prob: 0.3}
+  timing_effective_step_range: [75, 135]
+  timing_hard_negative_step_range: [15, 55]
+  # "미끄러짐은 났지만 에피소드는 성공"(hard negative) 비율을 올리려고
+  # 타이밍 샘플 중 이 비율만큼은 일부러 "거의 안 실패하는" 구간에서
+  # 뽑는다(사용자 지시 "이 비율을 설정으로 남기고 실제 달성 비율도
+  # 기록"). 실제 달성 비율은 PIPELINE.md에 기록(타이밍 구간만으로는
+  # hard negative가 보장되지 않는다 -- 방향/크기도 영향을 주므로 실측값은
+  # 이 설정값과 다를 수 있다).
+  hard_negative_prob: 0.25

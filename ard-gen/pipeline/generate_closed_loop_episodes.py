@@ -122,6 +122,7 @@ _B_DISTURBANCE_TYPES = [
     "injected_slip_F2", "injected_slip_F3",
 ]
 _C_DISTURBANCE_TYPES = ["wide_friction", "very_narrow_clearance", "action_delay"]
+_DEFAULT_DISTURBANCE_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "disturbance_config.yaml")
 
 
 def _load_graph() -> dict:
@@ -148,14 +149,45 @@ def sample_scene_A(rng: np.random.Generator) -> dict:
     return _base_scene(rng, (-np.pi, np.pi), (0.009, 0.020))
 
 
-def sample_scene_and_disturbance_B(rng: np.random.Generator) -> tuple[dict, dict, dict, GraspSlipConfig | None]:
+def load_disturbance_config(path: str | None = None) -> dict:
+    """작업 2(2-2 재조정) 설정 파일(기본 `pipeline/disturbance_config.yaml`)
+    을 읽는다 -- `sample_scene_and_disturbance_B()`에 `disturbance_config`
+    로 넘기면 거기 적힌 가중치/연속분포로 샘플링한다. 안 넘기면(None)
+    그 함수는 5단계 때의 원래 동작(균등분포 dtype, injected는 고정
+    15mm/step randint(60,150))을 그대로 쓴다(새 기능 기본 꺼짐 규칙)."""
+    with open(path or _DEFAULT_DISTURBANCE_CONFIG_PATH) as f:
+        return yaml.safe_load(f)
+
+
+def sample_scene_and_disturbance_B(
+    rng: np.random.Generator, disturbance_config: dict | None = None
+) -> tuple[dict, dict, dict, GraspSlipConfig | None]:
     """(scene_config, disturbance_meta, gains, grasp_slip_config)를 돌려준다.
-    disturbance_meta는 그대로 episode["disturbance"]에 저장된다."""
-    dtype = str(rng.choice(_B_DISTURBANCE_TYPES))
+    disturbance_meta는 그대로 episode["disturbance"]에 저장된다.
+
+    `disturbance_config`가 None이면(기본) 5단계 때의 원래 동작과
+    **bit-identical**하다(새 기능 기본 꺼짐 규칙, `test_disturbance_
+    config_off_is_bit_identical`이 이걸 확인). 값을 주면(보통
+    `load_disturbance_config()`로 읽은 `pipeline/disturbance_config.yaml`)
+    작업 2(2-2)의 가중치/연속분포 재조정이 적용된다 -- dtype을 균등이
+    아니라 `b_weights`로 뽑고, injected_slip_F2/F3의 magnitude/방향/
+    타이밍을 고정값이 아니라 `injected` 절의 범위에서 연속적으로
+    뽑는다(2-1 스윕 결과 기준으로 고른 범위, PIPELINE.md "작업2" 절
+    참고)."""
     cfg = _base_scene(rng, (-np.pi / 4, np.pi / 4), (0.009, 0.014))
     gains = dict(_NOMINAL_GAINS)
     grasp_slip_config = None
-    meta: dict[str, Any] = {"type": dtype}
+    meta: dict[str, Any] = {}
+
+    if disturbance_config is None:
+        dtype = str(rng.choice(_B_DISTURBANCE_TYPES))
+    else:
+        weights = disturbance_config["b_weights"]
+        types = list(weights.keys())
+        probs = np.asarray([weights[t] for t in types], dtype=float)
+        probs /= probs.sum()
+        dtype = str(rng.choice(types, p=probs))
+    meta["type"] = dtype
 
     if dtype == "narrow_clearance":
         cfg["clearance_m"] = float(rng.uniform(0.0012, 0.0020))
@@ -173,9 +205,37 @@ def sample_scene_and_disturbance_B(rng: np.random.Generator) -> tuple[dict, dict
         meta["bias_m"] = bias.tolist()
     elif dtype in ("injected_slip_F2", "injected_slip_F3"):
         side = "right" if dtype.endswith("F2") else "left"
-        inj_step = int(rng.integers(60, 150))
-        sign = float(rng.choice([-1.0, 1.0]))
-        offset = np.array([0.015 * sign, 0.0, 0.0])
+        if disturbance_config is None:
+            inj_step = int(rng.integers(60, 150))
+            sign = float(rng.choice([-1.0, 1.0]))
+            offset = np.array([0.015 * sign, 0.0, 0.0])
+        else:
+            inj_cfg = disturbance_config["injected"]
+            label = "F2" if side == "right" else "F3"
+            mag_low, mag_high = inj_cfg["magnitude_mm"][label]
+            magnitude_m = float(rng.uniform(mag_low, mag_high)) / 1000.0
+            dir_cfg = inj_cfg["direction"][label]
+            if dir_cfg["mode"] == "full_circle":
+                angle = float(rng.uniform(0.0, 2.0 * np.pi))
+            else:
+                # "concentrated" -- 2-1 스윕에서 실패가 뚜렷한 방향(F3의
+                # -x) 쪽으로 각도를 몰아 뽑되, off_target_prob만큼은
+                # 일부러 전체 원에서 뽑는다(방향 자체가 자연스러운 hard
+                # negative 공급원이기도 함 -- +x는 거의 항상 성공).
+                if rng.random() < dir_cfg["off_target_prob"]:
+                    angle = float(rng.uniform(0.0, 2.0 * np.pi))
+                else:
+                    center = np.deg2rad(dir_cfg["center_deg"])
+                    spread = np.deg2rad(dir_cfg["spread_deg"])
+                    angle = float(center + rng.uniform(-spread, spread))
+            offset = np.array([magnitude_m * np.cos(angle), magnitude_m * np.sin(angle), 0.0])
+            hard_negative = bool(rng.random() < inj_cfg["hard_negative_prob"])
+            step_low, step_high = (
+                inj_cfg["timing_hard_negative_step_range"] if hard_negative
+                else inj_cfg["timing_effective_step_range"]
+            )
+            inj_step = int(rng.integers(step_low, step_high))
+            meta["hard_negative_timing"] = hard_negative
         arm_cfg = ArmSlipConfig(mode="injected", injected_at_step=inj_step, injected_offset_local=offset)
         grasp_slip_config = GraspSlipConfig(right=arm_cfg) if side == "right" else GraspSlipConfig(left=arm_cfg)
         meta.update({"side": side, "step": inj_step, "offset_m": offset.tolist()})
@@ -330,12 +390,16 @@ def run_one_episode(
     k_branch_horizon: int = 50,
     render: bool = False,
     visual_disturbance: VisualDisturbanceConfig | None = None,
+    disturbance_config: dict | None = None,
 ) -> dict[str, Any]:
     """`render=True`면 후속 작업 "작업 1" 방법 A대로 서브태스크 경계
     (+ R2 복구 점프)마다 top_cam/wide_cam을 생성 중에 바로 캡처한다 --
     `render_closed_loop_boundaries.py`처럼 별도 프로세스에서 액션을
     재생하지 않으므로 복구 점프도 그대로 커버된다. `visual_disturbance`는
-    C세트에서만 뜻이 있다(사용자 지시 "C-only")."""
+    C세트에서만 뜻이 있다(사용자 지시 "C-only"). `disturbance_config`는
+    B세트에서만 뜻이 있다(작업 2(2-2) 재조정, `sample_scene_and_
+    disturbance_B()` docstring 참고 -- None이면 5단계 원래 동작과
+    bit-identical)."""
     if render:
         assert_no_torch_imported()
     disturbance: dict[str, Any] | None = None
@@ -348,7 +412,7 @@ def run_one_episode(
     if split == "A":
         cfg = sample_scene_A(rng)
     elif split == "B":
-        cfg, disturbance, gains, grasp_slip_config = sample_scene_and_disturbance_B(rng)
+        cfg, disturbance, gains, grasp_slip_config = sample_scene_and_disturbance_B(rng, disturbance_config)
         if disturbance["type"] == "action_noise":
             action_noise_std = disturbance["std_m"]
         elif disturbance["type"] == "xy_target_bias":
@@ -536,11 +600,17 @@ def main() -> None:
         "--visual-disturbance", action="store_true",
         help="C세트에서만 뜻이 있음 -- 조명/카메라/색 렌더링 단계 시각 교란을 추가 적용(기본 꺼짐)",
     )
+    parser.add_argument(
+        "--disturbance-config", type=str, default=None,
+        help="B세트에서만 뜻이 있음(작업 2 2-2 재조정) -- YAML 경로(기본 pipeline/disturbance_config.yaml 형식). "
+        "안 주면 5단계 원래 동작(균등분포, injected 고정 15mm)과 bit-identical.",
+    )
     args = parser.parse_args()
 
     if args.render:
         assert_no_torch_imported()
     visual_cfg = VisualDisturbanceConfig(enabled=args.visual_disturbance) if args.split == "C" else None
+    disturbance_cfg = load_disturbance_config(args.disturbance_config) if args.disturbance_config is not None else None
 
     os.makedirs(args.out, exist_ok=True)
     rng = np.random.default_rng(args.seed)
@@ -551,7 +621,7 @@ def main() -> None:
         episode_seed = args.seed * 10_000 + i
         episode = run_one_episode(
             rng, args.split, episode_seed, k_branch=(args.k_branch and i == 0),
-            render=args.render, visual_disturbance=visual_cfg,
+            render=args.render, visual_disturbance=visual_cfg, disturbance_config=disturbance_cfg,
         )
         n_success += int(episode["success"])
         total_boundaries += len(episode["subtask_boundaries"])

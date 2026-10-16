@@ -37,8 +37,10 @@ from pipeline.generate_closed_loop_episodes import (
     VisualDisturbanceConfig,
     apply_visual_disturbance,
     assert_no_torch_imported,
+    load_disturbance_config,
     run_one_episode,
     sample_scene_A,
+    sample_scene_and_disturbance_B,
 )
 from pipeline.render_closed_loop_boundaries import render_episode_boundaries
 
@@ -341,6 +343,59 @@ def test_method_a_matches_old_replay_for_open_episode() -> None:
     assert max_abs_diff == 0, f"방법 A와 기존 재생이 같은 순간에 다른 이미지를 냈다(최대 차이={max_abs_diff})"
 
 
+def test_disturbance_config_off_is_bit_identical() -> None:
+    """작업 2(2-2) 검증 요구사항 그대로 -- `disturbance_config`를 안 주면
+    (기본) 5단계 때의 원래 B 샘플링과 완전히 동일해야 한다(새 기능 기본
+    꺼짐 규칙)."""
+    rng1 = np.random.default_rng(99)
+    rng2 = np.random.default_rng(99)
+    for i in range(20):
+        ep1 = run_one_episode(rng1, "B", seed=i)
+        ep2 = run_one_episode(rng2, "B", seed=i, disturbance_config=None)
+        assert ep1["disturbance"] == ep2["disturbance"]
+        assert np.array_equal(ep1["right_arm"]["action"], ep2["right_arm"]["action"])
+        assert ep1["success"] == ep2["success"]
+    print("[OK] disturbance_config=None: B 샘플링이 5단계 원래 동작과 bit-identical (20개)")
+
+
+def test_disturbance_config_follows_configured_weights() -> None:
+    """고정 시드로 샘플 통계를 내서 `b_weights`/injected 범위를 실제로
+    따르는지 확인한다(작업 2 검증 요구사항 "샘플러가 지정된 가중치/분포를
+    따르는지 테스트, 고정 시드, 샘플 통계")."""
+    cfg = load_disturbance_config()
+    rng = np.random.default_rng(123)
+    n = 4000
+    type_counts: dict[str, int] = {}
+    f2_mags = []
+    f2_steps = []
+    for _ in range(n):
+        _, meta, _, _ = sample_scene_and_disturbance_B(rng, cfg)
+        type_counts[meta["type"]] = type_counts.get(meta["type"], 0) + 1
+        if meta["type"] == "injected_slip_F2":
+            mag_mm = float(np.linalg.norm(meta["offset_m"])) * 1000.0
+            f2_mags.append(mag_mm)
+            f2_steps.append(meta["step"])
+
+    weights = cfg["b_weights"]
+    total_w = sum(weights.values())
+    for dtype, w in weights.items():
+        expected_frac = w / total_w
+        actual_frac = type_counts.get(dtype, 0) / n
+        assert abs(actual_frac - expected_frac) < 0.03, (
+            f"{dtype}: 기대 비율={expected_frac:.3f}, 실측={actual_frac:.3f} (샘플 {n}개)"
+        )
+    print(f"[OK] b_weights 샘플 비율이 설정값과 3%p 이내로 일치 (N={n}): {type_counts}")
+
+    mag_low, mag_high = cfg["injected"]["magnitude_mm"]["F2"]
+    assert len(f2_mags) > 50, "F2 샘플이 너무 적어서 범위 검증이 의미 없다"
+    assert min(f2_mags) >= mag_low - 1e-6 and max(f2_mags) <= mag_high + 1e-6
+    eff_low, eff_high = cfg["injected"]["timing_effective_step_range"]
+    hn_low, hn_high = cfg["injected"]["timing_hard_negative_step_range"]
+    assert all(hn_low <= s < eff_high for s in f2_steps), "injected_at_step이 설정된 두 구간 밖으로 나갔다"
+    print(f"[OK] injected_slip_F2 magnitude(mm) 범위 [{min(f2_mags):.1f},{max(f2_mags):.1f}] "
+          f"설정[{mag_low},{mag_high}] 안, step 범위도 설정된 두 구간([{hn_low},{hn_high}]/[{eff_low},{eff_high}]) 안")
+
+
 if __name__ == "__main__":
     test_episode_io_round_trip_with_new_fields()
     test_old_style_episode_unaffected()
@@ -351,5 +406,7 @@ if __name__ == "__main__":
     test_method_a_inline_render_covers_closed_loop_episodes()
     test_visual_disturbance_only_affects_c()
     test_method_a_matches_old_replay_for_open_episode()
+    test_disturbance_config_off_is_bit_identical()
+    test_disturbance_config_follows_configured_weights()
     print()
     print("ALL CLOSED LOOP DATA SCHEMA TESTS PASSED")
