@@ -48,8 +48,23 @@ from sim.peg_in_hole_bimanual_openarm_sim import BimanualPegInHoleOpenArmSim
 _SLIP_THRESHOLD_M = 0.003  # classify_failure()의 slip_distance_threshold_m 기본값과 동일.
 _MAX_ITERATIONS = 2000
 
-_MAGNITUDES_MM = [10, 15, 20, 30]
-_DIRECTIONS = {"+x": np.array([1.0, 0.0, 0.0]), "-x": np.array([-1.0, 0.0, 0.0])}
+_MAGNITUDES_MM = [10, 20, 30]
+# 후속 작업("y방향 포함 8방향 스윕") -- 처음 스윕(PIPELINE.md "작업2"
+# 절에 기록된 결과)은 ±x만 봤다. F3가 -x에서만 실패한다는 결과가
+# "ee 로컬 x축이라는 우연한 축"에 특수한 건지, 아니면 일반적으로
+# "hole 쪽에서 밀어내는 방향"처럼 의미가 있는 축인지 구분하려고
+# ±y·대각선 4방향을 추가해 총 8방향으로 넓혔다(사용자 지시,
+# 크기는 10/20/30mm로 줄임 -- 실행시간 기록).
+_DIRECTIONS = {
+    "+x": np.array([1.0, 0.0, 0.0]),
+    "-x": np.array([-1.0, 0.0, 0.0]),
+    "+y": np.array([0.0, 1.0, 0.0]),
+    "-y": np.array([0.0, -1.0, 0.0]),
+    "+x+y": np.array([0.70710678, 0.70710678, 0.0]),
+    "+x-y": np.array([0.70710678, -0.70710678, 0.0]),
+    "-x+y": np.array([-0.70710678, 0.70710678, 0.0]),
+    "-x-y": np.array([-0.70710678, -0.70710678, 0.0]),
+}
 _TIMING_FRACTIONS = [0.3, 0.6]
 _ARMS = ["right", "left"]  # right=peg_grasp(Actuator,F2), left=hole_grasp(Stabilizer,F3)
 _N_SCENES = 30
@@ -67,7 +82,13 @@ def _run_episode(scene_config: dict, gains: dict, grasp_slip_config: GraspSlipCo
     흐려진다). `generate_closed_loop_episodes.run_one_episode()`의 단순
     버전."""
     sim = BimanualPegInHoleOpenArmSim(grasp_slip_config=grasp_slip_config)
-    env = PegInHoleClosedLoopEnv(sim, _load_graph(), scene_config, gains, render=False)
+    # legacy_failure_rule=True로 고정 -- 이 스윕의 표 열(F2%/F3%/timeout%/
+    # F1%/none%)이 처음 스윕(PIPELINE.md "작업2" 절) 때와 같은 의미를
+    # 유지해야 그 결과와 직접 비교할 수 있다. 작업2에서 어댑터 기본값이
+    # F1a/F1b/timeout(새 규칙)으로 바뀐 뒤 이 플래그 없이 돌리면 "F1" 라벨이
+    # 더는 안 나와서 표의 F1% 열이 항상 0으로 보이는 문제가 있었다(실측으로
+    # 발견, diagnose_timeout_boundaries.py와 같은 문제).
+    env = PegInHoleClosedLoopEnv(sim, _load_graph(), scene_config, gains, render=False, legacy_failure_rule=True)
     env.reset_episode("align")
     policy = ScriptedOraclePolicy(env)
 
@@ -113,6 +134,9 @@ def _run_episode(scene_config: dict, gains: dict, grasp_slip_config: GraspSlipCo
 
 
 def main() -> None:
+    import time
+
+    t_start = time.perf_counter()
     rng = np.random.default_rng(2024)
     scenes = [_sample_random_scene(rng) for _ in range(_N_SCENES)]
 
@@ -173,6 +197,13 @@ def main() -> None:
                         f"{verdict_counts['none']/n_valid*100:>6.1f}%  "
                         f"{row['slip_but_ok_rate']*100:>12.1f}%"
                     )
+    elapsed = time.perf_counter() - t_start
+    n_cells = len(rows)
+    n_runs = sum(row["n"] for row in rows) + _N_SCENES
+    print(
+        f"\n실행 시간: {elapsed:.1f}s 총 / {n_cells}칸 / 에피소드 {n_runs}개 "
+        f"({elapsed/max(n_runs,1):.3f}s/episode)"
+    )
     return rows
 
 
