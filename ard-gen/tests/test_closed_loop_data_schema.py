@@ -396,6 +396,43 @@ def test_disturbance_config_follows_configured_weights() -> None:
           f"설정[{mag_low},{mag_high}] 안, step 범위도 설정된 두 구간([{hn_low},{hn_high}]/[{eff_low},{eff_high}]) 안")
 
 
+def test_disturbance_config_f3_direction_follows_concentrated_spread() -> None:
+    """후속 작업("y방향 스윕") 검증 요구사항 -- F3의 방향 샘플러가
+    설정된 concentrated(center_deg=180, spread_deg=90) + off_target_prob
+    를 실제로 따르는지 고정 시드 샘플 통계로 확인한다."""
+    cfg = load_disturbance_config()
+    dir_cfg = cfg["injected"]["direction"]["F3"]
+    assert dir_cfg["mode"] == "concentrated"
+    center = dir_cfg["center_deg"]
+    spread = dir_cfg["spread_deg"]
+    off_target_prob = dir_cfg["off_target_prob"]
+
+    rng = np.random.default_rng(456)
+    n = 0
+    n_in_range = 0
+    angles_deg = []
+    while n < 3000:
+        _, meta, _, _ = sample_scene_and_disturbance_B(rng, cfg)
+        if meta["type"] != "injected_slip_F3":
+            continue
+        n += 1
+        dx, dy, _ = meta["offset_m"]
+        angle_deg = float(np.degrees(np.arctan2(dy, dx))) % 360.0
+        angles_deg.append(angle_deg)
+        lo, hi = (center - spread) % 360.0, (center + spread) % 360.0
+        in_range = (lo <= angle_deg <= hi) if lo < hi else (angle_deg >= lo or angle_deg <= hi)
+        if in_range:
+            n_in_range += 1
+    in_range_frac = n_in_range / n
+    # "concentrated" 구간에서 뽑힐 확률 = (1-off_target_prob) + off_target_prob*(2*spread/360)
+    # (off_target일 때도 전체 원에서 뽑으니 우연히 구간 안에 들어올 수 있음).
+    expected = (1 - off_target_prob) + off_target_prob * (2 * spread / 360.0)
+    assert abs(in_range_frac - expected) < 0.05, (
+        f"F3 방향이 설정된 concentrated 구간 안에 들어오는 비율={in_range_frac:.3f}, 기대={expected:.3f} (N={n})"
+    )
+    print(f"[OK] F3 방향 분포: concentrated(center={center},spread={spread}) 구간 비율 {in_range_frac:.3f} ~= 기대 {expected:.3f} (N={n})")
+
+
 if __name__ == "__main__":
     test_episode_io_round_trip_with_new_fields()
     test_old_style_episode_unaffected()
@@ -408,5 +445,6 @@ if __name__ == "__main__":
     test_method_a_matches_old_replay_for_open_episode()
     test_disturbance_config_off_is_bit_identical()
     test_disturbance_config_follows_configured_weights()
+    test_disturbance_config_f3_direction_follows_concentrated_spread()
     print()
     print("ALL CLOSED LOOP DATA SCHEMA TESTS PASSED")
