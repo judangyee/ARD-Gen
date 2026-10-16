@@ -216,6 +216,8 @@ from typing import Any
 import mujoco
 import numpy as np
 
+from sim.grasp_slip import GraspSlipConfig, GraspSlipTracker
+
 _DEFAULT_XML = os.path.join(os.path.dirname(__file__), "..", "assets", "peg_in_hole_bimanual_openarm.xml")
 
 N_SUBSTEPS = 5  # mj_step 호출당 substep 수 (timestep=0.002 -> 제어 주기 dt=0.01s)
@@ -538,7 +540,7 @@ def sample_scene_config(rng: np.random.Generator) -> dict[str, Any]:
 
 
 class BimanualPegInHoleOpenArmSim:
-    def __init__(self, xml_path: str | None = None):
+    def __init__(self, xml_path: str | None = None, grasp_slip_config: GraspSlipConfig | None = None):
         self.xml_path = xml_path or _DEFAULT_XML
         self.model = mujoco.MjModel.from_xml_path(self.xml_path)
         self.data = mujoco.MjData(self.model)
@@ -673,6 +675,27 @@ class BimanualPegInHoleOpenArmSim:
         # 값이라 문제 없다.
         self._shadow_data = mujoco.MjData(self.model)
         self._virtual_qpos: dict[str, float] = dict(_HOME_QPOS)
+
+        # 파지 미끄러짐 모델(sim/grasp_slip.py) -- 기본(grasp_slip_config=None)
+        # 이면 아예 생성하지 않는다(새 기능 꺼짐=비트 단위 동일 규칙,
+        # PIPELINE.md "폐루프 데이터" 절 2단계 참고). peg_grasp(오른팔,
+        # Actuator 파지 실패=F2)/hole_grasp(왼팔, Stabilizer 미끄러짐=F3)
+        # 둘 다 독립적으로 추적한다.
+        self._grasp_slip_config = grasp_slip_config
+        self._right_slip: GraspSlipTracker | None = None
+        self._left_slip: GraspSlipTracker | None = None
+        if grasp_slip_config is not None:
+            peg_eq_id = self.model.equality("peg_grasp").id
+            hole_eq_id = self.model.equality("hole_grasp").id
+            self._right_slip = GraspSlipTracker(
+                self.model, peg_eq_id, self._right_ee_body_id, self._peg_body_id, grasp_slip_config.right
+            )
+            self._left_slip = GraspSlipTracker(
+                self.model, hole_eq_id, self._left_ee_body_id, self._hole_body_id, grasp_slip_config.left
+            )
+        self._step_idx = 0
+        self.last_grasp_state_right = None
+        self.last_grasp_state_left = None
 
     # ------------------------------------------------------------------
     def _apply_clearance(self, clearance_m: float) -> float:
@@ -851,6 +874,10 @@ class BimanualPegInHoleOpenArmSim:
 
     def reset(self, scene_config: dict[str, Any]) -> float:
         mujoco.mj_resetData(self.model, self.data)
+        self._step_idx = 0
+        if self._right_slip is not None:
+            self._right_slip.reset_episode(self.model, self.data)
+            self._left_slip.reset_episode(self.model, self.data)
 
         for geom_id in self._peg_geom_ids:
             self.model.geom_friction[geom_id][0] = scene_config["friction"]
@@ -966,6 +993,24 @@ class BimanualPegInHoleOpenArmSim:
         for i, name in enumerate(_ARM_JOINTS):
             self.data.ctrl[self._torque_actuator_ids[name]] = tau[i]
         mujoco.mj_step(self.model, self.data, nstep=N_SUBSTEPS)
+
+        # 파지 미끄러짐 모델(grasp_slip_config=None이면 완전히 스킵 -- 새
+        # 기능 꺼짐=비트 단위 동일 규칙). mj_step *뒤에* 불러야 한다 --
+        # 이번 스텝 솔버가 계산한 weld 구속력을 읽어서 다음 스텝에 반영할
+        # relpose/eq_active 변화를 결정하기 때문(sim/grasp_slip.py
+        # GraspSlipTracker.step() docstring 참고).
+        self._step_idx += 1
+        if self._right_slip is not None:
+            self.last_grasp_state_right = self._right_slip.step(self.model, self.data, self._step_idx)
+            self.last_grasp_state_left = self._left_slip.step(self.model, self.data, self._step_idx)
+
+    def get_grasp_states(self) -> tuple[Any, Any] | tuple[None, None]:
+        """직전 step() 호출의 (오른팔 peg_grasp, 왼팔 hole_grasp) GraspState.
+        grasp_slip_config=None이면 (None, None) -- 호출부(3/5단계)가 이
+        튜플로 "미끄러짐 모델이 꺼져 있다"를 구분한다."""
+        if self._right_slip is None:
+            return None, None
+        return self.last_grasp_state_right, self.last_grasp_state_left
 
 
 def run_episode(gains: dict[str, float], scene_config: dict[str, Any] | None = None) -> dict[str, Any]:

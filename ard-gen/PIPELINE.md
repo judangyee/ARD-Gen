@@ -1076,3 +1076,77 @@ test_tacker_task.py`도 전부 통과(tacker는 이 함수를 안 쓰지만 impo
 그래프가 안 깨졌는지 확인). 2단계(미끄러짐 모델)/4단계(폐루프 어댑터)는
 이제 이 함수만 재사용한다 -- 제어 로직을 또 복사하지 않는다.
 
+### 2단계 — 파지 미끄러짐 모델 ✅ 완료 (게이트 통과)
+
+`sim/grasp_slip.py`(신규, `BimanualPegInHoleOpenArmSim`만 의존 -- tacker는
+이번 범위에 안 넣음)에 weld를 유지한 채 런타임에 조작하는 미끄러짐 모델을
+만들었다. **진짜 손가락 접촉 물리가 아니다** -- grasp anchor 재조정에
+6차례가 걸렸던 걸 감안해 의도적으로 피했다(파일 상단 docstring에 명시).
+`ArmSlipConfig(mode=...)`로 오른팔(`peg_grasp`, Actuator 파지 실패=F2)/
+왼팔(`hole_grasp`, Stabilizer 미끄러짐=F3) 각각 독립 설정:
+
+| mode | 동작 |
+|---|---|
+| `none`(기본) | 아무 개입 없음 -- `grasp_slip_config=None`이면 트래커 자체를 안 만든다 |
+| `force_limited` | weld 구속력(`efc_force` 노름)이 `force_threshold`를 넘으면, 그 스텝의 relpose를 "실제 위치 쪽으로 `yield_fraction`만큼" 양보시킨다 |
+| `injected` | 지정 스텝에 지정 오프셋(ee 로컬, m)을 relpose에 한 번 더한다(결정론적 교란 이벤트) |
+| `release` | 지정 스텝에 weld 비활성(`eq_active=False`) + 그 바디 `body_gravcomp=0`(0단계 2번 실측 -- gravcomp를 안 내리면 안 떨어짐) |
+
+매 스텝 `GraspState`(weld_active, weld_force, slipped_this_step,
+cumulative_shift_pos, cumulative_shift_rot_deg=0.0 고정)를 기록한다 --
+회전 미끄러짐은 이번 범위에서 다루지 않음(파일 docstring에 확장 방법
+명시). `force_limited`의 미끄러짐 "방향"은 진짜 힘 벡터가 아니라 "물체의
+실제 위치 쪽으로 양보"하는 근사다(efc_force를 world 벡터로 복원하려면
+weld의 제약 Jacobian 투영이 필요해서 단순화했다 -- 파일 docstring에
+한계와 확장 방법 명시).
+
+**비트 단위 동일성**: `grasp_slip_config=None`(기본값)이면
+`tests/test_regression_peg_in_hole.py` 9케이스 리워드 값이 전과 정확히
+동일(49.4675 등 -- 1단계와 같은 수치), `tests/test_tacker_task.py`도
+전부 통과. `tests/test_grasp_slip.py`(신규)의
+`test_default_off_matches_no_config`로 grasp_slip 쪽 관점에서도 재확인.
+
+**게이트 결과 (기준선: 0단계 7번, N=200 무작위 씬, 100.0% 성공)**:
+같은 N=200/시드로 `force_limited`를 다른 세 임계값에서 실측했다(두 weld
+독립, 0단계 3번 분포 기준):
+
+| 설정 | peg_grasp 임계값 | hole_grasp 임계값 | 성공률 | 미끄러짐 발생 에피소드 |
+|---|---|---|---|---|
+| 1.3x 명목 최대 | 15.42 | 24.12 | 200/200 (100.0%) | 0/200 |
+| 1.05x 명목 최대(타이트) | 12.46 | 19.48 | 200/200 (100.0%) | 18/200 |
+| 명목 p95(매우 타이트) | 7.00 | 15.82 | 200/200 (100.0%) | 175/200 |
+
+**게이트 통과(기준선 대비 하락 0%p, 5%p 한도 안쪽)** -- 심지어 아주
+타이트한 임계값(명목 p95, 즉 명목 분포의 95번째 백분위를 넘기만 하면
+바로 미끄러짐)에서도 175/200 에피소드가 실제로 미끄러짐을 겪으면서도
+전부 성공했다. `yield_fraction=0.1`(기본, 과부하 한 스텝당 실제-목표
+오차의 10%만 반영)이 충분히 작아서, admittance 피드백이 실시간으로
+미끄러짐을 보상하는 것으로 보인다(실측, 원인을 더 깊이 파진 않음).
+
+**더 강하게 실측(별도 스윕, 진짜 실패를 만들 수 있는지 확인)**:
+- `yield_fraction=0.8`(한 스텝에 오차의 80%, 공격적) + p95 임계값: 그래도
+  100/100 성공 -- force_limited류(점진적, 피드백 루프 안에서 발생)는
+  이 태스크에서 실패를 만들기 매우 어렵다.
+- `injected`(한 번에 왕창): 고정 씬(offset=(0.014,0.0)) 기준 +5/10mm는
+  항상 성공, **+15mm는 46/50(92%) 실패**, 그런데 +20/25/30mm는 오히려
+  다시 대부분 성공(33/50, 결과가 magnitude에 비단조적) -- 안 믿기지만
+  실측 그대로 기록한다. 원인은 깊이 파지 않았다(추정: 큰 교란 뒤
+  admittance가 우연히 비슷하게 좋은 경로로 재수렴하는 경우가 있는 것
+  같다).
+- `release`(완전히 놓침): **release_at_step=10/30/50/80/100 전부(고정
+  씬) 성공했다** -- peg_in_hole이 수직 낙하 삽입이라, 놓치는 시점에
+  이미 xy가 거의 맞춰진 채 떠 있으면 중력(release 시 gravcomp를
+  껐으므로 실제로 작용)이 삽입을 대신 끝내버린다. **이건 이 모델의
+  중요한 한계다** -- release 메커니즘(weld 끄기 + gravcomp 끄기) 자체는
+  올바로 동작하지만, 이 특정 태스크(수직 낙하)에서는 F2(Actuator 파지
+  실패) 학습 데이터로 쓸 "진짜 실패"를 안정적으로 못 만든다. 5단계
+  B세트(F2/F3 주입 실패)는 `release`가 아니라 **xy를 확실히 흩트리는
+  `injected`(예: +15mm류, 실측으로 실패 확인된 값) 또는 큰
+  `yield_fraction`의 `force_limited`+훨씬 좁은 clearance 조합**을 쓴다.
+
+**새 테스트**: `tests/test_grasp_slip.py`(5개) -- 기본 꺼짐 동일성,
+force_limited 타이트해도 명목 성공 유지, injected가 relpose를 실제로
+옮기고(이 고정 씬에서는) 실패시킴, release가 weld/gravcomp를 정확히
+끄는지(결과 success는 단언 안 함, 위 한계 참고), reset()이 다음
+에피소드 전에 relpose/eq_active를 원래대로 복원하는지.
+
