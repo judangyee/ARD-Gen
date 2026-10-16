@@ -37,12 +37,20 @@
 #   dry-run 실측(B 난이도 씬에서 insert_start~10, insert_len 중앙값 146,
 #   범위 121-152 -- 씬마다 꽤 일정함)을 "진행도 비율 0.45-0.85"(효과적) /
 #   "0.05-0.3"(거의 안 실패 -- hard negative용)로 환산한 값이다.
+# - narrow_clearance/bad_gains/xy_target_bias 가중치(1.0 -> 3.0/2.0/2.0):
+#   F1a/F1b 재정의(실패 유형 재정의 작업) 뒤 B를 재생성해보니 이 세
+#   타입이 F1b(걸림)/F1a(정렬미수렴·진동)의 주 공급원이었는데(timeout
+#   진단 228개 표본의 교란×유형 교차표와 일치: narrow_clearance->걸림,
+#   bad_gains/xy_target_bias->진동), 원래 가중치(1.0)로는 경계 판정
+#   분포에서 F1a 2.2%/F1b 3.7%로 너무 적었다 -- 세 타입을 두세 배
+#   올려서 더 자주 뽑히게 했다(실제 달성치는 PIPELINE.md "마무리" 절
+#   B 재생성 결과 참고 -- 10%까지는 못 미쳤다, 억지로 더 맞추지 않음).
 
 b_weights:
   action_noise: 1.0
-  xy_target_bias: 1.0
-  bad_gains: 1.0
-  narrow_clearance: 1.0
+  xy_target_bias: 2.0
+  bad_gains: 2.0
+  narrow_clearance: 3.0
   high_friction: 1.0
   injected_slip_F2: 9.0
   injected_slip_F3: 10.0
