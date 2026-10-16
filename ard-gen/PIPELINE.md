@@ -1510,3 +1510,116 @@ push 완료. `claude/queue-dyy0ir`/`ard-gen-v2`/`ard-gen-insertion`/
 `ard-gen-insertion-horizontal`/`feature/official-openarm-model`은
 병합하지 않았다(0단계 브랜치 관계 절 그대로).
 
+### 후속 작업 1 — 폐루프 에피소드 경계 이미지 ✅ 완료
+
+**문제**: `render_closed_loop_boundaries.py`(저장된 액션 재생)는 R2 복구의
+불연속 점프를 재현 못 해서 `loop_mode=="closed"` 에피소드를 전부 skip했다
+-- 5단계 소규모 생성에서 B세트 24개 중 7개만 이미지가 있었고, 하필
+그 7개가 전부 복구가 "안" 일어난(즉 Judge 학습에 덜 중요한) 쪽이었다.
+
+**선택한 방법: A (생성 중 바로 캡처)**. B(상태 전체를 저장해 재생
+스크립트가 점프까지 재현)는 검토했지만 재구성해야 할 상태가 많다
+(qpos/qvel/`_virtual_qpos`/양쪽 weld의 `eq_data`+`eq_active`/
+`body_gravcomp`/grasp_slip 내부 플래그/점프한 스텝 번호)는 점과, 어차피
+생성 프로세스가 물리 상태를 실시간으로 들고 있으므로 재구성할 필요 자체가
+없다는 점에서 A가 더 단순했다. 전제 조건(torch 미사용)은 실측 확인:
+`python3 -c "import pipeline.generate_closed_loop_episodes; 'torch' in
+sys.modules"` → `False`(이 스크립트 자체도, 재귀적으로 당겨오는 모든
+모듈도 torch를 안 쓴다) -- `assert_no_torch_imported()`를 생성 시작 시
+호출하게 해두고, 그 assert 자체도 테스트로 남겼다
+(`tests/test_closed_loop_data_schema.py::test_assert_no_torch_imported`).
+
+**구현**:
+- `closedloop/peg_in_hole_adapter.py`에 `PegInHoleClosedLoopEnv.render_frames()`
+  추가(`settle()`의 캐시와 별개로 호출 시점 top_cam/wide_cam을 즉시
+  새로 렌더).
+- `pipeline/generate_closed_loop_episodes.py`의 `run_one_episode(...,
+  render=False)` -- 에피소드 시작 직후 1회, 그리고 매 서브태스크 경계마다
+  `render_frames()`로 캡처. 다음 경계의 "start"는 점프가 없으면(자연
+  완료 후 다음 노드로 진행) 방금 찍은 "end"를 그대로 재사용하고, 점프가
+  있으면(`run_recovery("R2")`) 그 직후 다시 캡처한다(물리 상태가
+  바뀌므로). 키 형식은 `episode_io.py`가 이미 문서화해둔 그대로
+  `boundary_{idx}_{camera}_{start|end}`(idx=subtask_boundaries 리스트
+  인덱스 -- 점프로 전역 스텝 수가 꼬여도 유일함, 기존
+  `render_closed_loop_boundaries.py`의 `boundary_step{N}_{camera}`
+  스킴과는 의도적으로 다르다).
+- `pipeline/episode_io.py::save_episode()`가 `episode["boundary_images"]`
+  를 그대로 npz에 병합하도록 확장(`_FIXED_TOP_LEVEL_KEYS`에 추가) --
+  `add_boundary_images()`가 나중에 덧붙이는 것과 같은 모양.
+- 시각 교란(`VisualDisturbanceConfig`/`apply_visual_disturbance()`,
+  C세트 전용·기본 꺼짐): 조명 방향(±0.15rad)/세기(±25%), top_cam/
+  wide_cam 위치(±3cm), 구멍/페그 RGB 곱(±15%) -- 컴파일된 모델 인스턴스를
+  직접 변형(`_apply_clearance()`와 같은 패턴, 인스턴스 간 간섭 없음).
+  물리에는 전혀 영향 없음(geom_rgba/cam_pos/light_*만 건드림). 실제
+  적용값은 `episode["disturbance"]["visual"]`에 기록.
+- `--render`/`--visual-disturbance` CLI 플래그 추가. `--render`가 없으면
+  `MUJOCO_GL`을 절대 안 건드린다(이미 있던 "렌더링 안 하면 osmesa 설정
+  금지" 규칙 유지, `sys.argv`를 argparse보다 먼저 직접 검사).
+
+**결정론 확인** (실측, `test_method_a_matches_old_replay_for_open_episode`):
+open-loop 에피소드 하나를 방법 A(생성 중 캡처)와 기존
+`render_closed_loop_boundaries.py`(저장된 액션 재생) 둘 다로 렌더링해서
+같은 순간(경계의 start_step/end_step)의 이미지를 픽셀 단위로 비교 --
+**8쌍(경계 3개×카메라 2개 중 일부, 첫 경계는 start==episode 시작이라
+0 스텝 하나로 합쳐짐) 전부 최대 절대 차이 0, 완전히 일치**. 같은
+시뮬레이션 상태에서 같은 렌더러로 그리므로 당연한 결과지만, 실제로
+어긋나는 부분(예: 카운터 꼬임, 캡처 시점 오프바이원)이 없다는 걸 실측으로
+확인한 것.
+
+**경계 이미지 커버리지** (실측, A 10개/B 12개/C 10개 소규모 재생성,
+`--render`, C는 `--visual-disturbance`도 같이):
+
+| 세트 | 전체 에피소드 중 모든 경계에 이미지 있음 | 그 중 closed-loop만 |
+|---|---|---|
+| A | 10/10 (100.0%) | 1/1 |
+| B | 12/12 (100.0%) | 5/5 |
+| C | 10/10 (100.0%) | 6/6 |
+
+이전(재생 방식, closed 전부 skip)과 비교하면 B의 closed-loop 커버리지가
+0/7(5단계 당시 실측 "24개 중 7개만 이미지") → 5/5(이번 재생성에서 나온
+closed 전부)로 바뀐 셈 -- 표본 수가 달라 직접 비율 비교는 어렵지만,
+"복구가 일어난 에피소드는 이미지가 없다"는 구조적 공백 자체가 사라졌다는
+점이 핵심.
+
+**렌더링 비용** (실측, osmesa 소프트웨어 렌더러, 이 컨테이너 기준):
+
+| 세트 | 에피소드 수 | 총 시간 | 에피소드당 | 경계 수 | 경계당 |
+|---|---|---|---|---|---|
+| A | 10 | 50.0s | 5.00s | 21 | 2.38s |
+| B | 12 | 73.1s | 6.09s | 29 | 2.52s |
+| C | 10 | 66.2s | 6.62s | 26 | 2.55s |
+
+경계당 ~2.4-2.6초(카메라 2개×2(start/end) 렌더 포함) -- osmesa
+소프트웨어 렌더러의 비용이 대부분이고 세트별 차이는 경계 수(복구 발생
+빈도)에서 온다. **대규모 생성에 이 비용을 그대로 곱하면 비싸진다(예:
+B 1000개면 경계 수 비례로 수 시간) -- 그래서 사용자 지시대로 이번에도
+대규모 생성은 하지 않았고, 다음에 할 사람은 `--render` 없이 물리만
+먼저 다 생성한 뒤 이미지가 필요한 부분집합만 따로 렌더링하는 전략을
+고려할 것**(이 스크립트 구조상 `render=False`로 생성→나중에 같은 시드로
+`render=True` 재생성해도 결정론이 보장되므로 가능, 위 결정론 확인 절
+참고).
+
+**A/B 이미지는 이전과 동일함 확인**: `--render`(및 C에서 `visual_disturbance.
+enabled=False`) 자체가 물리를 전혀 안 바꾸는지 실측 -- 같은 시드로
+`render=False` vs `render=True`를 돌려 `right_arm.action`/`success`가
+완전히 동일(`np.array_equal`)함을 A/B/C 전부에서 확인(`test_visual_disturbance_
+only_affects_c` 및 수동 비교 스크립트). 시각 교란이 켜진 건 코드상 split
+=="C"일 때만 `apply_visual_disturbance()`를 호출하므로, A/B는 이 기능이
+생기기 전과 호출 경로 자체가 다르지 않다(영향받을 길이 없음).
+
+**테스트**: `tests/test_closed_loop_data_schema.py`에 4개 추가
+(`test_assert_no_torch_imported`/
+`test_method_a_inline_render_covers_closed_loop_episodes`/
+`test_visual_disturbance_only_affects_c`/
+`test_method_a_matches_old_replay_for_open_episode`) -- 전부 통과.
+기존 회귀 테스트(`test_regression_peg_in_hole.py`/`test_grasp_slip.py`/
+`test_subtask_graph.py`/`test_closed_loop_adapter.py`)도 전부 그대로
+통과(이번 작업이 기존 동작을 안 건드렸다는 확인).
+
+**아직 확인 못 한 것**: 대규모(수백+) 생성에서의 실제 비용/저장 용량
+(소규모 N=10-12로만 실측), 조명/카메라/색 지터 범위가 "현실적인 도메인
+랜덤화"로 적절한지(임의로 고른 값, 별도 조정 없음), `top_cam`/`wide_cam`이
+`mode="targetbody"`(고정 타겟 추적) 상태에서 `cam_pos`를 지터링했을 때의
+시각적 결과가 실제로 그럴듯한지(픽셀 diff로 "바뀌었다"는 확인만 했고
+사람이 눈으로 본 적은 없음).
+

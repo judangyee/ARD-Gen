@@ -203,6 +203,17 @@ class PegInHoleClosedLoopEnv:
             self._frames["top_cam"] = self._render_camera("top_cam")
             self._frames["wide_cam"] = self._render_camera("wide_cam")
 
+    def render_frames(self) -> dict[str, np.ndarray]:
+        """지금 이 순간의 top_cam/wide_cam을 즉시 렌더링해서 돌려준다
+        (후속 작업 "작업 1" 방법 A -- 생성 중 서브태스크 경계에서 바로
+        캡처). `settle()`의 캐시(`self._frames`)와는 별개로 호출 시점의
+        실제 장면을 새로 그린다 -- 복구 점프 직후처럼 `settle()`을 또
+        부르기 애매한 시점에도 쓸 수 있게. `render=False`로 생성됐으면
+        `RuntimeError`(렌더러 자체가 없음)."""
+        if not self._render:
+            raise RuntimeError("render_frames()는 render=True로 만든 환경에서만 쓸 수 있다")
+        return {"top_cam": self._render_camera("top_cam"), "wide_cam": self._render_camera("wide_cam")}
+
     def safe_stop(self) -> None:
         self._stopped = True
 

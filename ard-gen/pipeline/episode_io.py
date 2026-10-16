@@ -73,6 +73,11 @@ _FIXED_TOP_LEVEL_KEYS = {
     # 추가한 선택적 필드 -- 전부 dict/list라 아래 "그 외 태스크별 스칼라
     # 필드" auto-save 경로(스칼라만 받음)를 못 타므로 명시적으로 처리한다.
     "closed_loop", "subtask_boundaries", "disturbance", "candidate_chunks",
+    # 작업 1(방법 A) -- 생성 중 바로 캡처한 경계 이미지. 이미 "boundary_..."
+    # 로 시작하는 npz 키 그대로 들어있는 dict라 아래 extra_* 스칼라
+    # 경로를 안 타고 바로 kwargs에 풀어 넣는다(add_boundary_images()가
+    # 나중에 덧붙이는 것과 같은 모양).
+    "boundary_images",
 }
 
 
@@ -147,6 +152,10 @@ def save_episode(path: str, episode: dict[str, Any]) -> None:
         # 패턴). 기본 꺼짐(비용이 커서) -- 사용자 지시 "비용이 크면
         # 플래그로 끄고" 그대로.
         kwargs["candidate_chunks"] = np.array(json.dumps(episode["candidate_chunks"]))
+    if episode.get("boundary_images"):
+        # 키가 이미 "boundary_{idx}_{camera}_{start|end}" 형식이므로
+        # add_boundary_images()와 같이 그대로 kwargs에 병합한다.
+        kwargs.update(episode["boundary_images"])
     for key, value in episode.items():
         if key in _FIXED_TOP_LEVEL_KEYS or value is None:
             continue
