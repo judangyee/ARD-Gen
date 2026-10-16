@@ -29,6 +29,17 @@ from sim.peg_in_hole_bimanual_openarm_sim import BimanualPegInHoleOpenArmSim
 
 _OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "analysis", "timeout_diagnosis")
 
+# 유형 이름(한글)을 그림 제목/파일명에 쓸 영문 라벨로 바꾼다 -- 이
+# 컨테이너에 한글 폰트가 없어서(fc-list 확인) matplotlib이 글리프를
+# 못 그린다(실측: missing glyph 경고). 코드/문서는 한글 그대로 두고
+# 이 그림에서만 영문 라벨을 쓴다.
+_LABEL_EN = {
+    "거의성공(insert, hold 직전 예산소진)": "near_success",
+    "걸림(jam)": "jam",
+    "정렬_미수렴(insert 중 재정렬 실패)": "misaligned",
+    "진동_발산": "oscillating",
+}
+
 
 def _find_examples() -> dict[str, dict]:
     """각 유형(걸림/정렬_미수렴/진동_발산/거의성공) 대표 사례 하나씩을
@@ -66,7 +77,9 @@ def _rerun_with_render(example: dict) -> tuple[np.ndarray, np.ndarray]:
         grasp_slip_config = GraspSlipConfig(right=arm_cfg) if disturbance["side"] == "right" else GraspSlipConfig(left=arm_cfg)
 
     sim = BimanualPegInHoleOpenArmSim(grasp_slip_config=grasp_slip_config)
-    env = PegInHoleClosedLoopEnv(sim, _load_graph(), example["scene_config"], example["gains"], render=True)
+    env = PegInHoleClosedLoopEnv(
+        sim, _load_graph(), example["scene_config"], example["gains"], render=True, legacy_failure_rule=True
+    )
     env.reset_episode("align")
     policy = ScriptedOraclePolicy(env)
 
@@ -103,6 +116,7 @@ def main() -> None:
         axes = [axes]
     for ax, (category, ex) in zip(axes, examples.items()):
         b = ex["boundary"]
+        label_en = _LABEL_EN.get(category, category)
         dx, raw_depth, image = _rerun_with_render(ex)
         if b["node"] == "align":
             ax.plot(np.hypot(dx, 0) * 1000, label="|dx| (mm)")
@@ -110,10 +124,13 @@ def main() -> None:
         else:
             ax.plot(raw_depth * 1000, label="raw_depth (mm)")
             ax.set_ylabel("depth (mm)")
-        ax.set_title(f"{category} ({ex['split']} seed={ex['seed']} node={b['node']} disturbance={(ex['disturbance'] or {}).get('type')})")
-        ax.set_xlabel("step (경계 구간 내)")
+        ax.set_title(
+            f"{label_en} ({ex['split']} seed={ex['seed']} node={b['node']} "
+            f"disturbance={(ex['disturbance'] or {}).get('type')})"
+        )
+        ax.set_xlabel("step (within boundary)")
         ax.legend()
-        img_path = os.path.join(_OUT_DIR, f"{category.split('(')[0]}_boundary_end.png")
+        img_path = os.path.join(_OUT_DIR, f"{label_en}_boundary_end.png")
         plt.imsave(img_path, image)
         print(f"[OK] {category}: 시계열 {len(dx)}스텝, 판정시점 이미지 -> {img_path}")
 

@@ -72,7 +72,15 @@ def _run_episode_instrumented(
         raise ValueError(f"unknown split {split!r}")
 
     sim = BimanualPegInHoleOpenArmSim(grasp_slip_config=grasp_slip_config)
-    env = PegInHoleClosedLoopEnv(sim, _load_graph(), cfg, gains, render=False)
+    # legacy_failure_rule=True로 고정한다 -- 이 스크립트 자체가 "timeout
+    # 라벨 뒤에 뭐가 숨어있는지" 알아내려고 만든 진단 도구라서, 어댑터의
+    # 기본값이 F1a/F1b/timeout(이 스크립트의 classify_timeout()을 그대로
+    # 반영한 결과물, 작업2)로 바뀐 지금은 legacy 없이 돌리면 "timeout"
+    # 라벨이 이미 "거의성공"류만 남도록 좁혀져서(F1a/F1b가 더는 안
+    # 섞임) 진단 표본이 왜곡된다(실측으로 발견). 이 진단 자체는 "판정
+    # 순간 단일 시점이 F1/timeout을 어떻게 가르는지"를 보는 게 원래
+    # 목적이었으므로 legacy가 맞다.
+    env = PegInHoleClosedLoopEnv(sim, _load_graph(), cfg, gains, render=False, legacy_failure_rule=True)
     env.reset_episode("align")
     policy = ScriptedOraclePolicy(env)
 
