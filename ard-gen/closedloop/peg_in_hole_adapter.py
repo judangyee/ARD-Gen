@@ -250,7 +250,20 @@ class PegInHoleClosedLoopEnv:
         서브태스크 재실행)/R2(시작 자세 복귀)/R3(설정 변경+재파지)/
         R4(안전 정지)."""
         if recovery_id == "R1":
-            return  # 아무것도 안 바꾼다 -- 다음 iteration이 현재 물리 상태에서 그대로 재시도.
+            # 물리 상태는 전혀 안 건드린다(현재 자세 그대로) -- 하지만
+            # _step_in_subtask/_hold_count는 반드시 리셋해야 한다. 실측으로
+            # 발견한 버그(PIPELINE.md "실패 유형 재정의" 절 참고): 이걸 안
+            # 하면 subtask_finished()가 "아직도 max_steps를 넘었다"를 다음
+            # 스텝에 바로 다시 보고 즉시 또 timeout으로 끝나버려서,
+            # "그 자리에서 재시도"가 사실상 전혀 재시도가 안 됐다(실측
+            # 복구 성공률 0%였던 원인). ARD-VLA의 실제 DecisionLogic이
+            # 자기 쪽에서 별도 스텝 예산을 관리하는 경우는 이 리셋이 있어도
+            # 안전하다(이 어댑터의 max_steps 자체가 그 예산보다 먼저 걸릴
+            # 일이 없다면 영향 없음).
+            self._step_in_subtask = 0
+            self._hold_count = 0
+            self._history = {"dx": [], "dy": [], "raw_depth": [], "wall_contact": []}
+            return
         if recovery_id == "R2":
             qpos, qvel, virtual_qpos = self._checkpoint
             self.sim.data.qpos[:] = qpos
