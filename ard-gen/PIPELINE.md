@@ -1411,3 +1411,102 @@ skip -- B는 injected_slip/narrow_clearance/bad_gains 등으로 closed
 10-30% 보증이 깨지므로), 렌더링이 open-loop에 이미지를 추가하고
 closed-loop을 skip하는지. 기존 회귀 스위트 전부 여전히 통과.
 
+### 완료 보고 (main 대비 전체 diff 기준)
+
+**변경·추가 파일** (16개, `+2742/-36`, `git diff --stat main..closed-loop-data`):
+
+신규:
+- `sim/grasp_slip.py` -- 2단계 파지 미끄러짐 모델
+- `closedloop/__init__.py`, `closedloop/peg_in_hole_adapter.py` -- 4단계 폐루프 어댑터+오라클
+- `tasks/peg_in_hole.graph.yaml`, `tasks/tacker.graph.yaml` -- 3단계 서브태스크 그래프
+- `pipeline/generate_closed_loop_episodes.py`, `pipeline/render_closed_loop_boundaries.py` -- 5단계 생성/렌더링
+- `tests/test_grasp_slip.py`, `tests/test_subtask_graph.py`, `tests/test_closed_loop_adapter.py`, `tests/test_closed_loop_data_schema.py` -- 신규 테스트 4개
+
+수정(기존 키/동작 보존):
+- `sim/peg_in_hole_bimanual_openarm_sim.py` -- `controller_step()`(1단계), `align_progress`/`insert_progress`/`align_subtask_finished`/`insert_subtask_finished`/`classify_failure`/`is_peg_touching_hole_wall()`(3단계), `grasp_slip_config` 생성자 인자 + `get_grasp_states()`(2단계), `right_arm_qpos()`/`left_arm_qpos()`/`*_gripper_qpos()`/`joint_observation_16dof()`(4/5단계) 추가
+- `sim/peg_in_hole_openarm_env.py` -- `run_episode()`가 `controller_step()` 재사용(1단계)
+- `pipeline/episode_io.py` -- `closed_loop`/`subtask_boundaries`/`disturbance`/`candidate_chunks` 선택적 필드 + `add_boundary_images()`(5단계)
+- `.gitignore` -- `data/closed_loop/`, `tests/_tmp_closed_loop_schema/` 추가
+- `PIPELINE.md` -- 이 "폐루프 데이터" 절 전체
+
+**새 설정 플래그 표**:
+
+| 플래그/인자 | 위치 | 기본값 | 의미 |
+|---|---|---|---|
+| `grasp_slip_config` | `BimanualPegInHoleOpenArmSim(...)` | `None` | 파지 미끄러짐 모델 전체 on/off |
+| `ArmSlipConfig.mode` | `sim/grasp_slip.py` | `"none"` | `none`/`force_limited`/`injected`/`release` |
+| `render` | `PegInHoleClosedLoopEnv(...)` | `False` | top_cam/wide_cam 캡처(이때만 MUJOCO_GL 건드림) |
+| `r3_kp_boost` | `PegInHoleClosedLoopEnv(...)` | `1.3` | R3 복구의 게인 상승 배수 |
+| `--k-branch` | `generate_closed_loop_episodes.py` | 꺼짐 | K-분기(후보 청크) 기록 |
+
+전부 기본값이 꺼짐(또는 기존 동작과 동일)이고, `tests/test_regression_peg_in_hole.py`/`tests/test_tacker_task.py`(1~5단계 전부 작업 끝난 지금도 그대로 통과)로 비트 단위 동일성을 확인했다.
+
+**테스트 수**: main 기준 2개 파일/7개 함수(`test_regression_peg_in_hole.py` 3개,
+`test_tacker_task.py` 4개) -> 이 브랜치 6개 파일/24개 함수(새 파일 4개에
+17개 함수 추가). 전부 통과(`ARD_VLA_REPO` 미설정 시 그 통합 테스트
+하나만 skip, 나머지 23개는 항상 실행).
+
+**0단계 실측값**: 명목 개루프 기준선 200/200(100.0%, N=200, 시드
+고정); weld 구속력 분포(명목, 3개 eval_scenarios) -- `peg_grasp`(오른팔)
+mean 0.71/max 11.86/p95 7.00, `hole_grasp`(왼팔) mean 10.04/max
+18.55/p95 15.82; 렌더링 비용(osmesa, 640x480) top_cam 324ms/frame,
+wide_cam 441ms/frame.
+
+**2단계 게이트 결과**: force_limited를 명목 p95 임계값(가장 타이트)까지
+켜도 N=200에서 성공률 하락 0%p(200/200 유지, 175/200이 실제로
+미끄러짐을 겪고도 성공) -- 5%p 한도 안쪽, 게이트 통과.
+
+**실패 유형별 발생 빈도** (소규모 생성 데이터 `data/closed_loop/{A,B,C}`
+서브태스크 경계 합산, 세 세트 합쳐 94+52+1+1=148개 경계): `none`(성공)
+94, `timeout` 52, `F2` 1, `F3` 1 -- F1은 관측되지 않았다(이 데이터에서는
+"깊이 미달+벽 접촉" 조합이 "timeout"보다 먼저 분류될 상황이 없었다는
+뜻, 우선순위상 F2/F3가 먼저 걸리거나 벽 접촉 없이 그냥 timeout인
+경우가 대부분이었다). F2/F3가 1개씩밖에 없는 건 B의 7종 교란 중
+`injected_slip_*`가 무작위로 적게 뽑힌 소규모 생성의 샘플링 한계 --
+더 보려면 N을 늘리거나 B의 교란 샘플링에서 `injected_slip_*` 비중을
+올리면 된다(코드 변경 없이 `_B_DISTURBANCE_TYPES`에 중복으로 넣는 것만
+으로도 가능).
+
+**개루프 실패율 10-30%를 만든 씬 범위(A세트)**: `peg_init_offset_xy`
+반경 U(0.009m, 0.020m), 각도 U(-π, π)(전체 원 -- 명목은 U(-π/4, π/4)),
+clearance/friction은 명목(U(0.0025,0.0035)m / U(0.2,0.8)) 그대로.
+실측 20.0%(N=60, 시드777 / N=100, 시드999 두 번 재확인) -- clearance를
+같이 좁히거나 friction도 같이 올리면 50%를 넘어서 범위를 벗어난다
+(그래서 오프셋 반경만 넓히는 것으로 확정).
+
+**16 DoF 관절 기록 가능 여부**: **가능, 이번 작업에서 실제로 구현함.**
+main의 npz 스키마는 EE pose(4차원)/델타 액션(3차원)만 있고 관절 공간이
+전혀 없었다 -- `self.data.qpos`를 기존 `_arm_qposadr`/`_left_arm_qposadr`
+딕셔너리로 그냥 읽으면 되는 것뿐이라 기술적 장애가 없었다(4/5단계에서
+`right_arm_qpos()`/`left_arm_qpos()`/`*_gripper_qpos()`/
+`joint_observation_16dof()` 추가, `closed_loop.joint_16dof`로 실제
+저장까지 확인).
+
+**아직 확인하지 못한 항목** (정직하게 기록):
+- tacker의 서브태스크 그래프(`tasks/tacker.graph.yaml`)는 메타데이터뿐
+  -- 완료 조건 체크 코드/진행도 함수/폐루프 어댑터가 없다(`implemented:
+  false`로 명시). peg_in_hole만 전체 파이프라인이 끝까지 연결됨.
+- `closed-loop`(복구가 일어난) 에피소드의 경계 이미지 렌더링 -- R2
+  체크포인트의 qpos/qvel을 안 저장해서 액션 재생만으로는 재현 불가,
+  5단계 절에 다음 단계 제안 기록.
+- injected +15mm가 왜 비단조적으로(15mm는 거의 항상 실패, 20-30mm는
+  오히려 성공) 거동하는지 근본 원인 -- 2단계에서 실측만 하고 원인 분석은
+  안 함.
+- R3(재파지만, 물리 상태 안 되돌림)이 F2/F3 복구로 충분한 **다른**
+  (더 약한) 교란 시나리오가 있는지 -- 4단계 통합 테스트의 특정 시나리오
+  (15mm, 스텝80)에서는 R2가 필요했다는 것만 확인했고, R3가 전혀 못
+  쓰는 복구인지는 추가로 안 봤다.
+- F1(정렬 실패/걸림) 라벨이 실제로 나오는 시나리오를 소규모 생성에서
+  하나도 못 봤다 -- `is_peg_touching_hole_wall()` 자체는
+  `tests/test_subtask_graph.py`의 성공 에피소드 안에서도 벽 접촉이
+  있었음을 확인했지만(스쳐가는 접촉), "깊이 미달 + 벽 접촉"이 동시에
+  성립하는 진짜 실패 사례는 소규모 생성 N에서 안 나왔다.
+- Judge/Selector 실제 학습, SmolVLM2 특징 추출, 폐루프 vs 개루프 실험
+  비교 -- 전부 범위 밖(사용자 지시), 전혀 안 함.
+- 대규모(수백~수천 에피소드) 데이터 생성 -- 범위 밖, 전혀 안 함.
+
+**브랜치**: `closed-loop-data`(main에서 분기, 6개 커밋: 0~5단계 각 1개),
+push 완료. `claude/queue-dyy0ir`/`ard-gen-v2`/`ard-gen-insertion`/
+`ard-gen-insertion-horizontal`/`feature/official-openarm-model`은
+병합하지 않았다(0단계 브랜치 관계 절 그대로).
+
