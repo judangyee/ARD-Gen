@@ -1805,3 +1805,81 @@ F2/F3 표본을 늘리는 대신 timeout을 만드는 나머지 5타입의 표�
 - Judge를 실제로 이 데이터로 학습해서 "F2/F3가 10% 안팎이면 충분한지"
   검증 -- 범위 밖(사용자 지시), 전혀 안 함.
 
+### 후속 작업 완료 보고 (closed-loop-data 브랜치, 9287b0f 대비)
+
+**변경·추가 파일** (7개, `+990/-18`, `git diff --stat 9287b0f..HEAD`):
+
+신규:
+- `pipeline/disturbance_config.yaml` -- 작업2(2-2)의 B 가중치/injected 연속분포 설정
+- `pipeline/sweep_injected_slip.py` -- 작업2(2-1) 스윕 스크립트
+
+수정(기존 키/동작 보존, 둘 다 새 파라미터 기본값이 꺼짐일 때 bit-identical):
+- `closedloop/peg_in_hole_adapter.py` -- `render_frames()`(작업1 방법A 전제, `settle()` 캐시와 별개로 즉시 재렌더)
+- `pipeline/episode_io.py` -- `save_episode()`가 `episode["boundary_images"]`를 저장하도록 확장(작업1)
+- `pipeline/generate_closed_loop_episodes.py` -- `--render`/`--visual-disturbance`/`--disturbance-config`, `VisualDisturbanceConfig`/`apply_visual_disturbance()`(작업1, C-only), `load_disturbance_config()`+`disturbance_config` 매개변수(작업2, B-only)
+- `tests/test_closed_loop_data_schema.py` -- 테스트 6개 추가(아래)
+- `PIPELINE.md` -- 이 "후속 작업 1/2" 두 절 + 이 보고
+
+**새 설정 플래그 표**:
+
+| 플래그/인자 | 위치 | 기본값 | 의미 |
+|---|---|---|---|
+| `--render` | `generate_closed_loop_episodes.py` | 꺼짐 | 작업1 방법A -- 서브태스크 경계(+R2 점프)마다 생성 중 top_cam/wide_cam 캡처 |
+| `--visual-disturbance` | 〃 | 꺼짐 | C세트에서만 뜻 있음 -- 조명/카메라/색 렌더링 단계 시각 교란 |
+| `--disturbance-config PATH` | 〃 | 없음(None) | B세트에서만 뜻 있음 -- 교란 타입 가중치 + injected 연속분포 재조정 |
+
+전부 기본값이 꺼짐(또는 기존 동작과 동일)이고, `test_render_boundaries_adds_images_and_skips_closed_loop`
+(작업1 이전 동작)/`test_disturbance_config_off_is_bit_identical`(작업2)
+및 기존 회귀 테스트(`test_regression_peg_in_hole.py`/`test_grasp_slip.py`/
+`test_subtask_graph.py`/`test_closed_loop_adapter.py`)로 비트 단위
+동일성을 확인했다.
+
+**테스트 수**: 9287b0f 기준 `tests/test_closed_loop_data_schema.py` 5개
+함수 -> 이번 작업으로 11개(+6: `test_assert_no_torch_imported`/
+`test_method_a_inline_render_covers_closed_loop_episodes`/
+`test_visual_disturbance_only_affects_c`/
+`test_method_a_matches_old_replay_for_open_episode`/
+`test_disturbance_config_off_is_bit_identical`/
+`test_disturbance_config_follows_configured_weights`). 다른 5개
+테스트 파일은 안 건드렸다(총 24개 -> 30개 함수). 전부 통과(`ARD_VLA_REPO`
+미설정 시 그 통합 테스트 하나만 skip).
+
+**작업1 핵심 실측**: 방법A(생성 중 바로 캡처) 선택, 결정론 확인(기존
+재생 방식과 픽셀 차이 0), A/B/C 소규모 재생성(10/12/10개) 전부 100%
+경계 커버리지(복구 발생 episode 포함, 이전엔 0%), 경계당 렌더링
+~2.4-2.6초, `--render` 자체는 물리에 영향 없음(bit-identical) 확인.
+
+**작업2 핵심 실측**: 2-1 스윕으로 F2/F3 둘 다 유의미한 실패를 만들 수
+있음을 확인(게이트 통과, 중단 없음) -- F3는 방향 의존성이 강해 더 큰
+magnitude·방향 집중이 필요하다는 점만 다름. 2-2 재조정 후 B(N=120)의
+경계 판정 분포가 `timeout 29.1%/F2 4.7%/F3 2.0%` -> `timeout 11.9%/
+F2 8.4%/F3 10.3%`로 개선(목표 10-15%는 F3/timeout만 달성, F2는
+근접). hard negative(미끄러짐은 났지만 성공) 비율 35.8%. F1은 범위
+밖으로 그대로 둠(0.6%, 희소).
+
+**아직 확인 못 한 전체 목록** (두 절에 흩어진 항목을 모음, 정직하게
+기록):
+- 대규모(수백+) 생성에서의 실제 렌더링/스윕 비용 -- 둘 다 소규모
+  (수십~백여 개)로만 실측.
+- 시각 교란(조명/카메라/색) 범위가 실제로 "그럴듯한" 도메인
+  랜덤화인지 -- 픽셀이 바뀌었다는 것만 확인, 사람이 본 적 없음.
+- `top_cam`/`wide_cam`의 `mode="targetbody"` 추적 상태에서 `cam_pos`
+  지터링의 시각적 타당성.
+- F2 가중치를 더 올려도 timeout/F3와의 균형이 유지되는 지점이
+  있는지 -- 세 번 반복 조정 후 멈췄다(정밀 그리드서치 안 함).
+- 2-1 스윕의 방향 축(+x/-x)만 실측 -- 재조정 설정(F2 full_circle/F3
+  concentrated)은 그 두 축에서 일반화한 것이라 대각선 방향 거동은
+  미확인.
+- 비단조성의 정량적 원인(진동 주파수/감쇠율과 게인의 관계) -- 질적
+  메모만 남기고 깊이 파지 않음(사용자 지시).
+- hard negative 비율 측정이 "최종 cumulative_shift" 근사라 R2 복구로
+  미끄러짐이 지워진 경우와 진짜 "안 미끄러진" 경우를 구분 못 함.
+- Judge 실제 학습/SmolVLM2 특징 추출/폐루프 vs 개루프 비교 -- 전부
+  범위 밖(사용자 지시), 전혀 안 함.
+- 대규모 데이터 생성 -- 범위 밖, 전혀 안 함.
+- `force_limited`의 F2/F3 무력함은 2단계 결론을 그대로 수용했을 뿐
+  이번에 재검증하지 않음(사용자 지시 범위 -- injected만 스윕).
+
+**브랜치**: `closed-loop-data`(5단계 완료 시점 9287b0f에서 이어서
+3개 커밋 추가: 작업1 1개, 작업2 준비 1개, 작업2 본체 1개), push 완료.
+
