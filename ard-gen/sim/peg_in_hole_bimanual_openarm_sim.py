@@ -343,6 +343,91 @@ TARGET_INSERTION_DEPTH = 0.055 / 3  # m, hole 길이(0.055m)의 1/3
 _MAX_SANE_DEPTH_M = 0.065
 _SUCCESS_HOLD_STEPS = 20
 
+# ARD-VLA 폐루프 작업(3단계, PIPELINE.md "폐루프 데이터" 절 참고) --
+# tasks/peg_in_hole.graph.yaml의 align/insert 두 노드에 대응하는 진행도/
+# 완료 조건/실패 유형 함수. align/insert 노드 자체의 경계(연속 피드백
+# 2축 + 가변 하강 1축이라는 admittance 구조를 그대로 반영)는 그 YAML
+# 상단 주석에 설명해뒀다.
+
+
+def align_progress(cur_dx: float, cur_dy: float, initial_xy_err: float) -> float:
+    """"align" 서브태스크 진행도(0~1) -- 초기 xy 오차 대비 지금까지 줄어든
+    비율. initial_xy_err가 0에 가까우면(이미 정렬된 채로 시작) 1.0으로
+    본다(0분모 방지)."""
+    if initial_xy_err < 1e-9:
+        return 1.0
+    cur_err = (cur_dx**2 + cur_dy**2) ** 0.5
+    return float(np.clip(1.0 - cur_err / initial_xy_err, 0.0, 1.0))
+
+
+def insert_progress(raw_depth: float, target_depth: float) -> float:
+    """"insert" 서브태스크 진행도(0~1) -- 목표 깊이 대비 현재 원시 깊이."""
+    if target_depth < 1e-9:
+        return 1.0
+    return float(np.clip(raw_depth / target_depth, 0.0, 1.0))
+
+
+def align_subtask_finished(cur_dx: float, cur_dy: float, outer_half: float, hold_count: int, hold_steps: int = 10) -> bool:
+    """tasks/peg_in_hole.graph.yaml의 align.completion과 같은 기준:
+    xy 오차가 outer_half 안쪽(기존 is_success()의 xy_within_hole_footprint
+    판정과 동일한 기준 -- "정렬됐다" = "이미 삽입 판정의 xy 조건을
+    만족한다")으로 hold_steps 연속 유지됐는지. hold_count는 호출부가
+    매 스텝 올리거나 0으로 리셋하는 카운터(insert의 _SUCCESS_HOLD_STEPS
+    패턴과 동일한 호출 책임 분리)."""
+    xy_ok = abs(cur_dx) < outer_half and abs(cur_dy) < outer_half
+    return xy_ok and hold_count >= hold_steps
+
+
+def insert_subtask_finished(raw_depth: float, target_depth: float, hold_count: int, hold_steps: int = _SUCCESS_HOLD_STEPS) -> bool:
+    """tasks/peg_in_hole.graph.yaml의 insert.completion -- 기존 is_success()
+    판정(목표 깊이 이상을 _SUCCESS_HOLD_STEPS 연속 유지)과 정확히 같다.
+    이 함수가 True면 에피소드 전체도 성공이다(insert가 마지막 노드)."""
+    return raw_depth >= target_depth and hold_count >= hold_steps
+
+
+def classify_failure(
+    success: bool,
+    right_weld_active: bool,
+    right_cumulative_shift_m: float,
+    left_weld_active: bool,
+    left_cumulative_shift_m: float,
+    peg_touching_hole_wall: bool,
+    raw_depth: float,
+    target_depth: float,
+    timed_out: bool,
+    slip_distance_threshold_m: float = 0.003,
+) -> str:
+    """서브태스크 종료 시 실패 유형을 물리값으로 판정한다(사용자 지시
+    "서브태스크마다 ... 실패 유형을 물리값으로 판정" 그대로) -- 우선순위는
+    F2(오른팔 파지, Actuator) > F3(왼팔 파지, Stabilizer) > F1(정렬 실패/
+    걸림) > timeout > none(성공) 순이다 -- 파지 실패가 다른 모든 증상의
+    더 직접적인 원인이라고 보고 먼저 확인한다.
+
+    F2/F3는 grasp_slip 모델(sim/grasp_slip.py)의 GraspState를 기준으로
+    "weld가 꺼졌다"(`*_weld_active=False`, release 모드) 또는 "누적
+    이동량이 slip_distance_threshold_m을 넘었다"(force_limited/injected)
+    중 하나면 해당 유형으로 본다.
+
+    `success=True`면 그 자체로 바로 "none"을 돌려준다(메커니즘상
+    미끄러짐/파지 실패가 있었어도, 서브태스크가 실제로 끝났다면 실패로
+    보지 않는다 -- PIPELINE.md "2단계" 절의 release 실측(놓쳐도 중력으로
+    우연히 성공하는 경우가 있었다)을 반영한 설계 선택. "미끄러짐이
+    있었으면 항상 F2/F3로 본다"로 바꾸려면 이 success 분기만 지우면
+    된다 -- 어느 쪽이 Judge 학습에 더 유용한 라벨인지는 이번 작업
+    범위(시뮬·데이터 인프라) 밖이라 결정하지 않았다)."""
+    if success:
+        return "none"
+    if (not right_weld_active) or right_cumulative_shift_m > slip_distance_threshold_m:
+        return "F2"
+    if (not left_weld_active) or left_cumulative_shift_m > slip_distance_threshold_m:
+        return "F3"
+    if raw_depth < target_depth and peg_touching_hole_wall:
+        return "F1"
+    if timed_out:
+        return "timeout"
+    return "F1"  # 깊이 미달인데 위 어느 것도 아니면(걸림은 아니지만 정렬 실패) 기본값으로 F1
+
+
 # reset()에서 IK 목표의 z를 잡는 값 -- peg anchor 재조정 3차(위
 # _PEG_LOCAL_OFFSET 참고) 전에는 "home 팔 자세에서 peg tip이 자연히
 # 가 있는 z"(home_tip_z)를 그대로 썼는데, anchor가 손목에서 멀어지면서
@@ -937,6 +1022,23 @@ class BimanualPegInHoleOpenArmSim:
 
     def get_hole_center_pos(self) -> np.ndarray:
         return self.data.site_xpos[self._hole_site_id].copy()
+
+    def is_peg_touching_hole_wall(self) -> bool:
+        """3단계(ARD-VLA 폐루프, PIPELINE.md "폐루프 데이터" 절 참고) F1
+        (정렬 실패/걸림) 판정용 -- peg(샤프트/팁 구) geom이 hole 벽 geom
+        중 하나와 실제로 접촉 중인지. weld가 아니라 진짜 접촉(<contact>,
+        peg-hole 사이는 exclude 안 돼 있다 -- 자기 손가락과만 exclude됨,
+        assets 파일 docstring 참고)이라 `data.contact`를 직접 본다(2단계
+        grasp_slip.py의 efc_force 필터링과는 다른 API -- 저건 weld
+        EQUALITY 제약, 이건 보통 CONTACT 제약)."""
+        wall_ids = set(self._wall_geom_ids.values())
+        for i in range(self.data.ncon):
+            c = self.data.contact[i]
+            if (c.geom1 in self._peg_geom_ids and c.geom2 in wall_ids) or (
+                c.geom2 in self._peg_geom_ids and c.geom1 in wall_ids
+            ):
+                return True
+        return False
 
     def get_left_ee_pos(self) -> np.ndarray:
         """왼팔(hole_socket을 쥔 채 이 태스크 내내 고정) EE 위치. 실제로는

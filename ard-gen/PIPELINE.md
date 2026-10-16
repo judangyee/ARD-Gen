@@ -1150,3 +1150,57 @@ force_limited 타이트해도 명목 성공 유지, injected가 relpose를 실�
 끄는지(결과 success는 단언 안 함, 위 한계 참고), reset()이 다음
 에피소드 전에 relpose/eq_active를 원래대로 복원하는지.
 
+### 3단계 — 서브태스크 분할과 완료 조건 ✅ 완료
+
+`tasks/peg_in_hole.graph.yaml`(신규, align→insert 두 노드)과
+`tasks/tacker.graph.yaml`(신규, approach→settle→retract→final_settle
+네 노드, 0단계 4번 조사 결과를 그대로 옮긴 메타데이터 -- 완료 조건 체크
+코드는 아직 없음, `implemented: false`로 명시) 둘 다 ARD-VLA의
+`DecisionLogic.load_task_graph()`가 그대로 읽을 수 있는 스키마
+(`next`/`recoveries`/`max_retries`)로 작성했고, 실제로 그 함수에 넣어
+로드되는지 확인했다(`tests/test_subtask_graph.py`가 아니라 1단계 조사
+스크립트로 직접 ARD-VLA 저장소를 import해서 확인 -- 이 테스트 파일
+자체는 ARD-VLA 없이도 돌게 `yaml.safe_load`만 쓴다). `max_steps`/
+`completion` 등 ARD-Gen 전용 키는 `load_task_graph()`가 그냥 무시한다
+(그 함수가 `spec.get()`으로만 읽으므로 안전).
+
+peg_in_hole의 두 노드는 admittance 컨트롤러의 구조(2 피드백축+1 가변
+삽입축)를 그대로 반영한다 -- **align**(xy 오차가 hole 반경
+`outer_half` 안으로 10스텝 연속 유지, 기존 `is_success()`의
+`xy_within_hole_footprint` 판정과 같은 기준)과 **insert**(목표 깊이
+이상을 기존 `_SUCCESS_HOLD_STEPS`만큼 유지 -- 사실상 기존 에피소드
+전체 성공 판정 그대로). `sim/peg_in_hole_bimanual_openarm_sim.py`에
+추가한 함수들:
+
+- `align_progress(cur_dx, cur_dy, initial_xy_err) -> float`: 초기 xy
+  오차 대비 감소율(0~1).
+- `insert_progress(raw_depth, target_depth) -> float`: 목표 깊이 대비
+  현재 원시 깊이(0~1).
+- `align_subtask_finished(...)`/`insert_subtask_finished(...)`: 그래프
+  yaml의 completion 조건을 코드로 반영(hold-steps 카운터는 호출부
+  책임 -- 기존 `is_success()`/`hold_count` 패턴과 동일).
+- `classify_failure(success, right_weld_active, right_cumulative_shift_m,
+  left_weld_active, left_cumulative_shift_m, peg_touching_hole_wall,
+  raw_depth, target_depth, timed_out, slip_distance_threshold_m=0.003) ->
+  str`: F2 > F3 > F1 > timeout > none 우선순위(파지 실패가 가장 직접적인
+  원인이라고 보고 먼저 검사). `success=True`면 항상 "none"(2단계에서
+  발견한 "release해도 중력으로 우연히 성공" 사례를 실패로 잘못 세지
+  않기 위함 -- 반대 선택도 가능하다는 걸 함수 docstring에 명시해둠,
+  이번 작업 범위에서 결정하지 않음).
+- `BimanualPegInHoleOpenArmSim.is_peg_touching_hole_wall()`(새 메서드):
+  F1(정렬 실패/걸림) 판정용 -- weld가 아니라 진짜 `<contact>`를
+  `data.contact`에서 직접 읽는다(2단계의 `efc_force` 필터링과는 다른
+  API, EQUALITY가 아니라 보통 접촉 제약이라서).
+
+**실측 확인** (`tests/test_subtask_graph.py`, 4개): 그래프 yaml
+스키마, 알려진 좋은 게인(Kp_xy=0.124630/Kd_xy=0.001125, offset=
+(0.014,0.0)) 실제 에피소드에서 align이 스텝10에 끝나고 insert가
+스텝157에 끝남(기존 알려진 성공 스텝 수와 정확히 일치) -- align이
+insert보다 항상 먼저 끝나는지, 이 시나리오에서 실제로 hole 벽 접촉이
+있었는지(F1 메커니즘이 이론만이 아니라 실제로 발동하는 경로인지),
+`classify_failure`의 우선순위 5가지 입력 조합, `align_progress`가
+30스텝 뒤 0.773까지 올라가는지. 기존 회귀 스위트(`test_regression_
+peg_in_hole.py`/`test_tacker_task.py`/`test_grasp_slip.py`) 전부 여전히
+통과(이번 단계는 순수 함수/신규 메서드 추가뿐이라 기존 경로에 영향
+없음).
+

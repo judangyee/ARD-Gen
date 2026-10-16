@@ -1,0 +1,38 @@
+# peg_in_hole의 서브태스크 그래프 -- ARD-VLA(judangyee/ARD-VLA,
+# closed-loop-structure)의 DecisionLogic.load_task_graph()가 그대로 읽을 수
+# 있는 스키마다: 각 노드는 {next, recoveries, max_retries}만 있으면 되고
+# (그 외 키는 전부 무시됨 -- decision_logic.py의 load_task_graph() 참고),
+# `max_steps`/`completion`은 ARD-Gen 쪽(sim/peg_in_hole_bimanual_openarm_sim.py
+# 의 align_subtask_finished()/insert_subtask_finished(), closedloop/
+# 어댑터)이 직접 읽는 ARD-Gen 전용 필드다.
+#
+# 노드 2개 -- align(정렬) -> insert(삽입). peg_in_hole의 admittance
+# 컨트롤러가 "xy 피드백(2축) + 가변 z 하강(1축)"이라서 자연스럽게 둘로
+# 나뉜다: xy가 hole 반경 안으로 들어오는 것(align)과, 그 상태에서 깊이가
+# 목표까지 도달해 일정 스텝 유지되는 것(insert, 사실상 기존
+# _SUCCESS_HOLD_STEPS 성공 판정 그대로).
+#
+# completion.threshold_xy_mult_of_outer_half: 1.0 -- clearance는
+# scene_config마다 다르므로(sim.sample_scene_config 참고) outer_half가
+# 고정값이 아니다. 그래서 이 YAML은 "그 에피소드의 실제 outer_half에 곱할
+# 배수"만 적어두고, 실제 임계값은 런타임에 outer_half*이 배수로 계산한다
+# (기존 is_success()의 xy_within_hole_footprint 판정과 똑같은 기준 --
+# "정렬됐다"는 "이미 삽입 판정의 xy 조건을 만족한다"는 뜻으로 정의했다).
+# 명목 clearance(0.003m)에서 참고용 수치는 outer_half=0.0195m.
+align:
+  next: insert
+  recoveries: [R1, R2, R3, R4]
+  max_retries: 3
+  max_steps: 400
+  completion:
+    type: xy_error_below_threshold_held
+    threshold_xy_mult_of_outer_half: 1.0
+    hold_steps: 10
+insert:
+  next: null
+  recoveries: [R1, R2, R3, R4]
+  max_retries: 3
+  max_steps: 600
+  completion:
+    type: depth_above_target_held
+    hold_steps: 20  # sim/peg_in_hole_bimanual_openarm_sim.py의 _SUCCESS_HOLD_STEPS와 동일

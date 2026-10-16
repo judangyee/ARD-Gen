@@ -1,0 +1,43 @@
+# tacker의 서브태스크 그래프 -- PIPELINE.md "폐루프 데이터" 절 0단계 4번
+# 조사 결과를 그대로 노드로 옮긴 것. 메타데이터/문서화 목적이다 --
+# sim/tacker_openarm_env.py의 run_episode()는 이번 작업 범위에서 아직
+# controller_step 패턴으로 쪼개지 않았으므로(peg_grasp/hole_grasp처럼
+# 이름이 지정돼 명시적으로 범위에 들어간 게 아님), 이 그래프를 실제로
+# 밟으며 실행하는 코드(완료 조건 체크/진행도/폐루프 어댑터)는 아직 없다
+# -- DecisionLogic.load_task_graph()가 스키마를 읽을 수 있다는 것만
+# 확인했다(아래 completion 필드는 ARD-Gen이 아직 안 쓴다).
+#
+# 4단계: approach(접근, tolerance 진입=압착+발사) -> settle(정착, 발사
+# 반동 가라앉힘) -> retract(후퇴, nail 위 안전 거리까지 수직 복귀) ->
+# final_settle(최종 정착, 그립 해제 영향 관찰). 코드상 이 넷은
+# sim/tacker_openarm_env.py의 run_episode() 안에 주석으로만 구분된 순차
+# 블록이다(명시적 stage 필드 없음) -- completion 조건도 그 코드의 각
+# 단계 종료 조건을 그대로 서술한 것(실측 체크 함수는 아직 없음).
+approach:
+  next: settle
+  recoveries: [R1, R2, R3, R4]
+  max_retries: 3
+  completion:
+    type: workpiece_within_tolerance  # run_episode()의 접근 tolerance 진입 조건
+    implemented: false
+settle:
+  next: retract
+  recoveries: [R1, R4]
+  max_retries: 3
+  completion:
+    type: fixed_step_count  # 발사 반동이 가라앉을 시간만큼 고정 스텝
+    implemented: false
+retract:
+  next: final_settle
+  recoveries: [R1, R2, R3, R4]
+  max_retries: 3
+  completion:
+    type: tip_reaches_retract_target  # nail 위 RETRACT_SAFE_DISTANCE_M 지점 도달
+    implemented: false
+final_settle:
+  next: null
+  recoveries: [R1, R4]
+  max_retries: 3
+  completion:
+    type: fixed_step_count
+    implemented: false
