@@ -167,12 +167,31 @@ class GraspSlipTracker:
 
     def reset_episode(self, model: mujoco.MjModel, data: mujoco.MjData) -> None:
         """매 에피소드 reset()에서 호출 -- relpose/eq_active/gravcomp를
-        원래 값으로 복원하고 누적 상태를 초기화한다."""
+        원래 값으로 복원하고 누적 상태(+ 교란 "이미 발생함" 플래그)까지
+        전부 초기화한다. 에피소드 전체를 다시 시작할 때만 쓴다 --
+        ARD-VLA 폐루프의 R3("재파지") 복구처럼 **에피소드 중간에** 그립만
+        되돌리고 싶으면 `regrasp()`를 쓴다(아래, 둘의 차이 참고)."""
+        self.regrasp(model, data)
+        self._released_done = False
+        self._injected_done = False
+
+    def regrasp(self, model: mujoco.MjModel, data: mujoco.MjData) -> None:
+        """물리적 그립(relpose 위치/eq_active/gravcomp)만 원래 값으로
+        복원한다 -- `reset_episode()`와 달리 injected/release의 "이미
+        발생함" 플래그는 안 건드린다.
+
+        ARD-VLA 폐루프 통합 테스트(closedloop/peg_in_hole_adapter.py의
+        R3 "재파지" 복구)에서 실측으로 발견한 버그를 피하려고 분리했다:
+        `reset_episode()`로 재파지를 구현하면 `_injected_done`도 같이
+        `False`로 풀리는데, `injected_at_step`은 "그 스텝 이상이면"
+        조건이라 `step_idx`가 이미 그 값을 넘긴 뒤라면 **다음 스텝에
+        같은 교란이 또 발동**해서 재시도마다 똑같이 실패하는 무한
+        루프가 됐다(실측 확인, PIPELINE.md "4단계" 절 참고). "재파지"는
+        그립을 고치는 것이지 "그 교란 이벤트가 아직 안 일어난 것처럼
+        되돌리는" 게 아니므로, 이 메서드는 플래그를 그대로 둔다."""
         model.eq_data[self.eq_id][3:6] = self._orig_relpose_pos
         data.eq_active[self.eq_id] = True
         model.body_gravcomp[self.held_body_id] = self._orig_body_gravcomp
-        self._released_done = False
-        self._injected_done = False
 
     def step(self, model: mujoco.MjModel, data: mujoco.MjData, step_idx: int) -> GraspState:
         """sim.step()이 mj_step을 부른 *뒤에* 호출한다(그 스텝에 솔버가 계산한

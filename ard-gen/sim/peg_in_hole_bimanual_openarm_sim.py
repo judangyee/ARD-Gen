@@ -1040,6 +1040,33 @@ class BimanualPegInHoleOpenArmSim:
                 return True
         return False
 
+    def right_arm_qpos(self) -> np.ndarray:
+        """ARD-VLA가 기대하는 16 DoF(팔당 7관절+그리퍼1) 관측 중 오른팔
+        7관절(PIPELINE.md "폐루프 데이터" 절 0단계 5번 참고 -- 이 저장소에
+        본래 없던 관절 공간 기록이 가능하다는 걸 보여주려고 4단계/5단계가
+        추가한 getter)."""
+        return np.array([self.data.qpos[self._arm_qposadr[name]] for name in _ARM_JOINTS])
+
+    def left_arm_qpos(self) -> np.ndarray:
+        return np.array([self.data.qpos[self._left_arm_qposadr[name]] for name in _LEFT_ARM_HOME_QPOS])
+
+    def right_gripper_qpos(self) -> float:
+        return float(self.data.qpos[self._right_finger_qposadr])
+
+    def left_gripper_qpos(self) -> float:
+        return float(self.data.qpos[self._left_finger_qposadr])
+
+    def joint_observation_16dof(self) -> np.ndarray:
+        """[오른팔 7, 오른팔 그리퍼 1, 왼팔 7, 왼팔 그리퍼 1] = 16차원.
+        액션 스페이스가 아니라 observation 전용 -- 이 태스크의 CMA-ES
+        게인 탐색은 delta-position 액션 + 내부 resolved-rate IK에 의존
+        하므로, 액션 자체를 절대 관절각으로 바꾸지 않는다(사용자 지시
+        "렌더링/학습 코드와 섞지 않는다"와는 별개로, 애초에 이번 작업
+        범위가 액션 스페이스를 바꾸는 게 아님)."""
+        return np.concatenate(
+            [self.right_arm_qpos(), [self.right_gripper_qpos()], self.left_arm_qpos(), [self.left_gripper_qpos()]]
+        ).astype(np.float32)
+
     def get_left_ee_pos(self) -> np.ndarray:
         """왼팔(hole_socket을 쥔 채 이 태스크 내내 고정) EE 위치. 실제로는
         거의 안 움직이지만(강화 게인으로 고정, assets 파일 docstring "3. 왼팔도

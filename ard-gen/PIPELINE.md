@@ -1204,3 +1204,91 @@ peg_in_hole.py`/`test_tacker_task.py`/`test_grasp_slip.py`) 전부 여전히
 통과(이번 단계는 순수 함수/신규 메서드 추가뿐이라 기존 경로에 영향
 없음).
 
+### 4단계 — 폐루프 환경 어댑터 + 스크립트 복구 ✅ 완료
+
+`closedloop/peg_in_hole_adapter.py`(신규 패키지): `PegInHoleClosedLoopEnv`
+가 ARD-VLA의 `ClosedLoopEnv` duck-typing 프로토콜(`observe`/`execute`/
+`subtask_finished`/`settle`/`safe_stop`/`run_recovery`) + 확장 메서드
+`set_subtask(node_id)`를 구현한다. `set_subtask()`는 ARD-VLA 러너가
+모르는 메서드라서(사용자 지시대로 "ARD-VLA 쪽에는 나중에 연결") 호출부가
+`run_closed_loop(..., post_decision=...)` 콜백에서 `ADVANCE` 결정마다
+직접 불러준다 -- 통합 테스트가 그 연결 방법을 실제로 보여준다.
+
+**observe()**: 양팔 관절(`right_arm_qpos`/`left_arm_qpos`, 0단계 5번에서
+"가능하다"고 확인했던 관절 공간 기록 -- `BimanualPegInHoleOpenArmSim`에
+`right_arm_qpos()`/`left_arm_qpos()`/`*_gripper_qpos()`/
+`joint_observation_16dof()` getter를 이번 단계에서 추가, 5단계도 이걸
+재사용한다), 서브태스크 id, (`render=True`일 때만) top_cam/wide_cam
+프레임. 렌더링은 `settle()` 호출 시점에 한 번만 갱신(판정 시점 이미지,
+0단계 6번의 렌더링 비용 때문에 매 스텝은 안 함) -- `render=False`(기본)
+면 `MUJOCO_GL`을 전혀 안 건드린다("렌더링 안 하는 스크립트에서는
+MUJOCO_GL=osmesa 설정 금지" 규칙 유지). `render=True`로 osmesa를 켜는
+경우도 이 모듈/통합 테스트 둘 다 PyTorch Adam을 만들지 않으므로(그게
+세그폴트 조건, PIPELINE.md 위쪽 절 참고) 안전하다고 보고 적용했다 --
+torch import 자체(ARD-VLA의 `closed_loop.py`가 함)는 세그폴트 조건이
+아니다.
+
+**오라클(`ScriptedOraclePolicy`)**: `predict_action_chunk_with_decisions
+(batch, selector_mask=None) -> (actions, decisions)` + `cancel_pending_
+actions()`를 학습 없이 물리값으로 구현. **액션 청크는 항상 길이
+1**이다(`actions.shape==(1,1,3)`) -- admittance 컨트롤러가 매 스텝 실제
+관측에 의존하는 연속 피드백이라 한 번의 관측으로 여러 스텝을 미리
+정확히 예측할 수 없어서(파일 docstring 참고), 매 물리 스텝마다 새로
+`controller_step()`을 불러 정확한 명령 하나만 돌려준다. `decisions`의
+`success_prob`은 물리값 기반 0/1(사용자 지시 그대로), `failure_probs`는
+3단계 `classify_failure()`의 결과를 4종(F1/F2/F3/timeout) 원-핫으로,
+`progress`는 `align_progress`/`insert_progress`. 판정은 `subtask_
+finished()`를 다시 부르지 않고 그 메서드가 True를 반환한 순간 남긴
+`_subtask_done_naturally`/`_subtask_timed_out` 플래그만 읽는다(다시
+부르면 hold-steps 카운터가 망가짐 -- 파일 docstring "판정은 방금 끝난
+서브태스크를 본다" 절 참고).
+
+**스크립트 복구 (controller_step 재사용, 학습 없음)**:
+
+| ID | 동작 |
+|---|---|
+| R1 | no-op -- 다음 iteration이 현재 물리 상태에서 그대로 재시도 |
+| R2 | `set_subtask()`가 찍어둔 체크포인트(qpos/qvel/`_virtual_qpos`)로 복원 + 재파지 |
+| R3 | 게인 상승(`Kp_xy *= 1.3` 기본) + 재파지(물리 상태는 안 건드림) |
+| R4 | `safe_stop()` 호출 |
+
+**실측으로 발견한 버그와 수정 (재파지 ≠ 에피소드 리셋)**: 처음엔 R3가
+`GraspSlipTracker.reset_episode()`를 그대로 썼는데, 그 메서드가
+`injected`/`release`의 "이미 발생함" 플래그까지 같이 풀어버려서 --
+`injected_at_step`은 "그 스텝 **이상**이면" 조건이라, 그 스텝을 이미
+넘긴 뒤에 플래그를 풀면 **다음 스텝에 같은 교란이 또 발동**했다(실측:
+R3를 3번 연속 골라도 매번 똑같이 F2로 실패, max_retries 초과로 STOP).
+`sim/grasp_slip.py`에 `regrasp()`(물리적 그립만 복원, 플래그는 안
+건드림)를 새로 추가해서 R3/R2 둘 다 이걸 쓰도록 고쳤다 -- `reset_
+episode()`는 에피소드 전체를 다시 시작할 때만 쓴다.
+
+**실측으로 발견한 한계 (R3만으로는 부족, R2가 필요했다)**: injected
++15mm(스텝80, 2단계에서 실패 확인된 값)로 F2를 일으킨 뒤 R3(재파지만,
+물리 상태는 그대로)로 복구를 매핑했더니 **그립은 고쳐졌지만(재주입 안
+됨) insert가 그래도 600스텝 예산 안에 못 끝났다**(timeout으로 3번
+연속 재시도 후 STOP). 추적해보니 xy는 재파지 후에도 금방 안정됐지만
+(outer_half 안쪽 1-3mm) **삽입 깊이(z)가 진행하다가 역행하는 패턴**이
+있었다 -- 추정 원인(확실친 않음): resolved-rate IK의 "가상(shadow) 상태"
+추적점은 고정 오프셋(`_PEG_LOCAL_OFFSET`)을 가정하는데, 교란으로 peg가
+그 가정과 다른 실제 위치에 있었던 동안 가상 상태와 실제 상태가 벌어져서,
+그립만 고쳐도(relpose는 복원되지만 팔의 현재 qpos/가상 상태는 안 바뀜)
+그 벌어진 차이가 안 없어진다는 뜻으로 보인다. **R2(체크포인트로 qpos/
+qvel/virtual_qpos까지 전부 복원 + 재파지)로 바꾸니 바로 복구됐다** --
+그래서 통합 테스트는 F1/F2/F3를 전부 R2로 매핑한다(R3는 코드/테스트
+모두 있지만, 이 특정 교란 시나리오의 복구용으로는 선택하지 않았다 --
+다른 더 약한 교란에는 충분할 수도 있음, 실측 안 함).
+
+**통합 테스트** (`tests/test_closed_loop_adapter.py`, `ARD_VLA_REPO`
+환경변수로 ARD-VLA 저장소 경로를 주면 실행, 없으면 skip): 실제
+`lerobot.policies.smolvla.decision_logic.DecisionLogic`/`closed_loop.
+run_closed_loop`를 import해서(둘 다 `third_party/lerobot/src`에 있고,
+`decision_logic.py`는 torch 의존성이 없고 `closed_loop.py`는 torch만
+의존 -- 전체 lerobot 패키지의 다른 무거운 의존성 없이 단독 import 성공
+확인), `injected`(F2, +15mm, 스텝80)로 교란을 주입한 뒤 align→insert→
+(F2 실패 감지)→R2 복구→insert 재시도→성공까지 끝까지 돌려서
+`termination_reason=="task_graph_end"`이고 `decision_history`에
+`('recover','R2','F2')`가 있는지 확인한다(1회 통과 확인). ARD-VLA 없이
+도는 어댑터 자체 smoke test 2개(프로토콜 다섯 메서드, R1~R4 네 복구)도
+있다. 기존 회귀 스위트 전부 여전히 통과(새 getter/모듈 추가뿐, 기존
+경로 비영향).
+
