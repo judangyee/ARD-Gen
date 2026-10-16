@@ -945,3 +945,115 @@ tacker_openarm_env.py`).
   (후퇴(~30~40스텝) + 최종 정착(20스텝)이 추가된 만큼).
 - 언어 라벨링 force_max 범위 [5.9, 20.1]N, 강도 분포 gentle 83/normal
   83/firm 86 -- 이전과 사실상 동일(발사 반동 자체는 안 바뀌었으므로 당연).
+
+## 폐루프 데이터 (closed-loop-data 브랜치)
+
+ARD-VLA(judangyee/ARD-VLA, 브랜치 closed-loop-structure)의 Judge/Selector
+폐루프 구조를 학습·실험하는 데 필요한 시뮬·데이터 인프라를 ARD-Gen 쪽에
+만든다. Judge 학습/SmolVLM2 특징 추출/실험 비교는 범위 밖 -- 이 절은
+시뮬·데이터 인프라만 다룬다.
+
+### 0단계 — 추적 (코드 수정 없음) ✅ 완료
+
+**브랜치 관계**: `main`(d02575e, OpenArm peg_in_hole·tacker 등록된 최신
+라인)에서 `closed-loop-data`를 땄다. `claude/queue-dyy0ir`의
+screw_driving, `ard-gen-v2`, `ard-gen-insertion`/`ard-gen-insertion-horizontal`,
+`feature/official-openarm-model`은 이번 작업에서 병합하지 않는다 --
+전부 main과 별도로 갈라진 독립 라인이고, 이번 폐루프 인프라는 그 중
+어느 것에도 의존하지 않는다(peg_in_hole_openarm_env.py/
+peg_in_hole_bimanual_openarm_sim.py만 건드린다, main에 이미 있는 그대로).
+
+1. **controller_step 경계**: `sim/peg_in_hole_openarm_env.py:PegInHoleOpenArmEnv.run_episode()`
+   의 for 루프 안에서, "관측(`sim.get_peg_tip_pos()`/`get_hole_center_pos()`)
+   → 오차(`cur_dx/cur_dy`, 이전 스텝 값 `prev_dx/prev_dy`와의 차분) →
+   admittance(`delta_xy`) + adaptive_z_rate(`z_rate`) → 액션(`delta`)"
+   계산 블록(해당 파일 148~159행)이 순수 함수로 뽑을 수 있는 경계다 --
+   force/torque 기록, `self.step(delta)` 호출, 성공 판정은 전부 이
+   블록의 바깥(호출부)에 남는다. 서명: `controller_step(sim, gains,
+   prev_dx, prev_dy, outer_half, target_depth) -> (delta, new_prev_dx,
+   new_prev_dy)` (1단계에서 그대로 구현).
+
+2. **weld 런타임 조작 (실측, mujoco 3.14.0)**:
+   - `data.eq_active[eq_id] = False`로 끄면 다음 `mj_step`부터 그 weld가
+     바로 비활성화된다(실측: `peg_grasp`를 끄고 20스텝 돌려도 peg_tip이
+     한 치도 안 움직임 -- **이건 버그가 아니라 peg 바디 자체에
+     `gravcomp="1"`이 XML에 박혀 있어서 weld를 꺼도 중력이 상쇄돼 그냥
+     그 자리에 뜬 채로 남기 때문이다**. "놓쳐서 떨어진다"처럼 보이게
+     하려면 release 순간 `model.body_gravcomp[peg_body_id] = 0`도 같이
+     꺼야 한다 -- 2단계 release 모드에 반영.
+   - `model.eq_data[eq_id]`(relpose, WELD 타입은 `[anchor(3), relpose_pos(3),
+     relpose_quat(4), torquescale(1)]` 11원소)를 런타임에 바꾸면 **다음
+     `mj_step`부터 바로 반영된다**(`mj_forward`로 먼저 갱신 확인 가능,
+     `mj_step`도 매 스텝 모델을 다시 읽으므로 추가 조치 불필요). 실측:
+     relpose x를 +1cm 튕겨놓고 30스텝 보면 weld 구속력이 27.0(튕긴 직후)
+     → 0.04(20스텝 후)로 감쇠하면서 peg_tip이 새 목표를 향해 **점진적으로**
+     (텔레포트 아님) 수렴한다 -- `force_limited`/`injected` 미끄러짐
+     모델이 쓸 바로 그 메커니즘.
+   - weld 구속력은 `data.efc_force`에서 `data.efc_type[i] ==
+     mujoco.mjtConstraint.mjCNSTR_EQUALITY`이고 `data.efc_id[i] == eq_id`인
+     행(최대 6개: 위치3+회전3)의 노름으로 읽을 수 있다(실측 확인, API만
+     있고 별도 센서 불필요). 참고로 이 모델은 equality가 4개 있다
+     (`peg_grasp`=0, `hole_grasp`=1 둘 다 WELD, 나머지 2개는 양팔 그리퍼
+     finger_joint2 mimic용 JOINT equality -- 무관).
+
+3. **명목 조건 weld 구속력 분포** (기본 게인 Kp_xy=0.124630/Kd_xy=0.001125,
+   peg_in_hole의 기존 eval_scenarios 3개 실측, 2단계 임계값 근거):
+
+   | weld | 역할 | mean | max | p95 |
+   |---|---|---|---|---|
+   | `peg_grasp` (오른팔) | Actuator 파지(F2) | 0.71 | 11.86 | 7.00 |
+   | `hole_grasp` (왼팔) | Stabilizer 미끄러짐(F3) | 10.04 | 18.55 | 15.82 |
+
+   `hole_grasp`는 baseline 자체가 이미 높다(왼팔이 강화 게인으로 중력/
+   미세 교란에 계속 저항 중이라는 뜻, tacker PIPELINE 절의 "vendor
+   게인은 중력만으로도 sag가 생긴다"와 같은 현상) -- 그래서 2단계
+   `force_limited` 임계값은 두 weld에 **따로** 둬야 한다(공통 스칼라
+   하나로는 `hole_grasp`가 항상 걸리거나 `peg_grasp`가 전혀 안 걸림).
+   (주의: 3개 eval_scenarios만 돌렸다 -- `sample_scene_config`의 전체
+   무작위 분포는 아직 안 돌려봄, 분산이 더 클 수 있다.)
+
+4. **tacker 단계 구분**: `sim/tacker_openarm_env.py`의 `run_episode()`
+   안에 approach → settle(발사 포함) → retract → final_settle 네 단계가
+   **주석으로만 구분된 순차 코드 블록**으로 있다(별도 함수/명시적 `stage`
+   필드 없음, `release_grip_after` 설정값도 "`fire_settle`"/"`retract`"
+   문자열로 각주를 달 뿐 스텝별 기록은 안 남긴다). 3단계 그래프 yaml에는
+   네 단계를 노드로 옮겨 적지만(문서/메타데이터), tacker의 실행 루프
+   자체를 controller_step 패턴으로 다시 쪼개는 건 이번 작업 범위에 넣지
+   않았다 -- 2/4단계(미끄러짐 모델, 폐루프 어댑터)는 명시적으로 이름이
+   나온 `peg_grasp`/`hole_grasp`(peg_in_hole)에만 구현한다. tacker의
+   `tacker_grasp`/`workpiece_grasp` weld도 같은 패턴이라 메커니즘 자체는
+   옮겨 쓸 수 있을 것으로 보이지만(미검증), 150+ 에피소드짜리 기존 회귀
+   테스트가 있는 안정된 태스크라 이번 범위에서는 안 건드렸다.
+
+5. **npz 스키마 vs ARD-VLA 16 DoF**: 현재 `pipeline/episode_io.py` 스키마는
+   `right_arm.traj`(ee_poses, 4차원: xyz+joint7), `right_arm.action`(델타
+   xyz, 3차원), `left_arm.traj`(월드 EE 위치, 3차원)만 있다 -- **관절
+   공간(16 DoF = 팔당 7관절+그리퍼1) 기록은 지금 전혀 없다.** 다만
+   `sim/openarm_bimanual_base.py:OpenArmBimanualBase`(main에 없음 --
+   이 저장소의 다른 브랜치 `ard-gen-insertion-horizontal`에서 만든 공통
+   베이스, 이번 브랜치는 그걸 병합하지 않으므로 아래는 "가능하다는 사실"
+   참고용 기록이고 실제 구현은 이번 브랜치의 sim 클래스에 **직접** 작은
+   getter로 추가한다)가 이미 `right_arm_qpos()`/`left_arm_qpos()`/
+   `*_gripper_qpos()` 패턴의 getter를 증명한 적이 있다 -- `self.data.qpos`
+   에서 그냥 읽는 것뿐이라 **관절 공간 기록은 기술적으로 아무 장애 없이
+   가능하다**(5단계에서 `BimanualPegInHoleOpenArmSim`에 같은 getter를
+   작게 추가해서 매 스텝 기록한다).
+
+6. **렌더링 비용** (`MUJOCO_GL=osmesa`, 640x480, 실측): `top_cam`
+   324ms/frame, `wide_cam` 441ms/frame (둘 다 소프트웨어 렌더러라 2~3fps
+   수준 -- 느리다). `render_episode.py`의 `env.step`을 감싸서 캡처하는
+   몽키패치 패턴은 그대로 재사용 가능(판정 시점에만 호출하면 매 스텝이
+   아니라 서브태스크 경계 수만큼만 들어서 비용이 줄어듦) -- 5단계는 이
+   비용 때문에 "별도 렌더링 프로세스에서 같은 시드로 재생"(지시사항
+   원문)을 그대로 따른다(물리 롤아웃 자체는 렌더링 없이 빠르게 돌리고,
+   경계 이미지만 osmesa 프로세스에서 재생해서 뽑는다).
+
+7. **명목 개루프 성공률 기준선** (시드 고정 `np.random.default_rng(12345)`,
+   `sample_scene_config`로 N=200 무작위 씬, 알려진 좋은 게인
+   Kp_xy=0.124630/Kd_xy=0.001125, 실측): **200/200 = 100.0%**
+   (insertion_depth 평균 23.37mm, 최대 25.71mm). 200 에피소드에 66.9초
+   (334.6ms/episode). 이게 2단계 게이트("기준선보다 5%p 초과 하락하면
+   보고")의 기준선이다. 명목 분포에서 이미 100%라 5단계의 "자연 실패
+   10~30%" 범위(A)는 이 분포보다 훨씬 좁은 clearance/훨씬 큰 오프셋
+   반경으로 따로 찾아야 한다(5단계에서 수행).
+
