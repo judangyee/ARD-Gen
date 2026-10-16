@@ -2145,3 +2145,88 @@ configured_weights`)는 F2 magnitude 범위만 확인하고 F3 방향 분포
 안 봄(명목 자세 하나만 확인). 미끄러짐 크기와 hole 치수의 관계는
 해석만 남기고 설정 범위를 실제로 좁히는 실험은 안 함.
 
+### 마무리 — B 재생성 + 테스트 + 완료 보고 ✅ 완료
+
+**B 재생성 경계 판정 분포 (새 기본 규칙 + 8방향 스윕 기반 방향분포로
+이전 vs 이후)**:
+
+| | 표본 | none | F3 | F2 | F1a | F1b | timeout |
+|---|---|---|---|---|---|---|---|
+| 직전(새 규칙, 방향 spread=40, `narrow_clearance`등 가중치 1.0 그대로) | 120ep/321경계 | 71.0% | 15.0% | 7.2% | 2.2% | 3.7% | 0.9% |
+| 최종(방향 spread=90 + `narrow_clearance`/`bad_gains`/`xy_target_bias` 가중치 상향) | 120ep/323경계 | 65.9% | 11.8% | 6.2% | 7.7% | 6.8% | 1.5% |
+
+**목표("F1 계열이 0이 아니게, 각 유형 10% 안팎") 대비**: F1 계열
+(F1a+F1b)이 **5.9% -> 14.5%로 0에서 뚜렷이 벗어났다**(1차 목표
+달성). 유형별로 보면 F3(11.8%)만 10% 선을 넘었고, F2(6.2%)/F1a
+(7.7%)/F1b(6.8%)는 10%에 못 미쳤으며 timeout(1.5%)은 많이 못
+미쳤다. **억지로 더 맞추지 않고 정직하게 기록**: timeout이 구조적으로
+희소한 건 새 규칙 설계 자체의 결과다(`classify_f1_or_timeout()`가
+"거의 성공"일 때만 timeout을 주고, 그 외 모든 비-그립 실패는 F1a/F1b
+로 흡수하도록 의도적으로 설계했다 -- timeout 진단에서 "그냥_느림"
+후보가 실측 0건이었던 것과 같은 이유로, timeout이 큰 비중을 차지하는
+게 애초에 어색하다). F2가 F3보다 낮은 건 `narrow_clearance`/
+`bad_gains`/`xy_target_bias` 가중치를 올리면서 전체 가중치 합이
+늘어나 F2/F3 각각의 상대 비중이 줄었기 때문(트레이드오프, 더 정밀한
+그리드서치는 시간 예산상 안 함).
+
+**disturbance_config=None(기본값, 모든 교란 꺼짐과는 다름 -- "꺼짐"은
+여기서는 재조정 기능 자체를 안 쓰는 것)일 때 bit-identical 확인**:
+`test_disturbance_config_off_is_bit_identical`(이전 작업에서 이미
+작성)이 여전히 통과 -- 이번 세션의 모든 변경(새 실패유형 규칙,
+방향분포, 가중치)은 `disturbance_config`/`legacy_failure_rule`이
+명시적으로 켜졌을 때만 적용된다.
+
+**테스트 수**: 이 follow-up 세션 시작 시점(9989b87 이전, 즉
+"교란 분포 재조정" 작업 완료 시점) 기준 6개 파일/**30개 함수** ->
+이 세션 끝 기준 6개 파일/**34개 함수**(+4: `test_classify_failure_
+by_subtask_categories`/`test_legacy_vs_new_rule_on_same_episodes`/
+`test_legacy_recovery_always_r2`(이상 `test_subtask_graph.py`),
+`test_disturbance_config_f3_direction_follows_concentrated_spread`
+(`test_closed_loop_data_schema.py`)). 전부 통과(`ARD_VLA_REPO`
+미설정 시 그 통합 테스트 하나만 skip).
+
+**새로 추가/수정된 파일 요약**:
+- `sim/peg_in_hole_bimanual_openarm_sim.py` -- `classify_failure_by_
+  subtask()`/`compute_subtask_features()`/`classify_f1_or_timeout()`
+  (새 기본 규칙), `classify_failure()`(legacy)는 불변.
+- `closedloop/peg_in_hole_adapter.py` -- `_history`(구간 시계열),
+  `legacy_failure_rule` 플래그, `FAILURE_TYPES`/`FAILURE_TYPES_LEGACY`,
+  R1 복구 버그 수정.
+- `tasks/peg_in_hole.graph.yaml` -- `failure_recovery` 맵.
+- `pipeline/generate_closed_loop_episodes.py` -- `--legacy-failure-rule`,
+  유형별 복구 선택.
+- `pipeline/disturbance_config.yaml` -- F3 방향 spread 40->90,
+  narrow_clearance/bad_gains/xy_target_bias 가중치 상향.
+- 신규 스크립트(전부 커밋됨, 재현 가능): `pipeline/diagnose_timeout_
+  boundaries.py`(timeout 유형화), `pipeline/plot_timeout_examples.py`
+  (대표 사례 시계열/이미지), `pipeline/measure_recovery_success.py`
+  (복구 성공률), `pipeline/sweep_injected_slip.py`(기존 파일, 8방향으로
+  확장).
+- `analysis/timeout_diagnosis/` -- 대표 사례 그림/이미지 5개.
+
+**아직 확인하지 못한 항목 전체 목록** (세 작업에 흩어진 걸 모음,
+정직하게 기록):
+- F2/F3 우선순위 자체(파지 실패가 가장 먼저 판정돼야 한다는 전제)는
+  재검증 안 함.
+- "그냥_느림" 분기는 실측 0건이라 사실상 죽은 코드(남겨는 둠).
+- 복구 성공률 실측(N=20~79)은 표본이 작아 신뢰구간이 넓다.
+- F1a/F1b/timeout 복구가 거의 안 되는 근본 원인(행동 왜곡형 교란이
+  복구 뒤에도 계속 적용된다는 가설)은 가설 수준이고 직접 검증(예:
+  복구 시점에 교란 자체를 제거해보는 실험)은 안 함.
+- 8방향 스윕은 45도 간격만 봤다(더 촘촘한 각도는 안 봄), 명목 자세
+  하나에서만 손목 좌표계를 계산했다(다른 scene에서도 비슷한지 안 봄).
+- 미끄러짐 크기 vs hole 반폭 해석은 기록만 하고 설정 범위를 실제로
+  조정하는 실험은 안 함.
+- B의 F2/F1a/F1b/timeout이 전부 10% 안팎은 아니다(F3만 달성) --
+  더 정밀한 가중치 튜닝(그리드서치)은 시간 예산상 안 함.
+- Judge를 실제로 이 데이터로 학습해서 새 유형 체계가 더 나은지
+  검증 -- 전부 범위 밖(사용자 지시), 전혀 안 함.
+- 중규모 이상 데이터 생성 -- 범위 밖(사용자 지시), 전혀 안 함.
+- CPU 전용으로 전부 돌렸다(Colab/torch 불필요 지시 그대로) -- GPU
+  환경에서의 거동은 확인 안 함(애초에 이 코드 경로는 GPU를 안 씀).
+
+**브랜치**: `closed-loop-data`(이 follow-up 세션 시작 시점 9989b87
+에서 이어서 커밋 다수 추가 -- 작업1 진단+시각화 2개, 작업2 규칙
+재정의+버그수정+매핑보정 3개, 작업3 스윕+분포조정+테스트 3개, 마무리
+가중치조정 1개), push 완료.
+
