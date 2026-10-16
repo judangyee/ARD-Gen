@@ -268,6 +268,44 @@ def adaptive_z_rate(dx: float, dy: float, outer_half: float, raw_depth: float, t
     scale = _Z_GATE_MIN_FRACTION + (1.0 - _Z_GATE_MIN_FRACTION) * align_quality
     return Z_RATE * scale
 
+
+def controller_step(
+    sim: "BimanualPegInHoleOpenArmSim",
+    gains: dict[str, float],
+    prev_dx: float,
+    prev_dy: float,
+    outer_half: float,
+    target_depth: float,
+) -> tuple[np.ndarray, float, float]:
+    """ARD-VLA 폐루프 작업(PIPELINE.md "폐루프 데이터" 절 0단계 항목 1 참고)을
+    위해 _run_episode_with_sim()/PegInHoleOpenArmEnv.run_episode()의 루프
+    본문에서 "관측 -> 행동" 계산만 뽑아낸 순수 함수 -- 물리 전진(sim.step())
+    자체는 호출부가 한다(이 함수는 side effect가 없다). 리팩토링 전과 정확히
+    같은 부동소수점 연산 순서를 유지해서 결과가 비트 단위로 동일하다
+    (tests/test_regression_peg_in_hole.py, tests/test_tacker_task.py로 확인
+    -- tacker는 이 함수를 안 쓰지만 전체 회귀 스위트가 그대로 통과하는지
+    같이 확인한다).
+
+    반환값 (delta, new_prev_dx, new_prev_dy) -- new_prev_dx/dy를 다음
+    스텝 호출의 prev_dx/prev_dy로 그대로 넘기면 된다(PD 미분항의 상태)."""
+    kp_xy = float(gains["Kp_xy"])
+    kd_xy = float(gains["Kd_xy"])
+
+    cur_peg_tip = sim.get_peg_tip_pos()
+    cur_hole_center = sim.get_hole_center_pos()
+    cur_dx = float(cur_hole_center[0] - cur_peg_tip[0])
+    cur_dy = float(cur_hole_center[1] - cur_peg_tip[1])
+    d_dx = (cur_dx - prev_dx) / DT
+    d_dy = (cur_dy - prev_dy) / DT
+    delta_xy = np.array([kp_xy * cur_dx + kd_xy * d_dx, kp_xy * cur_dy + kd_xy * d_dy])
+
+    cur_raw_depth = max(0.0, float(cur_hole_center[2] - cur_peg_tip[2]))
+    z_rate = adaptive_z_rate(cur_dx, cur_dy, outer_half, cur_raw_depth, target_depth)
+    delta = np.array([delta_xy[0], delta_xy[1], -z_rate])
+
+    return delta, cur_dx, cur_dy
+
+
 # "어느정도 들어가면 그만 눌러도 될 것 같은데, hole 길이의 절반이 되는
 # 지점을 (peg_tip 기준) 목표로 잡아서 해봐" 피드백으로 0.04 -> hole
 # 길이의 절반(0.0275m)으로 낮췄었다. hole 길이(assets/
@@ -944,9 +982,6 @@ def _run_episode_with_sim(
     outer_half = sim.reset(cfg)
     target_depth = cfg["target_insertion_depth"]
 
-    kp_xy = float(gains["Kp_xy"])
-    kd_xy = float(gains["Kd_xy"])
-
     ee_poses = [sim.get_ee_pose()]
     actions = []
     forces = []
@@ -972,20 +1007,11 @@ def _run_episode_with_sim(
         # force가 아니라 **위치 오차(dx,dy)**에 곱하는 게인이다(이름은
         # 그대로 두지만 단위/의미가 다르다 -- force 기반 값(0.000515 등)을
         # 그대로 재사용하면 안 되고 다시 탐색해야 함).
-        cur_peg_tip = sim.get_peg_tip_pos()
-        cur_hole_center = sim.get_hole_center_pos()
-        cur_dx = float(cur_hole_center[0] - cur_peg_tip[0])
-        cur_dy = float(cur_hole_center[1] - cur_peg_tip[1])
-        d_dx = (cur_dx - prev_dx) / DT
-        d_dy = (cur_dy - prev_dy) / DT
-        prev_dx, prev_dy = cur_dx, cur_dy
-        delta_xy = np.array([kp_xy * cur_dx + kd_xy * d_dx, kp_xy * cur_dy + kd_xy * d_dy])
-
-        # 이번 스텝 시작 시점(직전 스텝 결과)의 정렬 상태로 이번 스텝의
-        # 하강 속도를 정한다 -- adaptive_z_rate 정의부 주석 참고.
-        cur_raw_depth = max(0.0, float(cur_hole_center[2] - cur_peg_tip[2]))
-        z_rate = adaptive_z_rate(cur_dx, cur_dy, outer_half, cur_raw_depth, target_depth)
-        delta = np.array([delta_xy[0], delta_xy[1], -z_rate])
+        #
+        # 관측->행동 계산 자체는 controller_step()으로 뽑아냈다(ARD-VLA
+        # 폐루프 작업, PIPELINE.md "폐루프 데이터" 절 1단계 참고) -- 이
+        # 호출은 리팩토링 전 인라인 코드와 정확히 같은 연산을 한다.
+        delta, prev_dx, prev_dy = controller_step(sim, gains, prev_dx, prev_dy, outer_half, target_depth)
 
         sim.step(delta)
 

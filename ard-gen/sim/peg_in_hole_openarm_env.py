@@ -46,12 +46,11 @@ import numpy as np
 
 from sim.base_task_env import BaseTaskEnv
 from sim.peg_in_hole_bimanual_openarm_sim import (
-    DT,
     MAX_STEPS,
     _MAX_SANE_DEPTH_M,
     _SUCCESS_HOLD_STEPS,
     BimanualPegInHoleOpenArmSim,
-    adaptive_z_rate,
+    controller_step,
 )
 from sim.peg_in_hole_bimanual_openarm_sim import _default_scene_config as _sim_default_scene_config
 from sim.peg_in_hole_bimanual_openarm_sim import sample_scene_config as _sim_sample_scene_config
@@ -120,13 +119,14 @@ class PegInHoleOpenArmEnv(BaseTaskEnv):
     def run_episode(self, gains: dict[str, float], scene_config: dict[str, Any]) -> dict[str, Any]:
         """sim/peg_in_hole_bimanual_openarm_sim.py의 _run_episode_with_sim()과
         동일한 루프 -- reward/success만 compute_reward()/is_success()를 거치도록
-        뽑아냈고, left_arm_traj 기록(위 모듈 docstring 참고)을 추가했다."""
+        뽑아냈고, left_arm_traj 기록(위 모듈 docstring 참고)을 추가했다.
+
+        관측->행동 계산은 controller_step()(같은 sim 모듈)을 쓴다 -- ARD-VLA
+        폐루프 작업의 1단계, PIPELINE.md "폐루프 데이터" 절 참고. 리팩토링
+        전과 정확히 같은 연산이라 비트 단위로 동일하다."""
         sim = self._sim
         outer_half = self.reset(scene_config)
         target_depth = scene_config["target_insertion_depth"]
-
-        kp_xy = float(gains["Kp_xy"])
-        kd_xy = float(gains["Kd_xy"])
 
         left_arm_traj = [sim.get_left_ee_pos()]
         ee_poses = [sim.get_ee_pose()]
@@ -145,18 +145,7 @@ class PegInHoleOpenArmEnv(BaseTaskEnv):
             force, torque = sim.get_force_torque()
             max_force_mag = max(max_force_mag, float(np.linalg.norm(force)))
 
-            cur_peg_tip = sim.get_peg_tip_pos()
-            cur_hole_center = sim.get_hole_center_pos()
-            cur_dx = float(cur_hole_center[0] - cur_peg_tip[0])
-            cur_dy = float(cur_hole_center[1] - cur_peg_tip[1])
-            d_dx = (cur_dx - prev_dx) / DT
-            d_dy = (cur_dy - prev_dy) / DT
-            prev_dx, prev_dy = cur_dx, cur_dy
-            delta_xy = np.array([kp_xy * cur_dx + kd_xy * d_dx, kp_xy * cur_dy + kd_xy * d_dy])
-
-            cur_raw_depth = max(0.0, float(cur_hole_center[2] - cur_peg_tip[2]))
-            z_rate = adaptive_z_rate(cur_dx, cur_dy, outer_half, cur_raw_depth, target_depth)
-            delta = np.array([delta_xy[0], delta_xy[1], -z_rate])
+            delta, prev_dx, prev_dy = controller_step(sim, gains, prev_dx, prev_dy, outer_half, target_depth)
 
             self.step(delta)
             left_arm_traj.append(sim.get_left_ee_pos())

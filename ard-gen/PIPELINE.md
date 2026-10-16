@@ -1057,3 +1057,22 @@ peg_in_hole_bimanual_openarm_sim.py만 건드린다, main에 이미 있는 그�
    10~30%" 범위(A)는 이 분포보다 훨씬 좁은 clearance/훨씬 큰 오프셋
    반경으로 따로 찾아야 한다(5단계에서 수행).
 
+### 1단계 — controller_step 분리 ✅ 완료
+
+0단계 1번에서 찾은 경계 그대로 `sim/peg_in_hole_bimanual_openarm_sim.py`에
+`controller_step(sim, gains, prev_dx, prev_dy, outer_half, target_depth) ->
+(delta, new_prev_dx, new_prev_dy)`를 추가했다(물리 전진은 안 함, 호출부가
+`sim.step(delta)`를 따로 부른다). `_run_episode_with_sim()`(같은 파일)과
+`PegInHoleOpenArmEnv.run_episode()`(`sim/peg_in_hole_openarm_env.py`) 둘 다
+이 함수 하나를 쓰도록 바꿨다 -- 제어 로직이 더 이상 두 곳에 복붙돼
+있지 않다. 연산 순서는 리팩토링 전과 완전히 동일(그냥 블록을 함수로
+옮긴 것뿐).
+
+**회귀 테스트(비트 단위 동일성)**: `tests/test_regression_peg_in_hole.py`
+9케이스 전부 리워드 값까지 정확히 동일(예: `kp=0.0003 kd=5e-05
+offset=(0.014,0.0): reward=49.4675` -- 리팩토링 전 기록과 일치), scene
+sampling 5개 시드 일치, `task_registry wiring` 통과. `tests/
+test_tacker_task.py`도 전부 통과(tacker는 이 함수를 안 쓰지만 import
+그래프가 안 깨졌는지 확인). 2단계(미끄러짐 모델)/4단계(폐루프 어댑터)는
+이제 이 함수만 재사용한다 -- 제어 로직을 또 복사하지 않는다.
+
