@@ -1,0 +1,146 @@
+{
+  "code_commit": "2e4193caff12b01ab807a455a3342a65c57c2277",
+  "distribution": {
+    "by_source_disturbance": {
+      "A:None": 653,
+      "B:action_noise": 65,
+      "B:bad_gains": 141,
+      "B:high_friction": 61,
+      "B:injected_slip_F2": 669,
+      "B:injected_slip_F3": 777,
+      "B:narrow_clearance": 247,
+      "B:xy_target_bias": 182,
+      "C:action_delay": 200,
+      "C:very_narrow_clearance": 265,
+      "C:wide_friction": 330
+    },
+    "by_split": {
+      "test_A": {
+        "fail": 106,
+        "failure_type:F1a": 92,
+        "failure_type:F1b": 5,
+        "failure_type:none": 547,
+        "failure_type:timeout": 9,
+        "success": 547,
+        "total": 653
+      },
+      "test_B": {
+        "fail": 93,
+        "failure_type:F1a": 41,
+        "failure_type:F1b": 5,
+        "failure_type:F2": 20,
+        "failure_type:F3": 26,
+        "failure_type:none": 177,
+        "failure_type:timeout": 1,
+        "success": 177,
+        "total": 270
+      },
+      "test_C": {
+        "fail": 382,
+        "failure_type:F1a": 186,
+        "failure_type:F1b": 162,
+        "failure_type:none": 413,
+        "failure_type:timeout": 34,
+        "success": 413,
+        "total": 795
+      },
+      "train": {
+        "fail": 571,
+        "failure_type:F1a": 179,
+        "failure_type:F1b": 104,
+        "failure_type:F2": 105,
+        "failure_type:F3": 157,
+        "failure_type:none": 1041,
+        "failure_type:timeout": 26,
+        "success": 1041,
+        "total": 1612
+      },
+      "val": {
+        "fail": 82,
+        "failure_type:F1a": 31,
+        "failure_type:F1b": 10,
+        "failure_type:F2": 12,
+        "failure_type:F3": 26,
+        "failure_type:none": 178,
+        "failure_type:timeout": 3,
+        "success": 178,
+        "total": 260
+      }
+    },
+    "n_slipped_but_succeeded": 204,
+    "slipped_but_succeeded_rate": 0.05682451253481894
+  },
+  "disturbance_config": {
+    "b_weights": {
+      "action_noise": 1.0,
+      "bad_gains": 2.0,
+      "high_friction": 1.0,
+      "injected_slip_F2": 9.0,
+      "injected_slip_F3": 10.0,
+      "narrow_clearance": 3.0,
+      "xy_target_bias": 2.0
+    },
+    "injected": {
+      "direction": {
+        "F2": {
+          "mode": "full_circle"
+        },
+        "F3": {
+          "center_deg": 180,
+          "mode": "concentrated",
+          "off_target_prob": 0.3,
+          "spread_deg": 90
+        }
+      },
+      "hard_negative_prob": 0.25,
+      "magnitude_mm": {
+        "F2": [
+          10,
+          30
+        ],
+        "F3": [
+          20,
+          35
+        ]
+      },
+      "timing_effective_step_range": [
+        75,
+        135
+      ],
+      "timing_hard_negative_step_range": [
+        15,
+        55
+      ]
+    }
+  },
+  "failure_type_index": {
+    "F1a": 0,
+    "F1b": 1,
+    "F2": 2,
+    "F3": 3,
+    "none": -1,
+    "timeout": 4
+  },
+  "instruction_format_note": "ARD-VLA decision_logic.instruction_text()\uc758 \ud615\uc2dd(\"\ubaa9\ud45c | current subtask: ... | completed: ...\")\uc744 \uc0ac\uc6a9\uc790 \uc9c0\uc2dc\ub300\ub85c \uc7ac\ud604\ud588\ub2e4 -- \uc774 \uc138\uc158\uc5d0\ub294 ARD-VLA \uc18c\uc2a4\uac00 \uc5c6\uc5b4\uc11c \uc2e4\uc81c \uad6c\ud604\uacfc \ud1a0\uc528\uae4c\uc9c0 \uac19\ub2e4\ub294 \ubcf4\uc7a5\uc740 \uc5c6\ub2e4(\uc815\uc9c1\ud558\uac8c \uae30\ub85d).",
+  "n_chunks": 28,
+  "n_episodes": 1400,
+  "n_samples": 3590,
+  "render": {
+    "height": 240,
+    "image_format": "JPEG",
+    "jpeg_quality": 90,
+    "width": 320
+  },
+  "sources": [
+    "A",
+    "B",
+    "C"
+  ],
+  "splits": [
+    "test_A",
+    "test_B",
+    "test_C",
+    "train",
+    "val"
+  ]
+}
