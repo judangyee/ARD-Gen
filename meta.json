@@ -131,11 +131,25 @@
     "jpeg_quality": 90,
     "width": 320
   },
+  "seed_rule": {
+    "formula": "seed = SOURCE_SEED_BASE[source] + episode_idx",
+    "note": "\ucd9c\ucc98\ubcc4\ub85c \uacb9\uce58\uc9c0 \uc54a\ub294 \uc2dc\ub4dc \uacf5\uac04(\uac01 \ucd5c\ub300 100\ub9cc \uc5d0\ud53c\uc18c\ub4dc) -- \uc5b4\ub290 \uc6cc\ucee4\uac00 \ub3cc\ub824\ub3c4 (source,episode_idx) \ud558\ub098\ub294 \ud56d\uc0c1 \uac19\uc740 \ubb3c\ub9ac/\uc774\ubbf8\uc9c0 \uacb0\uacfc.",
+    "source_seed_base": {
+      "A": 0,
+      "B": 1000000,
+      "C": 2000000
+    }
+  },
   "sources": [
     "A",
     "B",
     "C"
   ],
+  "split_rule": {
+    "A": "\uc804\ubd80 test_A",
+    "B": "episode_idx < b_train(=600) -> train, < b_train+b_val(=700) -> val, \ub098\uba38\uc9c0 -> test_B",
+    "C": "\uc804\ubd80 test_C"
+  },
   "splits": [
     "test_A",
     "test_B",
