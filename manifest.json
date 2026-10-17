@@ -246,6 +246,19 @@
       "source": "B",
       "t_sim_per_episode_s": 4.435209598919991,
       "t_sim_total_s": 221.76047994599958
+    },
+    "B_000650_000700": {
+      "committed_at": "2026-10-17T02:20:29Z",
+      "episode_range": [
+        650,
+        700
+      ],
+      "n_episodes": 50,
+      "n_samples": 128,
+      "sha256": "4bb99b7701a548b5b8fefb09347cfc3fea247652e0e4e8b50e2a1f817fcf18b9",
+      "source": "B",
+      "t_sim_per_episode_s": 4.0943629693000005,
+      "t_sim_total_s": 204.718148465
     }
   }
 }
