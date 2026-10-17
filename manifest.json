@@ -1,0 +1,17 @@
+{
+  "completed_chunks": {
+    "A_000000_000050": {
+      "committed_at": "2026-10-17T01:14:29Z",
+      "episode_range": [
+        0,
+        50
+      ],
+      "n_episodes": 50,
+      "n_samples": 110,
+      "sha256": "3e43737058ab39f0ac6d6fed1cd8758d189d539f1feb600b34734154f789f793",
+      "source": "A",
+      "t_sim_per_episode_s": 3.492648038719999,
+      "t_sim_total_s": 174.63240193599995
+    }
+  }
+}
