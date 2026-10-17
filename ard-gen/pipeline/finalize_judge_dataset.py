@@ -99,6 +99,15 @@ def build_meta(data_dir: str, samples: list[dict], manifest: dict, disturbance_c
         "sources": sorted({s["source"] for s in samples}),
         "distribution": dist,
         "disturbance_config": disturbance_cfg,
+        "seed_rule": {
+            "formula": "seed = SOURCE_SEED_BASE[source] + episode_idx",
+            "source_seed_base": {"A": 0, "B": 1_000_000, "C": 2_000_000},
+            "note": "출처별로 겹치지 않는 시드 공간(각 최대 100만 에피소드) -- 어느 워커가 돌려도 (source,episode_idx) 하나는 항상 같은 물리/이미지 결과.",
+        },
+        "split_rule": {
+            "A": "전부 test_A", "C": "전부 test_C",
+            "B": "episode_idx < b_train(=600) -> train, < b_train+b_val(=700) -> val, 나머지 -> test_B",
+        },
         "instruction_format_note": (
             "ARD-VLA decision_logic.instruction_text()의 형식(\"목표 | current subtask: ... | "
             "completed: ...\")을 사용자 지시대로 재현했다 -- 이 세션에는 ARD-VLA 소스가 없어서 "
