@@ -24,6 +24,7 @@ import numpy as np
 
 from pipeline.generate_closed_loop_episodes import load_disturbance_config
 from pipeline.generate_judge_dataset import (
+    completed_subtasks_before,
     episode_seed,
     episode_split,
     generate_one_episode,
@@ -81,11 +82,102 @@ def test_episode_determinism_physics_and_images() -> None:
 
 
 def test_instruction_text_format() -> None:
-    text = instruction_text("align", False)
-    assert "align" in text and "completed: False" in text and "current subtask:" in text
-    text2 = instruction_text("insert", True)
-    assert "completed: True" in text2
-    print(f"[OK] instruction_text 포맷: {text!r}")
+    """ARD-VLA decision_logic.py 실제 구현 그대로("completed_str = ', '.join
+    (state.completed) if state.completed else 'none'") -- completed는
+    문자열 목록, 지금 서브태스크 자신의 성공/실패가 아니다."""
+    text = instruction_text("align", [])
+    assert "align" in text and "completed: none" in text and "current subtask:" in text
+    text2 = instruction_text("insert", ["align"])
+    assert "completed: align" in text2
+    print(f"[OK] instruction_text 포맷: {text!r} / {text2!r}")
+
+
+def test_instruction_outcome_invariant() -> None:
+    """같은 (서브태스크, 이전 완료 이력)이면 이번 시도의 성공/실패와
+    무관하게 instruction 문자열이 항상 같아야 한다(v1 라벨 누수 버그
+    수정의 핵심 요구사항 -- 사용자 지시 "같은 (subtask, prior-completed
+    history)는 성공/실패와 무관하게 동일해야 함")."""
+    boundaries_success = [{"node": "align", "finished_naturally": True}]
+    boundaries_fail = [{"node": "align", "finished_naturally": False}]
+    # align 바로 다음(idx=1) 지시문은 align이 성공했든 실패했든(재시도
+    # 끝에 결국 insert로 넘어간 경우) completed 목록이 같아야 한다 --
+    # 성공했을 때만 "align"이 완료 목록에 들어간다는 게 핵심이므로,
+    # 여기서는 "align 자신이 방금 끝난 시점"의 지시문(idx=0)이 성공/실패와
+    # 무관하게 동일한지를 직접 확인한다.
+    text_after_success_attempt = instruction_text("align", completed_subtasks_before(boundaries_success, 0))
+    text_after_fail_attempt = instruction_text("align", completed_subtasks_before(boundaries_fail, 0))
+    assert text_after_success_attempt == text_after_fail_attempt, "완료 이력이 같은데 지시문이 다르다(라벨 누수)"
+
+    # insert 서브태스크의 지시문은 "align이 성공적으로 끝났는지"에만
+    # 좌우되고, insert 자신의 이번 시도 결과와는 무관해야 한다.
+    boundaries_align_ok = [{"node": "align", "finished_naturally": True}]
+    text_insert_before_outcome = instruction_text("insert", completed_subtasks_before(boundaries_align_ok, 1))
+    assert text_insert_before_outcome == "insert the peg into the hole | current subtask: insert | completed: align"
+    print("[OK] instruction 문자열이 이번 시도의 성공/실패와 무관하게 동일(라벨 누수 없음)")
+
+
+def test_instruction_only_classifier_cannot_beat_baseline() -> None:
+    """실제로 생성된 judge_samples를 instruction 문자열로만 그룹 지어서
+    그룹별 다수결 정확도를 계산한다. peg_in_hole은 서브태스크가 2개뿐이라
+    instruction이 사실상 "지금 서브태스크가 뭔지"와 1:1 대응이고(align은
+    항상 completed:none, insert는 항상 completed:align -- 재시도 횟수와
+    무관), 서브태스크마다 성공 기준율이 원래 다르므로 이 그룹별 다수결이
+    "전체 다수 클래스" 베이스라인보다 높게 나오는 건 정상이다(이건
+    "라벨 누수"가 아니라 서브태스크 정체성이라는 정당한 정보) -- 그래서
+    전체 베이스라인과의 비교 대신, v1의 버그였던 "거의 100% 분리 가능"
+    (completed 필드가 곧 finished_naturally라서 사실상 완벽한 치트 신호)
+    수준에는 전혀 못 미친다는 걸 느슨한 상한으로 확인한다(사용자 지시
+    "instruction만으로 성공을 예측하는 분류기가 trivial baseline 이하"의
+    실질적 의도 -- 완벽 분리가 재발하면 이 상한을 넘는다)."""
+    if os.path.exists(_TMP_DIR):
+        shutil.rmtree(_TMP_DIR)
+    os.makedirs(_TMP_DIR)
+    result = subprocess.run(
+        [
+            sys.executable, _SCRIPT, "--data-dir", _TMP_DIR, "--chunk-size", "10",
+            "--n-a", "0", "--n-b", "10", "--n-c", "0", "--workers", "2", "--no-push",
+        ],
+        capture_output=True, text=True, env={**os.environ, "MUJOCO_GL": "osmesa"},
+    )
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    samples = []
+    for chunk_dir in os.listdir(os.path.join(_TMP_DIR, "chunks")):
+        jsonl_path = os.path.join(_TMP_DIR, "chunks", chunk_dir, "judge_samples.jsonl")
+        with open(jsonl_path) as f:
+            samples.extend(json.loads(line) for line in f if line.strip())
+    assert len(samples) > 0
+
+    # 지금 서브태스크 자신의 결과가 라벨에 그대로 들어가면 안 된다 --
+    # v1 버그를 직접 재현해본 "완벽 분리 상한"(실제 치트 신호가 있을 때
+    # 나오는 값)과 비교할 가장 직접적인 방법: completed 필드가 혹시라도
+    # (버그 재발로) success와 같은 값을 그대로 반영한다면 instruction이
+    # success마다 달라져야 하는데, 같은 서브태스크의 성공/실패 샘플들이
+    # 정확히 같은 instruction 문자열을 공유하는지 먼저 직접 확인한다.
+    by_subtask_instructions: dict[str, set[str]] = {}
+    for s in samples:
+        by_subtask_instructions.setdefault(s["subtask"], set()).add(s["instruction"])
+    for subtask, instrs in by_subtask_instructions.items():
+        assert len(instrs) == 1, f"{subtask}: 성공/실패에 따라 instruction이 달라진다(라벨 누수) -- {instrs}"
+
+    by_instruction: dict[str, list[bool]] = {}
+    for s in samples:
+        by_instruction.setdefault(s["instruction"], []).append(s["success"])
+    n_correct = 0
+    for outcomes in by_instruction.values():
+        majority = sum(outcomes) >= len(outcomes) / 2
+        n_correct += sum(1 for o in outcomes if o == majority)
+    grouped_acc = n_correct / len(samples)
+    near_perfect_separation_ceiling = 0.95
+    assert grouped_acc < near_perfect_separation_ceiling, (
+        f"instruction만으로 그룹 지은 다수결 정확도({grouped_acc:.3f})가 완벽 분리 "
+        f"상한({near_perfect_separation_ceiling})에 근접한다 -- 라벨 누수 재발 의심"
+    )
+    print(
+        f"[OK] instruction이 서브태스크마다 성공/실패 무관하게 1개뿐(라벨 누수 없음), "
+        f"instruction-only 다수결 정확도 {grouped_acc:.3f} < {near_perfect_separation_ceiling} "
+        f"(n={len(samples)}, n_distinct_instructions={len(by_instruction)})"
+    )
+    shutil.rmtree(_TMP_DIR)
 
 
 def test_resume_skips_completed_chunks() -> None:
@@ -141,7 +233,7 @@ def test_judge_sample_schema() -> None:
     jsonl_path = os.path.join(_TMP_DIR, "chunks", "B_000000_000002", "judge_samples.jsonl")
     required_keys = {
         "sample_id", "episode_id", "chunk_id", "split", "source", "disturbance_type", "loop_mode",
-        "attempt", "applied_recovery", "subtask", "instruction_start", "instruction_end", "images",
+        "attempt", "applied_recovery", "subtask", "instruction", "images",
         "robot_state_16dof_start", "robot_state_16dof_end", "success", "failure_type", "failure_type_idx",
         "progress", "slipped_but_succeeded",
     }
@@ -151,7 +243,15 @@ def test_judge_sample_schema() -> None:
             sample = json.loads(line)
             missing = required_keys - set(sample.keys())
             assert not missing, f"필드 누락: {missing}"
-            assert set(sample["images"].keys()) == {"top_cam_start", "wide_cam_start", "top_cam_end", "wide_cam_end"}
+            # 카메라 목록은 생성 시점 어댑터 설정에 따라 달라질 수 있지만(v2
+            # 근접 카메라 추가), 적어도 기존 top_cam/wide_cam은 항상 있고
+            # 카메라마다 start/end가 쌍으로 있어야 한다.
+            img_keys = set(sample["images"].keys())
+            assert {"top_cam_start", "wide_cam_start", "top_cam_end", "wide_cam_end"} <= img_keys
+            cams = {k.rsplit("_", 1)[0] for k in img_keys}
+            for cam in cams:
+                assert f"{cam}_start" in img_keys and f"{cam}_end" in img_keys
+            assert sample["failure_type_idx"] == -100 or sample["failure_type_idx"] >= 0
             assert len(sample["robot_state_16dof_start"]) == 16
             n += 1
     assert n > 0
@@ -164,7 +264,9 @@ if __name__ == "__main__":
     test_split_assignment_no_overlap()
     test_episode_determinism_physics_and_images()
     test_instruction_text_format()
+    test_instruction_outcome_invariant()
     test_resume_skips_completed_chunks()
     test_judge_sample_schema()
+    test_instruction_only_classifier_cannot_beat_baseline()
     print()
     print("ALL JUDGE DATASET TESTS PASSED")

@@ -72,10 +72,18 @@ from sim.peg_in_hole_bimanual_openarm_sim import (
 FAILURE_TYPES_LEGACY = ["F1", "F2", "F3", "timeout"]
 FAILURE_TYPES = ["F1a", "F1b", "F2", "F3", "timeout"]
 
+# Judge 데이터 v2에서 근접 카메라 2대를 추가했다(assets/peg_in_hole_bimanual_
+# openarm.xml의 hole_socket 바디 자식 close_cam_a/close_cam_b, PIPELINE.md
+# "Judge 데이터 v2" 절 참고) -- top_cam/wide_cam은 기존 그대로 유지(비교용).
+# 이 리스트 하나로 settle()/render_frames()/observe()가 전부 카메라를
+# 돈다 -- 카메라를 더 늘리거나 줄일 때 이 한 곳만 고치면 된다.
+JUDGE_CAMERAS = ["top_cam", "wide_cam", "close_cam_a", "close_cam_b"]
+
 
 class PegInHoleClosedLoopEnv:
     """하나의 peg_in_hole 에피소드를 ARD-VLA 폐루프 러너가 구동할 수 있게
-    감싼다. `render=True`면 판정 시점(settle() 호출 시)에 top_cam/wide_cam
+    감싼다. `render=True`면 판정 시점(settle() 호출 시)에 `JUDGE_CAMERAS`
+    (top_cam/wide_cam/close_cam_a/close_cam_b, v2에서 근접 카메라 2대 추가)
     프레임을 캡처한다 -- 그때만 `MUJOCO_GL=osmesa`를 건드린다(렌더링을
     안 쓰면 이 모듈은 그 환경변수를 전혀 안 건드린다, PIPELINE.md의
     "렌더링 안 하는 스크립트에서는 MUJOCO_GL=osmesa 설정 금지" 규칙 --
@@ -124,7 +132,7 @@ class PegInHoleClosedLoopEnv:
         if render:
             os.environ.setdefault("MUJOCO_GL", "osmesa")
             self._renderer = mujoco.Renderer(sim.model, height=240, width=320)
-        self._frames: dict[str, np.ndarray | None] = {"top_cam": None, "wide_cam": None}
+        self._frames: dict[str, np.ndarray | None] = {cam: None for cam in JUDGE_CAMERAS}
 
     # ------------------------------------------------------------------
     def reset_episode(self, start_node: str = "align") -> float:
@@ -166,8 +174,8 @@ class PegInHoleClosedLoopEnv:
             "subtask": self.current_node,
         }
         if self._render:
-            obs["top_cam"] = self._frames["top_cam"]
-            obs["wide_cam"] = self._frames["wide_cam"]
+            for cam in JUDGE_CAMERAS:
+                obs[cam] = self._frames[cam]
         return obs
 
     def execute(self, action: Any) -> None:
@@ -228,19 +236,20 @@ class PegInHoleClosedLoopEnv:
         (물리적으로는 추가 스텝 없음, 이 admittance 루프는 별도 "정착"
         동역학이 없어서). `render=False`면 완전히 no-op."""
         if self._render:
-            self._frames["top_cam"] = self._render_camera("top_cam")
-            self._frames["wide_cam"] = self._render_camera("wide_cam")
+            for cam in JUDGE_CAMERAS:
+                self._frames[cam] = self._render_camera(cam)
 
     def render_frames(self) -> dict[str, np.ndarray]:
-        """지금 이 순간의 top_cam/wide_cam을 즉시 렌더링해서 돌려준다
-        (후속 작업 "작업 1" 방법 A -- 생성 중 서브태스크 경계에서 바로
-        캡처). `settle()`의 캐시(`self._frames`)와는 별개로 호출 시점의
-        실제 장면을 새로 그린다 -- 복구 점프 직후처럼 `settle()`을 또
-        부르기 애매한 시점에도 쓸 수 있게. `render=False`로 생성됐으면
-        `RuntimeError`(렌더러 자체가 없음)."""
+        """지금 이 순간의 `JUDGE_CAMERAS` 전체(top_cam/wide_cam/close_cam_a/
+        close_cam_b)를 즉시 렌더링해서 돌려준다(후속 작업 "작업 1" 방법 A
+        -- 생성 중 서브태스크 경계에서 바로 캡처). `settle()`의 캐시
+        (`self._frames`)와는 별개로 호출 시점의 실제 장면을 새로 그린다 --
+        복구 점프 직후처럼 `settle()`을 또 부르기 애매한 시점에도 쓸 수
+        있게. `render=False`로 생성됐으면 `RuntimeError`(렌더러 자체가
+        없음)."""
         if not self._render:
             raise RuntimeError("render_frames()는 render=True로 만든 환경에서만 쓸 수 있다")
-        return {"top_cam": self._render_camera("top_cam"), "wide_cam": self._render_camera("wide_cam")}
+        return {cam: self._render_camera(cam) for cam in JUDGE_CAMERAS}
 
     def safe_stop(self) -> None:
         self._stopped = True
@@ -319,6 +328,16 @@ class PegInHoleClosedLoopEnv:
         peg_tip = self.sim.get_peg_tip_pos()
         raw_depth = min(_MAX_SANE_DEPTH_M, max(0.0, float(hole_center[2] - peg_tip[2])))
         return raw_depth if xy_ok else 0.0
+
+    def current_raw_depth_unclipped(self) -> float:
+        """`current_depth()`와 같은 깊이값이지만 xy 정렬 게이팅이 없다 --
+        성공 판정(`current_depth()`)에는 "정렬 안 됐으면 깊이 0"이 맞지만,
+        Judge 진행도 라벨에는 틀리다(정렬이 살짝 벗어난 채 깊게 꽂힌 jam
+        케이스가 진행도 0으로 보여서는 안 됨 -- v2 작업 "진행도 라벨
+        수정" 근거)."""
+        hole_center = self.sim.get_hole_center_pos()
+        peg_tip = self.sim.get_peg_tip_pos()
+        return min(_MAX_SANE_DEPTH_M, max(0.0, float(hole_center[2] - peg_tip[2])))
 
 
 class ScriptedOraclePolicy:

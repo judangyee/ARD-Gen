@@ -367,6 +367,21 @@ def insert_progress(raw_depth: float, target_depth: float) -> float:
     return float(np.clip(raw_depth / target_depth, 0.0, 1.0))
 
 
+def judge_align_progress(cur_dx: float, cur_dy: float, outer_half: float) -> float:
+    """Judge 라벨용 "align" 진행도(0~1) -- `align_progress()`(초기 오차
+    대비 비율)는 B세트 교란 씬에서 peg_init_offset_xy가 outer_half보다
+    작게 뽑히면(= 이미 정렬 성공 기준을 만족한 채로 시작) cur_err가 거의
+    안 줄어도 성공 판정이 나서 progress가 0 근처에 눌러붙는 버그가 있다
+    (v1 Judge 데이터 B_000004(bad_gains) 재시뮬레이션으로 실측 확인 --
+    PIPELINE.md "Judge 데이터 v2" 절). "성공하면 진행도가 1 근처"를
+    보장하려면 초기 오차가 아니라 성공 판정 기준(outer_half) 자체에 대한
+    상대 오차로 정의해야 한다."""
+    if outer_half < 1e-9:
+        return 1.0
+    cur_err = (cur_dx**2 + cur_dy**2) ** 0.5
+    return float(np.clip(1.0 - cur_err / outer_half, 0.0, 1.0))
+
+
 def align_subtask_finished(cur_dx: float, cur_dy: float, outer_half: float, hold_count: int, hold_steps: int = 10) -> bool:
     """tasks/peg_in_hole.graph.yaml의 align.completion과 같은 기준:
     xy 오차가 outer_half 안쪽(기존 is_success()의 xy_within_hole_footprint

@@ -92,7 +92,11 @@ import yaml
 from closedloop.peg_in_hole_adapter import PegInHoleClosedLoopEnv, ScriptedOraclePolicy
 from pipeline.episode_io import save_episode
 from sim.grasp_slip import ArmSlipConfig, GraspSlipConfig
-from sim.peg_in_hole_bimanual_openarm_sim import BimanualPegInHoleOpenArmSim
+from sim.peg_in_hole_bimanual_openarm_sim import (
+    BimanualPegInHoleOpenArmSim,
+    insert_progress,
+    judge_align_progress,
+)
 
 
 def assert_no_torch_imported() -> None:
@@ -510,12 +514,27 @@ def run_one_episode(
             # naturally`/`_subtask_timed_out`는 바로 위 `subtask_finished()`
             # 가 이미 갱신해뒀으므로, 이 호출의 `decisions`는 정확하다.
             _, fresh_decisions = policy.predict_action_chunk_with_decisions(None)
+            # judge_progress: Judge 라벨 전용 진행도(0~1) -- 성공하면 항상
+            # 1.0, 실패하면 "성공 판정 기준까지 얼마나 남았는지"의 연속값
+            # (v1에서 성공/실패가 거의 0/1 두 값으로 눌러붙던 버그 수정,
+            # PIPELINE.md "Judge 데이터 v2" 절 참고). 위 `decisions["progress"]`/
+            # `progress_hist`(이번 execute() 이전 상태, 한 박자 늦음)와는
+            # 별개로, fresh_decisions와 같은 지점(settle() 뒤)에서 새로
+            # 계산한다.
+            if env._subtask_done_naturally:
+                judge_progress = 1.0
+            elif node == "align":
+                dx, dy = env.current_dx_dy()
+                judge_progress = judge_align_progress(dx, dy, env._outer_half)
+            else:
+                judge_progress = insert_progress(env.current_raw_depth_unclipped(), env._target_depth)
             boundary = {
                 "node": node,
                 "start_step": start_step,
                 "end_step": total_steps,
                 "finished_naturally": bool(env._subtask_done_naturally),
                 "failure_type": fresh_decisions["failure_type_label"],
+                "judge_progress": judge_progress,
                 "attempt": attempt,
                 "recovery_applied": None,
             }
@@ -523,10 +542,10 @@ def run_one_episode(
             if render:
                 idx = len(subtask_boundaries)
                 if pending_start_frames is not None:
-                    boundary_images[f"boundary_{idx}_top_cam_start"] = pending_start_frames["top_cam"]
-                    boundary_images[f"boundary_{idx}_wide_cam_start"] = pending_start_frames["wide_cam"]
-                boundary_images[f"boundary_{idx}_top_cam_end"] = end_frames["top_cam"]
-                boundary_images[f"boundary_{idx}_wide_cam_end"] = end_frames["wide_cam"]
+                    for cam, frame in pending_start_frames.items():
+                        boundary_images[f"boundary_{idx}_{cam}_start"] = frame
+                for cam, frame in end_frames.items():
+                    boundary_images[f"boundary_{idx}_{cam}_end"] = frame
             if env._subtask_done_naturally:
                 subtask_boundaries.append(boundary)
                 if node == "insert":

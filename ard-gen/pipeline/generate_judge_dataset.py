@@ -27,13 +27,18 @@ C=200만대 -- 출처당 최대 100만 에피소드까지 안전). 매 에피소
 같은 물리 결과를 낸다 -- 멀티프로세싱 병렬화와 "이어서 생성"(청크
 재개)이 성립하려면 필수 전제.
 
-## instruction_text 포맷 (ARD-VLA decision_logic.instruction_text() 재현)
+## instruction_text 포맷 (v2: ARD-VLA decision_logic.py 실제 구현 재현)
 
-이 저장소에는 ARD-VLA 소스가 없다(사용자 지시 "ARD-VLA 저장소 수정은
-범위 밖" -- 수정은커녕 체크아웃도 안 했다). 사용자 지시에 적힌 형식
-("목표 | current subtask: … | completed: …")을 그대로 문자열로
-재현했다 -- 실제 ARD-VLA 구현과 토씨까지 같다는 보장은 없다(정직하게
-기록, README/meta.json에도 남김).
+v1은 이 저장소에 ARD-VLA 소스가 없어서 사용자 지시의 형식 설명만으로
+추측 재현했는데, `completed:` 필드에 "지금 서브태스크 자신의 성공/실패"
+를 그대로 넣는 라벨 누수 버그가 있었다(텍스트만 보고도 Judge가 정답을
+맞힐 수 있었음). v2는 사용자가 제공한 ARD-VLA decision_logic.py의
+실제 구현(`completed_str = ", ".join(state.completed) if state.completed
+else "none"`)을 그대로 재현한다 -- `completed`는 지금 노드 "시작 전"에
+끝난 서브태스크 id 목록만 담고(`completed_subtasks_before()`), 지금
+시도 자신의 결과는 절대 포함하지 않는다. `instruction_start`/
+`instruction_end` 두 필드를 단일 `instruction` 필드로 통합했다(같은
+서브태스크+이전 완료 이력이면 성공/실패와 무관하게 항상 같은 문자열).
 
 ## 이미지: JPEG, 해상도는 기존 렌더러 그대로(320x240)
 
@@ -81,7 +86,8 @@ _GOAL_TEXT = "insert the peg into the hole"
 _SOURCE_SEED_BASE = {"A": 0, "B": 1_000_000, "C": 2_000_000}
 _SLIP_THRESHOLD_M = 0.003
 _JPEG_QUALITY = 90
-_FAILURE_TYPE_IDX = {ft: i for i, ft in enumerate(FAILURE_TYPES)}  # "none"은 포함 안 됨 -- idx=-1로 취급(아래).
+_FAILURE_TYPE_IDX = {ft: i for i, ft in enumerate(FAILURE_TYPES)}  # "none"은 포함 안 됨 -- idx=-100로 취급(아래, ARD-VLA judge_failure_type 손실의 ignore_index).
+_FAILURE_TYPE_NONE_IDX = -100
 
 
 def episode_seed(source: str, episode_idx: int) -> int:
@@ -108,11 +114,29 @@ def episode_id(source: str, episode_idx: int) -> str:
     return f"{source}_{episode_idx:06d}"
 
 
-def instruction_text(subtask: str, completed: bool) -> str:
-    """사용자 지시 형식 그대로("목표 | current subtask: … | completed: …")
-    -- ARD-VLA 소스를 못 봐서 토씨까지 같다는 보장은 없다(모듈 docstring
-    참고)."""
-    return f"{_GOAL_TEXT} | current subtask: {subtask} | completed: {completed}"
+def completed_subtasks_before(boundaries: list[dict[str, Any]], idx: int) -> list[str]:
+    """`idx`번째 경계의 서브태스크가 시작되기 "전에" 자연 완료된 서브태스크
+    id 목록(처음 완료된 순서, 중복 제거) -- ARD-VLA decision_logic.py의
+    `state.completed`와 같은 값(지금 노드 자신의 이번 시도 결과는 절대
+    포함하지 않는다 -- v1 라벨 누수 버그의 핵심 수정점, PIPELINE.md
+    "Judge 데이터 v2" 절 참고)."""
+    completed: list[str] = []
+    for b in boundaries[:idx]:
+        if b["finished_naturally"] and b["node"] not in completed:
+            completed.append(b["node"])
+    return completed
+
+
+def instruction_text(subtask: str, completed: list[str]) -> str:
+    """ARD-VLA decision_logic.py의 실제 구현(사용자가 이번에 제공):
+        completed_str = ", ".join(state.completed) if state.completed else "none"
+        return f"{goal} | current subtask: {node.id} | completed: {completed_str}"
+    `completed`는 지금 서브태스크 시작 전에 이미 끝난 서브태스크 id만
+    담아야 한다 -- 지금 서브태스크 자신의 성공/실패를 담으면 v1과 같은
+    라벨 누수가 된다(완료일 반드시 `completed_subtasks_before()`로 구해서
+    넘길 것)."""
+    completed_str = ", ".join(completed) if completed else "none"
+    return f"{_GOAL_TEXT} | current subtask: {subtask} | completed: {completed_str}"
 
 
 def _episode_shard_kwargs(ep_id: str, episode: dict[str, Any]) -> dict[str, np.ndarray]:
@@ -152,19 +176,45 @@ def _episode_shard_kwargs(ep_id: str, episode: dict[str, Any]) -> dict[str, np.n
     return out
 
 
+def _cameras_for_boundary(boundary_images: dict[str, Any], idx: int) -> list[str]:
+    """`boundary_images`(키 형식 "boundary_{idx}_{camera}_{start|end}")에서
+    이 경계가 실제로 캡처한 카메라 이름 목록을 뽑아낸다 -- 하드코딩된
+    top_cam/wide_cam 두 개 대신 실제로 존재하는 카메라를 그대로 반영하므로
+    v2에서 근접 카메라가 추가돼도(수정2, 작업 #47) 이 함수는 손댈 필요가
+    없다."""
+    prefix = f"boundary_{idx}_"
+    cams = set()
+    for key in boundary_images:
+        if key.startswith(prefix):
+            cams.add(key[len(prefix):].rsplit("_", 1)[0])
+    return sorted(cams)
+
+
 def _make_judge_samples(
-    ep_id: str, source: str, episode_idx: int, split: str, chunk_id: str, episode: dict[str, Any], images_rel_dir: str
+    ep_id: str,
+    source: str,
+    episode_idx: int,
+    split: str,
+    chunk_id: str,
+    episode: dict[str, Any],
+    images_rel_dir: str,
+    boundary_images: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """subtask_boundaries 하나당 판정 샘플 하나(사용자 지시 "서브태스크
     경계 하나 = 판정 샘플 하나")."""
     cl = episode["closed_loop"]
     disturbance = episode.get("disturbance")
+    boundaries = episode["subtask_boundaries"]
     samples = []
-    for idx, b in enumerate(episode["subtask_boundaries"]):
+    for idx, b in enumerate(boundaries):
         failure_type = b["failure_type"]
-        failure_type_idx = _FAILURE_TYPE_IDX.get(failure_type, -1)  # "none"은 -1(실패 없음).
+        failure_type_idx = _FAILURE_TYPE_IDX.get(failure_type, _FAILURE_TYPE_NONE_IDX)  # "none"은 -100(실패 없음, ignore_index).
         start_step, end_step = b["start_step"], b["end_step"]
-        progress_idx = min(max(end_step - 1, 0), len(cl["progress"]) - 1)
+        instruction = instruction_text(b["node"], completed_subtasks_before(boundaries, idx))
+        images = {}
+        for cam in _cameras_for_boundary(boundary_images, idx):
+            images[f"{cam}_start"] = f"{images_rel_dir}/{ep_id}__boundary_{idx}_{cam}_start.jpg"
+            images[f"{cam}_end"] = f"{images_rel_dir}/{ep_id}__boundary_{idx}_{cam}_end.jpg"
 
         slipped_but_succeeded = False
         if b["finished_naturally"]:
@@ -192,20 +242,14 @@ def _make_judge_samples(
             "attempt": b["attempt"],
             "applied_recovery": b["recovery_applied"],
             "subtask": b["node"],
-            "instruction_start": instruction_text(b["node"], False),
-            "instruction_end": instruction_text(b["node"], bool(b["finished_naturally"])),
-            "images": {
-                "top_cam_start": f"{images_rel_dir}/{ep_id}__boundary_{idx}_top_cam_start.jpg",
-                "wide_cam_start": f"{images_rel_dir}/{ep_id}__boundary_{idx}_wide_cam_start.jpg",
-                "top_cam_end": f"{images_rel_dir}/{ep_id}__boundary_{idx}_top_cam_end.jpg",
-                "wide_cam_end": f"{images_rel_dir}/{ep_id}__boundary_{idx}_wide_cam_end.jpg",
-            },
+            "instruction": instruction,
+            "images": images,
             "robot_state_16dof_start": cl["joint_16dof"][start_step].tolist(),
             "robot_state_16dof_end": cl["joint_16dof"][end_step].tolist(),
             "success": bool(b["finished_naturally"]),
             "failure_type": failure_type,
             "failure_type_idx": failure_type_idx,
-            "progress": float(cl["progress"][progress_idx]),
+            "progress": float(b["judge_progress"]),
             "slipped_but_succeeded": slipped_but_succeeded,
         }
         samples.append(sample)
@@ -275,7 +319,9 @@ def generate_chunk(
                 os.path.join(chunk_dir, "images", f"{ep_id}__{key}.jpg"), format="JPEG", quality=_JPEG_QUALITY
             )
         shard_kwargs.update(_episode_shard_kwargs(ep_id, episode))
-        all_samples.extend(_make_judge_samples(ep_id, source_, episode_idx, episode["split"], chunk_id, episode, "images"))
+        all_samples.extend(
+            _make_judge_samples(ep_id, source_, episode_idx, episode["split"], chunk_id, episode, "images", boundary_images)
+        )
 
     np.savez_compressed(os.path.join(chunk_dir, "episodes_shard.npz"), **shard_kwargs)
     samples_path = os.path.join(chunk_dir, "judge_samples.jsonl")
