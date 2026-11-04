@@ -16,12 +16,32 @@ Keyframes are auto-selected from real rollout state, not hand-picked:
     distinct state-change event to key off (the left arm is held in place by
     strong position gains from frame 0, so there is no separate "grasp" event
     to detect; see module docstring of peg_in_hole_bimanual_openarm_sim.py).
+    The peg does move a real, verified ~1.6cm between these two steps (it's
+    continuously being driven toward the hole from frame 1) -- it just isn't
+    visible at the original camera's zoomed-out framing, which is why this
+    revision crops tightly around the work area (see compute_crop_box).
 
 No episode dataset exists for this task (a fresh deterministic rollout is run
 on demand) and this scenario samples no randomness, so there is no "episode
 number" or RNG seed to report -- the reproducible identity is the
 (gains, peg_init_offset_xy) tuple printed at the end of this script's run,
 which exactly reproduces tasks/peg_in_hole.yaml's first eval_scenario.
+
+Left/right arm identity (verified against assets/peg_in_hole_bimanual_openarm.xml
+and sim/peg_in_hole_bimanual_openarm_sim.py, not assumed):
+  - <weld body1="openarm_left_ee_base_link" body2="hole_socket">: the LEFT arm
+    grasps the part with the hole and holds it fixed (position-controlled,
+    _LEFT_ARM_HOME_QPOS) for the whole episode -- this is the Stabilizer.
+  - <weld body1="openarm_right_ee_base_link" body2="peg">: the RIGHT arm
+    carries the peg and is actively torque-driven to insert it -- the Actuator.
+  This matches the paper's left=Stabilizer/right=Actuator convention. BUT the
+  physical left/right arm does NOT map onto screen-left/screen-right in the
+  `wide_cam` view: projecting both end-effectors with the camera's own
+  pos/forward/up (see project_world_to_px) shows the physically-left arm
+  (Stabilizer) renders further toward screen-right than the physically-right
+  arm (Actuator) -- i.e. the camera angle mirrors them. This is exactly why
+  role labels are now colored rings drawn AT each gripper instead of
+  "left arm"/"right arm" text: text naming screen sides would be wrong here.
 
 Cap-twisting has not been ported to OpenArm yet (sim/cap_twist_env.py is the
 older vx300s rig) -- this script only renders the peg-in-hole row. TASK_ROWS
@@ -47,6 +67,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import matplotlib
 matplotlib.use("Agg")
+import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import mujoco
 import numpy as np
@@ -80,7 +101,36 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def run_and_pick_keyframes(args: argparse.Namespace) -> tuple[list[np.ndarray], list[tuple[str, int]], dict]:
+class Projector:
+    """Projects world points to pixel coords for a fixed MuJoCo camera, using the
+    same pos/forward/up/fovy the renderer itself used. Validated empirically by
+    projecting peg_tip/hole_center and overlaying on a render (they land exactly
+    on the peg and the hole, see git history / PR description for the check)."""
+
+    def __init__(self, renderer: "mujoco.Renderer", width: int, height: int):
+        cam = renderer.scene.camera[0]
+        self.pos = np.array(cam.pos, dtype=np.float64)
+        forward = np.array(cam.forward, dtype=np.float64)
+        self.forward = forward / np.linalg.norm(forward)
+        up = np.array(cam.up, dtype=np.float64)
+        up = up / np.linalg.norm(up)
+        self.right = np.cross(self.forward, up)
+        self.right /= np.linalg.norm(self.right)
+        self.up2 = np.cross(self.right, self.forward)
+        self.width, self.height = width, height
+
+    def set_fovy(self, fovy_deg: float) -> None:
+        self.f = (self.height / 2) / np.tan(np.radians(fovy_deg) / 2)
+
+    def project(self, world_pos: np.ndarray) -> tuple[float, float]:
+        rel = np.asarray(world_pos) - self.pos
+        x_cam, y_cam, z_cam = np.dot(rel, self.right), np.dot(rel, self.up2), np.dot(rel, self.forward)
+        px = self.width / 2 + self.f * (x_cam / z_cam)
+        py = self.height / 2 - self.f * (y_cam / z_cam)
+        return px, py
+
+
+def run_and_pick_keyframes(args: argparse.Namespace) -> tuple[list[np.ndarray], list[tuple[str, int]], dict, Projector]:
     gains = {"Kp_xy": args.kp_xy, "Kd_xy": args.kd_xy}
     cfg = _default_scene_config()
     cfg["peg_init_offset_xy"] = (args.offset_x, args.offset_y)
@@ -95,6 +145,19 @@ def run_and_pick_keyframes(args: argparse.Namespace) -> tuple[list[np.ndarray], 
         return renderer.render().copy()
 
     frames = [capture()]  # index 0 = initial reset pose
+    cam_id = sim.model.camera(args.camera).id
+    projector = Projector(renderer, args.width, args.height)
+    projector.set_fovy(float(sim.model.cam_fovy[cam_id]))
+
+    def ee_positions() -> dict[str, np.ndarray]:
+        return {
+            "left_ee": sim.data.xpos[sim._left_ee_body_id].copy(),
+            "right_ee": sim.data.xpos[sim._right_ee_body_id].copy(),
+            "peg_tip": sim.get_peg_tip_pos(),
+            "hole_center": sim.get_hole_center_pos(),
+        }
+
+    positions = [ee_positions()]  # positions[step] matches frames[step]
 
     kp_xy, kd_xy = gains["Kp_xy"], gains["Kd_xy"]
     prev_dx = prev_dy = 0.0
@@ -119,6 +182,7 @@ def run_and_pick_keyframes(args: argparse.Namespace) -> tuple[list[np.ndarray], 
 
         sim.step(delta)
         frames.append(capture())
+        positions.append(ee_positions())
 
         peg_tip = sim.get_peg_tip_pos()
         hole_center = sim.get_hole_center_pos()
@@ -160,6 +224,7 @@ def run_and_pick_keyframes(args: argparse.Namespace) -> tuple[list[np.ndarray], 
         ("Right arm: peg contact", first_contact_step),
         ("Insertion complete", success_step),
     ]
+    peg_disp = float(np.linalg.norm(positions[stabilize_step]["peg_tip"] - positions[approach_step]["peg_tip"]))
     meta = dict(
         gains=gains,
         peg_init_offset_xy=(args.offset_x, args.offset_y),
@@ -169,16 +234,54 @@ def run_and_pick_keyframes(args: argparse.Namespace) -> tuple[list[np.ndarray], 
         success_step=success_step,
         camera=args.camera,
         rng_seed=None,  # deterministic scenario, no randomness sampled -- see module docstring
+        peg_displacement_approach_to_stabilize_m=peg_disp,
     )
-    return frames, keyframes, meta
+    return frames, keyframes, meta, projector, positions
 
 
-def compose_figure(frames: list[np.ndarray], keyframes: list[tuple[str, int]], out_dir: str) -> None:
+def compute_crop_box(keyframes: list[tuple[str, int]], positions: list[dict], projector: Projector,
+                      width: int, height: int, margin_frac: float = 0.35) -> tuple[int, int, int, int]:
+    """Bounding box (in pixels) around the peg/hole/both end-effectors across every
+    keyframe, expanded by margin_frac of its own size, clipped to the frame. Using
+    the SAME box for all 4 panels keeps a single consistent framing -- it's a crop
+    of one fixed camera, not four different cameras."""
+    xs, ys = [], []
+    for _, step in keyframes:
+        for key in ("left_ee", "right_ee", "peg_tip", "hole_center"):
+            px, py = projector.project(positions[step][key])
+            xs.append(px)
+            ys.append(py)
+    x0, x1 = min(xs), max(xs)
+    y0, y1 = min(ys), max(ys)
+    mx, my = (x1 - x0) * margin_frac, (y1 - y0) * margin_frac
+    x0, x1 = x0 - mx, x1 + mx
+    y0, y1 = y0 - my, y1 + my
+    # keep it roughly 4:3 so panels don't look stretched
+    box_w, box_h = x1 - x0, y1 - y0
+    target_ratio = width / height
+    if box_w / box_h > target_ratio:
+        extra = box_w / target_ratio - box_h
+        y0, y1 = y0 - extra / 2, y1 + extra / 2
+    else:
+        extra = box_h * target_ratio - box_w
+        x0, x1 = x0 - extra / 2, x1 + extra / 2
+    x0, y0 = max(0, int(x0)), max(0, int(y0))
+    x1, y1 = min(width, int(x1)), min(height, int(y1))
+    return x0, y0, x1, y1
+
+
+def compose_figure(frames: list[np.ndarray], keyframes: list[tuple[str, int]], positions: list[dict],
+                    projector: Projector, out_dir: str) -> None:
+    crop = compute_crop_box(keyframes, positions, projector, frames[0].shape[1], frames[0].shape[0])
+    cx0, cy0, cx1, cy1 = crop
+    cropped = [frames[step][cy0:cy1, cx0:cx1] for _, step in keyframes]
+
     n = len(keyframes)
+    aspect = cropped[0].shape[0] / cropped[0].shape[1]
     fig_w_in = 7.0  # two-column full width (~17.5cm)
-    fig, axes = plt.subplots(1, n, figsize=(fig_w_in, fig_w_in / n * (frames[0].shape[0] / frames[0].shape[1])))
-    for i, ((label, step), ax) in enumerate(zip(keyframes, axes, strict=True)):
-        ax.imshow(frames[step])
+    fig, axes = plt.subplots(1, n, figsize=(fig_w_in, fig_w_in / n * aspect))
+    for i, ((label, step), ax, img) in enumerate(zip(keyframes, axes, cropped, strict=True)):
+        ax.imshow(img)
         ax.set_xticks([])
         ax.set_yticks([])
         for spine in ax.spines.values():
@@ -186,34 +289,42 @@ def compose_figure(frames: list[np.ndarray], keyframes: list[tuple[str, int]], o
             spine.set_color("#999999")
         ax.set_title(label, fontsize=9, fontfamily="sans-serif")
         if i == 0:
-            # stacked (not side-by-side): the panel is too narrow for both labels on one line
-            ax.text(
-                0.03, 0.14, "Stabilizer: left arm", transform=ax.transAxes, fontsize=7.5,
-                fontfamily="sans-serif", color="white", weight="bold", va="center",
-                bbox=dict(facecolor=STABILIZER_COLOR, alpha=0.9, pad=2, edgecolor="none"),
-            )
-            ax.text(
-                0.03, 0.05, "Actuator: right arm", transform=ax.transAxes, fontsize=7.5,
-                fontfamily="sans-serif", color="white", weight="bold", va="center",
-                bbox=dict(facecolor=ACTUATOR_COLOR, alpha=0.9, pad=2, edgecolor="none"),
-            )
+            # role labels as colored rings drawn directly on each arm's gripper (not
+            # "left arm"/"right arm" text -- in this camera view the physically-left
+            # (Stabilizer) arm renders toward screen-right, so text naming screen
+            # sides would mislead; see module docstring).
+            for key, color, tag in [("left_ee", STABILIZER_COLOR, "Stabilizer"), ("right_ee", ACTUATOR_COLOR, "Actuator")]:
+                px, py = projector.project(positions[step][key])
+                px, py = px - cx0, py - cy0
+                ax.add_patch(mpatches.Circle((px, py), radius=22, fill=False, edgecolor=color, linewidth=2.5))
+                label_dx = 34 if key == "left_ee" else -34
+                ha = "left" if key == "left_ee" else "right"
+                label_x = px + label_dx
+                ax.annotate(tag, xy=(px, py), xytext=(label_x, py - 30), fontsize=6.5, fontweight="bold",
+                            color="white", ha=ha, va="center",
+                            bbox=dict(facecolor=color, alpha=0.9, pad=1.5, edgecolor="none"),
+                            arrowprops=dict(arrowstyle="-", color=color, linewidth=1.2))
     fig.tight_layout()
     os.makedirs(out_dir, exist_ok=True)
     fig.savefig(os.path.join(out_dir, "fig3_tasks.svg"))
     fig.savefig(os.path.join(out_dir, "fig3_tasks.pdf"))
-    # dpi chosen so each ~1.75in-wide panel clears 640px in the saved PNG (confirmation render)
-    fig.savefig(os.path.join(out_dir, "fig3_tasks.png"), dpi=400)
+    # dpi chosen so each cropped panel clears 640px in the saved PNG (confirmation render)
+    dpi = max(400, int(640 / (fig_w_in / n)) + 20)
+    fig.savefig(os.path.join(out_dir, "fig3_tasks.png"), dpi=dpi)
     plt.close(fig)
 
 
 def main() -> None:
     args = parse_args()
-    frames, keyframes, meta = run_and_pick_keyframes(args)
-    compose_figure(frames, keyframes, args.out_dir)
+    frames, keyframes, meta, projector, positions = run_and_pick_keyframes(args)
+    compose_figure(frames, keyframes, positions, projector, args.out_dir)
     print(f"[render_task_figure] episode: gains={meta['gains']} offset_xy={meta['peg_init_offset_xy']} "
           f"camera={meta['camera']} rng_seed={meta['rng_seed']} (deterministic scenario, no sampling)")
     print(f"[render_task_figure] total_steps={meta['total_steps']} first_contact_step={meta['first_contact_step']} "
           f"success_step={meta['success_step']}")
+    print(f"[render_task_figure] peg displacement approach->stabilize keyframe: "
+          f"{meta['peg_displacement_approach_to_stabilize_m']*100:.2f} cm (verifies the two pre-contact "
+          f"keyframes are genuinely different states, not a frozen frame)")
     for label, step in keyframes:
         print(f"[render_task_figure] keyframe '{label}': step {step}")
     print(f"[render_task_figure] wrote fig3_tasks.{{svg,pdf,png}} to {args.out_dir}")
