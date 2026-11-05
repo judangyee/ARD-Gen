@@ -120,6 +120,24 @@ def test_continuous_euler_no_jump() -> None:
     print("[OK] continuous_euler_xyz_from_quats: 0 jumps >= pi across 2+ full turns, rz unwraps correctly")
 
 
+def test_euler_convention_golden_pairs() -> None:
+    """사용자 지시: 공식 데이터의 회전 규약은 scipy 기준 extrinsic 'xyz'
+    (R = Rz·Ry·Rx)다 -- 데이터 카드의 "intrinsic XYZ" 표기는 틀렸다.
+    사용자가 준 정답 쌍 2개로 euler_xyz_from_mat()이 이 규약을 쓰는지
+    직접 확인한다(quat_wxyz_to_mat()을 거쳐서 -- 이 모듈이 실제로 쓰는
+    경로)."""
+    q1 = np.array([-0.19758346676826477, -0.8820109963417053, -0.2992005944252014, 0.30577197670936584])
+    expected1 = np.array([2.920008420944214, 0.7176586985588074, 0.5706865191459656])
+    got1 = roco.euler_xyz_from_mat(roco.quat_wxyz_to_mat(q1))
+    assert np.allclose(got1, expected1, atol=1e-5), (got1, expected1)
+
+    q2 = np.array([0.0, -1.0, 0.0, 0.0])
+    expected2 = np.array([np.pi, 0.0, 0.0])
+    got2 = roco.euler_xyz_from_mat(roco.quat_wxyz_to_mat(q2))
+    assert np.allclose(got2, expected2, atol=1e-6), (got2, expected2)
+    print("[OK] euler convention golden pairs: extrinsic 'xyz' (R=Rz*Ry*Rx) matches both given quat<->euler pairs")
+
+
 def test_openarm_ee_downward_offset_reference_pose() -> None:
     """사용자 지시 3-1: "그리퍼가 아래를 향하는 기준 파지 자세"가 Euler
     XYZ (rx,ry,rz)=(pi,0,0)이 되는지 1e-3 이내로 확인. RAW=Identity가
@@ -342,6 +360,7 @@ if __name__ == "__main__":
     test_euler_mat_roundtrip()
     test_quat_mat_roundtrip()
     test_continuous_euler_no_jump()
+    test_euler_convention_golden_pairs()
     test_openarm_ee_downward_offset_reference_pose()
     test_initial_rx_branch_selection()
     test_continuous_euler_gimbal_lock_branch_switch()

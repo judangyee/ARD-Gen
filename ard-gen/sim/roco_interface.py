@@ -133,29 +133,42 @@ def quat_wxyz_to_mat(quat_wxyz: np.ndarray) -> np.ndarray:
 
 
 def euler_xyz_from_mat(mat: np.ndarray) -> np.ndarray:
-    """R = Rx(rx) @ Ry(ry) @ Rz(rz) (intrinsic X,Y,Z 순서)로 보고 (rx,ry,rz)를
-    뽑는다 -- 주 분기(principal branch)만 반환한다(ry는 [-pi/2,pi/2],
-    rx/rz는 [-pi,pi]) -- 짐벌락 근처(|R[0,2]|≈1)에서는 다른 두 각이
-    유일하게 안 정해지지만, 이 프로젝트가 다루는 손목 자세에서는
-    도달하지 않는다고 가정한다(공식 데이터 ry 범위 -1.26~1.53도 ±pi/2=
-    ±1.5708 경계에 닿지 않는다 -- 실측치가 이 가정을 뒷받침).
+    """**규약 정정(2차)**: 처음엔 R = Rx(rx)@Ry(ry)@Rz(rz)(intrinsic XYZ)로
+    구현했는데, 공식 데이터 카드의 "intrinsic XYZ" 표기 자체가 틀렸다는
+    걸 사용자가 지적해서 실측(아래 golden pair)으로 다시 맞췄다 -- 공식
+    회전 규약은 **scipy 기준 extrinsic 'xyz'**, 즉
+    R = Rz(rz) @ Ry(ry) @ Rx(rx)(고정된 월드 축 기준으로 x->y->z 순서로
+    회전, 행렬곱 순서는 반대인 Rz가 맨 앞)다. 주 분기(principal branch)만
+    반환한다(ry는 [-pi/2,pi/2], rx/rz는 [-pi,pi]) -- 짐벌락 근처
+    (|R[2,0]|≈1)에서는 다른 두 각이 유일하게 안 정해지지만, 공식 데이터
+    ry 범위 -1.26~1.53이 ±pi/2=±1.5708 경계에 닿지 않는다는 실측치가 이
+    프로젝트가 다루는 손목 자세에서는 도달하지 않는다는 가정을 뒷받침한다
+    (그래도 `continuous_euler_xyz_from_quats()`는 이 경계를 실제로 넘는
+    입력에도 대응하도록 분기 선택을 한다, 아래 "짐벌락 대응" 절 참고).
 
-    전개(R = Rx(a)Ry(b)Rz(c)):
-        R[0,0]=cb*cc  R[0,1]=-cb*sc  R[0,2]=sb
-        R[1,2]=-sa*cb R[2,2]=ca*cb
-        R[0,1]=-cb*sc R[0,0]=cb*cc
-    따라서 b=atan2(R[0,2], sqrt(R[0,0]^2+R[0,1]^2)),
-    a=atan2(-R[1,2],R[2,2]), c=atan2(-R[0,1],R[0,0])."""
+    전개(R = Rz(c)Ry(b)Rx(a), a=rx,b=ry,c=rz -- 표준 "ZYX"/항공 요-피치-롤
+    분해와 같다, extrinsic xyz == intrinsic ZYX를 반대 순서로 적용한 것과
+    동치):
+        R[0,0]=cc*cb  R[1,0]=sc*cb  R[2,0]=-sb
+        R[2,1]=cb*sa  R[2,2]=cb*ca
+    따라서 b=atan2(-R[2,0], sqrt(R[0,0]^2+R[1,0]^2)),
+    a=atan2(R[2,1],R[2,2]), c=atan2(R[1,0],R[0,0]).
+
+    golden pair(사용자 제공, 실측 1e-5~1e-6 이내로 확인됨, tests/test_roco_interface.py
+    참고): quat(wxyz)=(-0.19758346676826477,-0.8820109963417053,
+    -0.2992005944252014,0.30577197670936584) -> euler=(2.920008420944214,
+    0.7176586985588074,0.5706865191459656); quat=(0,-1,0,0) -> euler=(pi,0,0)."""
     r = np.asarray(mat, dtype=np.float64)
-    cb = np.hypot(r[0, 0], r[0, 1])
-    ry = np.arctan2(r[0, 2], cb)
-    rx = np.arctan2(-r[1, 2], r[2, 2])
-    rz = np.arctan2(-r[0, 1], r[0, 0])
+    cb = np.hypot(r[0, 0], r[1, 0])
+    ry = np.arctan2(-r[2, 0], cb)
+    rx = np.arctan2(r[2, 1], r[2, 2])
+    rz = np.arctan2(r[1, 0], r[0, 0])
     return np.array([rx, ry, rz], dtype=np.float64)
 
 
 def euler_xyz_to_mat(euler: np.ndarray) -> np.ndarray:
-    """euler_xyz_from_mat()의 역변환(테스트/검증용 -- "왕복" 확인에 쓴다)."""
+    """euler_xyz_from_mat()의 역변환(테스트/검증용 -- "왕복" 확인에 쓴다).
+    R = Rz(rz) @ Ry(ry) @ Rx(rx)(위 함수 docstring의 규약 정정 참고)."""
     rx, ry, rz = (float(v) for v in euler)
     ca, sa = np.cos(rx), np.sin(rx)
     cb, sb = np.cos(ry), np.sin(ry)
@@ -163,7 +176,7 @@ def euler_xyz_to_mat(euler: np.ndarray) -> np.ndarray:
     rx_mat = np.array([[1, 0, 0], [0, ca, -sa], [0, sa, ca]])
     ry_mat = np.array([[cb, 0, sb], [0, 1, 0], [-sb, 0, cb]])
     rz_mat = np.array([[cc, -sc, 0], [sc, cc, 0], [0, 0, 1]])
-    return rx_mat @ ry_mat @ rz_mat
+    return rz_mat @ ry_mat @ rx_mat
 
 
 def quat_wxyz_from_mat(mat: np.ndarray) -> np.ndarray:
@@ -209,7 +222,12 @@ def unwrap_euler_sequence(euler_seq: np.ndarray) -> np.ndarray:
 # 자명하게 만족하는 한 가지 대표 자세 -- "yaw=0"은 OpenArm 쪽에 외부
 # 기준이 없으므로 이 자체가 정의다). 이때
 # euler_xyz_from_mat(Identity @ OFFSET) = euler_xyz_from_mat(Rx(pi)) = (pi,0,0)
-# 정확히 나온다(아래 tests/test_roco_interface.py가 그대로 확인).
+# 정확히 나온다(아래 tests/test_roco_interface.py가 그대로 확인). 이 OFFSET
+# 행렬 자체(diag(1,-1,-1)=Rx(pi))는 Euler 추출 "규약"과 무관한 상수
+# 회전행렬이라, euler_xyz_from_mat()을 intrinsic XYZ에서 extrinsic xyz로
+# 정정(사용자 지시, 아래 그 함수 docstring 참고)한 뒤에도 그대로 유효하다
+# -- R(pi,0,0)이 양쪽 규약 모두에서 똑같이 diag(1,-1,-1)로 계산되기 때문
+# (ry=rz=0이면 Rz(0)Ry(0)Rx(pi)=Rx(pi)=Rx(pi)Ry(0)Rz(0), 두 규약이 일치).
 OPENARM_EE_DOWNWARD_OFFSET_MAT: np.ndarray = np.diag([1.0, -1.0, -1.0])
 
 
@@ -245,7 +263,14 @@ def continuous_euler_xyz_from_quats(
     프레임에 2*pi 단위로 맞춰 보정하고, 이전 프레임과의 절대오차 합이
     더 작은 쪽을 선택한다 -- 짐벌락이 없는 구간에서는 대안 분기가 항상
     훨씬 멀기 때문에 사실상 기존 np.unwrap과 동일하게 동작한다(단순
-    다회전 테스트로 확인됨, tests/test_roco_interface.py 참고)."""
+    다회전 테스트로 확인됨, tests/test_roco_interface.py 참고).
+
+    euler_xyz_from_mat()을 intrinsic XYZ에서 extrinsic xyz로 정정한 뒤
+    (사용자 지시, 그 함수 docstring 참고)에도 "(a,b,c)와 (a+pi,pi-b,c+pi)
+    는 항상 같은 행렬"이라는 대안 분기 공식과 짐벌락 위치(|ry|=pi/2)
+    자체는 그대로 유효하다 -- 둘 다 실측으로 재확인함(euler_xyz_to_mat()
+    으로 두 공식의 행렬이 일치하는지, 그리고 ry~1.7 돌파 합성 시퀀스로
+    재검증, tests/test_roco_interface.py 참고)."""
     quats_wxyz = np.asarray(quats_wxyz, dtype=np.float64)
     if quats_wxyz.ndim != 2 or quats_wxyz.shape[1] != 4:
         raise ValueError(f"quats_wxyz must be (T,4), got {quats_wxyz.shape}")

@@ -20,7 +20,12 @@ lerobot_dataset.LeRobotDataset`로 읽으면 `__getitem__`이 비디오까지
 - 200 에피소드, 총 121,454프레임(평균 약 607.27프레임 = 10fps 기준 약
   60.7초)
 - 왼팔 EE 회전(action의 left_rx/ry/rz, 연속 Euler): rx 0.48~4.10,
-  ry -1.26~1.53, rz -2.95~7.00
+  ry -1.26~1.53, rz -2.95~7.00 -- 이 범위 "안"에 있는가와 별개로, 그
+  중 실제로 몰려 있는 "중심 구간"(p1~p99 격)은 rx 2.75~3.15, ry 0~0.83,
+  rz -0.001~0.93 (check_left_rotation_distribution, 사용자 지시 2/3-b).
+- 왼팔 EE 위치(observation.state의 left_ee_x/y/z): x -0.01~0.82,
+  y -0.14~0.76, z 1.07~1.80(roco_interface.ROCO_OFFICIAL_LEFT_EE_RANGE와
+  동일, 사용자 지시 3-a).
 - 왼팔 그리퍼("열림 비율"): 0.060~0.301
 - 오른팔은 사실상 정지: 위치 변화 y 4cm·z 3cm 이내, 그리퍼 약 0.2256
   고정, 회전 rx 약 -pi
@@ -78,6 +83,25 @@ OFFICIAL_LEFT_RX_RANGE = (0.48, 4.10)
 OFFICIAL_LEFT_RY_RANGE = (-1.26, 1.53)
 OFFICIAL_LEFT_RZ_RANGE = (-2.95, 7.00)
 OFFICIAL_LEFT_GRIPPER_RANGE = (0.060, 0.301)
+
+# 왼팔 EE 위치 범위(사용자 지시 3-a, roco_interface.ROCO_OFFICIAL_LEFT_EE_RANGE
+# 와 동일한 공식 수치 -- 그 상수를 그대로 재사용해서 두 곳에서 따로
+# 어긋날 일이 없게 한다).
+OFFICIAL_LEFT_POS_RANGE = {
+    "x": roco.ROCO_OFFICIAL_LEFT_EE_RANGE["x"],
+    "y": roco.ROCO_OFFICIAL_LEFT_EE_RANGE["y"],
+    "z": roco.ROCO_OFFICIAL_LEFT_EE_RANGE["z"],
+}
+
+# 왼팔 회전의 "중심 구간"(사용자 지시 2/3-b, p1~p99에 해당하는 수치로
+# 제공됨) -- 전체 범위(OFFICIAL_LEFT_R*_RANGE)보다 훨씬 좁다. 분포 검사
+# (check_left_rotation_distribution)는 "관측 프레임 중 몇 %가 이 구간
+# 안에 드는가"를 본다 -- 범위 검사(바깥쪽으로 안 벗어나는가)와는 다른
+# 질문(안쪽 중심에 실제로 몰려 있는가)이라 둘 다 둔다.
+OFFICIAL_LEFT_RX_P1P99 = (2.75, 3.15)
+OFFICIAL_LEFT_RY_P1P99 = (0.0, 0.83)
+OFFICIAL_LEFT_RZ_P1P99 = (-0.001, 0.93)
+DISTRIBUTION_MIN_FRACTION = 0.60  # 기본 기준(사용자 지시 3-b) -- 조정 가능
 
 OFFICIAL_RIGHT_POS_CHANGE_MAX_Y = 0.04
 OFFICIAL_RIGHT_POS_CHANGE_MAX_Z = 0.03
@@ -196,11 +220,14 @@ def check_episode_length(table, report: ValidationReport) -> None:
 
 
 def _range_check(report: ValidationReport, name: str, observed_min: float, observed_max: float, official_range: tuple[float, float]) -> None:
+    """이름에 "공식 범위 안인가"를 명시한다(사용자 지시 3-c) -- 이 검사가
+    "분포가 중심에 몰려 있는가"(check_left_rotation_distribution, 별도)와
+    다른 질문이라는 걸 리포트에서도 구분되게 하려고."""
     lo, hi = official_range
     pad = (hi - lo) * RANGE_PAD_RATIO
     passed = observed_min >= lo - pad and observed_max <= hi + pad
     report.add(
-        name,
+        f"{name}(공식 범위 안인가)",
         passed,
         f"관측: [{observed_min:.4f}, {observed_max:.4f}] | 공식: [{lo:.4f}, {hi:.4f}]",
         f"공식 범위에서 양쪽으로 {RANGE_PAD_RATIO:.0%}({pad:.4f}) 이상 벗어나지 않음",
@@ -220,6 +247,37 @@ def check_left_rotation_ranges(action: np.ndarray, report: ValidationReport) -> 
 def check_left_gripper_range(action: np.ndarray, report: ValidationReport) -> None:
     col = action[:, _col_index("left_gripper")]
     _range_check(report, "왼팔 그리퍼 범위", float(col.min()), float(col.max()), OFFICIAL_LEFT_GRIPPER_RANGE)
+
+
+def check_left_position_ranges(state: np.ndarray, report: ValidationReport) -> None:
+    """사용자 지시 3-a: 왼팔 EE 위치(x/y/z)가 공식 범위 안인가."""
+    for axis in ("x", "y", "z"):
+        col = state[:, _state_col_index(f"left_ee_{axis}")]
+        _range_check(report, f"왼팔 위치 {axis} 범위", float(col.min()), float(col.max()), OFFICIAL_LEFT_POS_RANGE[axis])
+
+
+def check_left_rotation_distribution(action: np.ndarray, report: ValidationReport) -> None:
+    """사용자 지시 3-b: 범위 검사와는 별개로, 왼팔 rx/ry/rz 값이 공식
+    데이터의 "중심 구간"(p1~p99에 해당, 모듈 상단 상수 참고) 안에 실제로
+    몰려 있는지를 프레임 비율로 본다 -- 전체 범위를 안 벗어나는 것과
+    "분포 모양이 비슷한가"는 다른 질문이라 분리했다. 기본 기준은 60%
+    (사용자 지시, DISTRIBUTION_MIN_FRACTION 상수로 조정 가능)."""
+    for name, p1p99 in (
+        ("left_rx", OFFICIAL_LEFT_RX_P1P99),
+        ("left_ry", OFFICIAL_LEFT_RY_P1P99),
+        ("left_rz", OFFICIAL_LEFT_RZ_P1P99),
+    ):
+        col = action[:, _col_index(name)]
+        lo, hi = p1p99
+        frac = float(np.mean((col >= lo) & (col <= hi)))
+        passed = frac >= DISTRIBUTION_MIN_FRACTION
+        report.add(
+            f"{name} 분포(공식 중심구간 p1~p99 안 비율)",
+            passed,
+            f"관측: {frac*100:.1f}%의 프레임이 공식 중심구간 [{lo:.4f}, {hi:.4f}] 안에 있음 "
+            f"(관측 범위 [{float(col.min()):.4f}, {float(col.max()):.4f}])",
+            f"공식 중심구간 안 비율 >= {DISTRIBUTION_MIN_FRACTION:.0%}(초기 기준, 조정 가능)",
+        )
 
 
 def check_right_arm_static(action: np.ndarray, state: np.ndarray, episode_index: np.ndarray, report: ValidationReport) -> None:
@@ -325,7 +383,9 @@ def validate(dataset_root: str) -> ValidationReport:
     report = ValidationReport()
     check_episode_length(table, report)
     check_left_rotation_ranges(action, report)
+    check_left_position_ranges(state, report)
     check_left_gripper_range(action, report)
+    check_left_rotation_distribution(action, report)
     check_right_arm_static(action, state, episode_index, report)
     check_angle_continuity(action, episode_index, report)
     check_initial_hold(state, episode_index, report)

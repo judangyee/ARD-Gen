@@ -14,14 +14,25 @@
 ## 1. 액션 (14차원)
 
 절대 EE 목표: `[left x,y,z,rx,ry,rz,gripper, right x,y,z,rx,ry,rz,gripper]`
-(`roco.ACTION_NAMES`). 회전은 Euler XYZ(intrinsic, 라디안)이고, **연속
-시퀀스 전체에 대해 unwrap**되어 있어서(래핑 없음) 프레임마다 다시 계산하면
-안 된다 -- `continuous_euler_xyz_from_quats(quats_wxyz)`에 전체 (T,4)
-쿼터니언 시퀀스를 한 번에 넘겨야 한다(단일 프레임만 넘기면 unwrap 기준점이
-없어서 연속성을 보장할 수 없음). "액션[t] = 상태[t+1]에서 도달해야 하는
-EE 목표"(RT-1/Bridge류 절대-다음-목표 관례)는 `roco_interface.py`가
-강제하지 않는다 -- 호출자가 시퀀스를 한 스텝 미리 밀어서 넘겨야 한다
-(`pipeline/to_lerobot_v3.py`가 이렇게 한다).
+(`roco.ACTION_NAMES`). 회전은 Euler, 라디안 -- **규약 정정(사용자 지시,
+실측으로 확인)**: 처음엔 intrinsic XYZ(R=Rx·Ry·Rz)로 구현했는데, 공식
+데이터 카드의 "intrinsic XYZ" 표기 자체가 틀렸다. 공식 규약은 **scipy
+기준 extrinsic 'xyz'**, 즉 R = Rz(rz)·Ry(ry)·Rx(rx)(표준 ZYX/항공
+요-피치-롤 분해와 동치)다. `sim/roco_interface.py`의 `euler_xyz_from_mat()`/
+`euler_xyz_to_mat()`을 이 규약으로 고쳤고, 사용자가 준 golden pair 2개
+(쿼터니언<->Euler, 1e-5~1e-6 이내)로 `tests/test_roco_interface.py`가
+직접 확인한다. 짐벌락 위치(|ry|=pi/2)와 "이전 프레임에 가장 가까운 해"
+분기 선택(아래 "짐벌락 대응" 절)은 이 규약 정정 후에도 그대로 유효함을
+재검증했다(대안 분기 공식 `(rx+pi, pi-ry, rz+pi)`가 두 규약 모두에서
+동일한 행렬을 줌, 실측 확인).
+
+**연속 시퀀스 전체에 대해 unwrap**되어 있어서(래핑 없음) 프레임마다 다시
+계산하면 안 된다 -- `continuous_euler_xyz_from_quats(quats_wxyz)`에 전체
+(T,4) 쿼터니언 시퀀스를 한 번에 넘겨야 한다(단일 프레임만 넘기면 unwrap
+기준점이 없어서 연속성을 보장할 수 없음). "액션[t] = 상태[t+1]에서
+도달해야 하는 EE 목표"(RT-1/Bridge류 절대-다음-목표 관례)는
+`roco_interface.py`가 강제하지 않는다 -- 호출자가 시퀀스를 한 스텝 미리
+밀어서 넘겨야 한다(`pipeline/to_lerobot_v3.py`가 이렇게 한다).
 
 ## 2. State (44차원)
 

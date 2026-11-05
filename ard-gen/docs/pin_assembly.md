@@ -109,14 +109,39 @@ ring 배치(phase="normal") 순으로 구성된다.
 높이(carrier 표면+sun 전체두께+ring 반두께)에 있는지로 5점 만점 카운트.
 `episode_success = (n_assembled == 5)`.
 
+## 회전 규약 정정 (사용자 지시, 매우 중요)
+
+공식 데이터 카드의 "intrinsic XYZ" 표기는 틀렸다 -- 실제 규약은 **scipy
+기준 extrinsic 'xyz'**(R = Rz·Ry·Rx)다. `sim/roco_interface.py`의
+`euler_xyz_from_mat()`/`euler_xyz_to_mat()`을 이 규약으로 고쳤다(golden
+pair 2개로 `tests/test_roco_interface.py`가 확인, docs/roco_interface.md
+참고). 이 정정 전에는 왼팔 rx/rz 분포가 공식 중심구간과 전혀 안 맞았다
+(아래 "방향 오프셋" 절의 수정 전/후 표 참고) -- 단순 좌표축 재명명이
+아니라 실제로 다른 회전 분해라서, 같은 쿼터니언도 다른 (rx,ry,rz)로
+읽혔던 것이다.
+
 ## 방향 오프셋 + 분기 선택 (사용자 지시 3-1, roco_interface.py에 추가)
 
-`sim/roco_interface.py`의 `OPENARM_EE_DOWNWARD_OFFSET_MAT`(이번 작업에서
-추가) + `continuous_euler_xyz_from_quats()`의 `initial_rx_branch` 파라미터를
-`pipeline/to_lerobot_pin_assembly.py`가 실제로 쓰는 첫 호출부다 --
-`ee_frame_offset_mat=OPENARM_EE_DOWNWARD_OFFSET_MAT`,
-`left_initial_rx_branch="positive_pi"`, `right_initial_rx_branch="negative_pi"`.
-자세한 유도/테스트는 `tests/test_roco_interface.py`와 그 모듈 docstring
+`sim/roco_interface.py`의 `OPENARM_EE_DOWNWARD_OFFSET_MAT`(이전 작업에서
+추가, 규약 정정 후에도 그대로 유효 -- 로봇 기하학에서 유도된 상수라
+Euler 추출 규약과 무관함, 기준 하향 자세 -> (pi,0,0) 재확인됨) +
+`continuous_euler_xyz_from_quats()`의 `initial_rx_branch` 파라미터를
+`pipeline/to_lerobot_pin_assembly.py`가 실제로 쓰는 첫 호출부다.
+
+**추가로, 이 태스크 전용 보정이 하나 더 필요했다**: 위 OFFSET만 적용한
+결과, 전문가 동작이 실제로 만드는 왼팔 자세 분포가 공식 중심구간(rx
+2.75~3.15, ry 0~0.83, rz -0.001~0.93)과 크게 어긋났다(원인: 왼팔
+LEFT_HOME_QPOS가 "정확히 수직"이 아니라 어느 정도 기울어진 자세(dot=0.874)
+였고, 그 기울어진 방향이 공식 데이터의 거의-수직·yaw~0 기준과 달랐기
+때문 -- OpenArm 쪽에는 "yaw=0이 어느 방향"이라는 외부 기준이 원래
+없다는 점은 OFFSET 자체의 설계 논리와 같다). `pipeline/to_lerobot_pin_assembly.py`
+의 `LEFT_EE_FRAME_OFFSET`(공용 `OPENARM_EE_DOWNWARD_OFFSET_MAT`은 안 바꾸고
+이 작업에서만 추가로 곱하는 보정 회전)으로 LEFT_HOME_QPOS 자세가 공식
+중심구간 중앙값 근처에 오도록 다시 캘리브레이션했다 -- 수정 전/후 표는
+아래 "실측 결과" 절 참고.
+
+자세한 유도/테스트는 `tests/test_roco_interface.py`와 그 모듈 docstring,
+`pipeline/to_lerobot_pin_assembly.py`의 `LEFT_EE_FRAME_OFFSET` docstring
 참고.
 
 ## 짐벌락 대응 (사용자 지시 6)
@@ -128,7 +153,10 @@ ring 배치(phase="normal") 순으로 구성된다.
 고쳐져 있다(이전 작업, `tests/test_roco_interface.py`의
 `test_continuous_euler_gimbal_lock_branch_switch` 참고 -- ry~1.5~1.7인
 합성 입력에서 naive 추출은 pi만큼 튀지만 이 함수는 0.006rad 이내로
-복원).
+복원). 짐벌락 위치(|ry|=pi/2)와 대안 분기 공식은 회전 규약을 intrinsic
+XYZ에서 extrinsic xyz로 정정한 뒤에도 동일하게 유효함을 재검증했다(위
+"회전 규약 정정" 절 참고) -- `|ry| <= 1.4` 제한과 "이전 프레임에 가장
+가까운 해" 선택 둘 다 코드 변경 없이 그대로 유지된다.
 
 ## 알려진 미검증/한계 (정직하게 기록)
 
