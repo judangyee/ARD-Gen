@@ -13,3 +13,4 @@ data/episodes/*/*.npz
 data/lerobot/
 screw_driving_*.mp4
 assets/_gain_search_tmp_*.xml
+MUJOCO_LOG.TXT
