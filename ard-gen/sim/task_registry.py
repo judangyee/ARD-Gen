@@ -37,6 +37,14 @@ TASK_REGISTRY: dict[str, str] = {
     # 코드/자산(assets/tacker.xml, sim/tacker_env.py)은 참고용으로 남겨뒀지만
     # 더 이상 등록돼 있지 않다.
     "tacker": "sim.tacker_openarm_env:TackerOpenArmEnv",
+    # RoCo식 "조립 + 오류 초기 상태 복구"(일반화된 핀-꽂기) -- 이 저장소
+    # 최초로 "왼팔=액티브"인 태스크(sim/pin_assembly_openarm_env.py 모듈
+    # docstring 참고, peg_in_hole/tacker는 반대). CMA-ES 게인 탐색 대상이
+    # 아니라 전문가 스크립트 방식이라 run_episode(gains,...)의 gains는
+    # 더미다(tasks/pin_assembly.yaml 참고) -- 실제 데이터 생성은
+    # pipeline/to_lerobot_pin_assembly.py가 run_episode(scenario, rng)를
+    # 직접 호출한다.
+    "pin_assembly": "sim.pin_assembly_openarm_env:PinAssemblyOpenArmEnv",
 }
 
 
