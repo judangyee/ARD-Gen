@@ -120,6 +120,80 @@ def test_continuous_euler_no_jump() -> None:
     print("[OK] continuous_euler_xyz_from_quats: 0 jumps >= pi across 2+ full turns, rz unwraps correctly")
 
 
+def test_openarm_ee_downward_offset_reference_pose() -> None:
+    """사용자 지시 3-1: "그리퍼가 아래를 향하는 기준 파지 자세"가 Euler
+    XYZ (rx,ry,rz)=(pi,0,0)이 되는지 1e-3 이내로 확인. RAW=Identity가
+    그 기준 자세의 한 가지 대표값(로컬 -Z=world -Z, yaw=0 -- 위
+    roco_interface.py의 OPENARM_EE_DOWNWARD_OFFSET_MAT docstring 참고)."""
+    identity_quat = np.array([1.0, 0.0, 0.0, 0.0])
+    euler = roco.continuous_euler_xyz_from_quats(
+        identity_quat[None, :],
+        ee_frame_offset_mat=roco.OPENARM_EE_DOWNWARD_OFFSET_MAT,
+        initial_rx_branch="positive_pi",
+    )[0]
+    # 분기 강제 없이도 rx는 +-pi(같은 각도)여야 한다 -- atan2(-0,-1)이
+    # 부호 있는 영(-0.0)의 IEEE 관례상 분기컷에서 -pi를 줄 수도 있어서,
+    # "+pi 쪽" 분기를 강제한 값으로 (pi,0,0)과 비교한다(사용자 지시
+    # 3-1의 "왼팔은 +pi 쪽 가지" 관례와 일치).
+    assert np.allclose(euler, [np.pi, 0.0, 0.0], atol=1e-3), euler
+    print("[OK] OPENARM_EE_DOWNWARD_OFFSET_MAT: reference downward pose -> Euler (pi,0,0) within 1e-3")
+
+
+def test_initial_rx_branch_selection() -> None:
+    """사용자 지시 3-1: 왼팔은 첫 프레임 rx를 +pi 쪽, 오른팔은 -pi 쪽
+    가지로 고르고 이후 연속성을 유지해야 한다."""
+    # yaw=0, pitch=0, "아래를 향함" 자세를 조금씩 흔든 시퀀스 -- 오프셋을
+    # 적용하면 principal rx가 그대로 둘 때 +pi 근방(또는 그 켤레인 -pi
+    # 근방)에 머무른다.
+    rng = np.random.default_rng(7)
+    eulers = np.stack([np.array([0.0, dy, dz]) for dy, dz in rng.uniform(-0.05, 0.05, size=(10, 2))])
+    quats = np.stack([roco.quat_wxyz_from_mat(roco.euler_xyz_to_mat(e)) for e in eulers])
+
+    left = roco.continuous_euler_xyz_from_quats(
+        quats, ee_frame_offset_mat=roco.OPENARM_EE_DOWNWARD_OFFSET_MAT, initial_rx_branch="positive_pi"
+    )
+    right = roco.continuous_euler_xyz_from_quats(
+        quats, ee_frame_offset_mat=roco.OPENARM_EE_DOWNWARD_OFFSET_MAT, initial_rx_branch="negative_pi"
+    )
+    assert left[0, 0] > 0, left[0]
+    assert right[0, 0] < 0, right[0]
+    # 왼쪽은 +pi 분기 근방, 오른쪽은 -pi 분기 근방에서 전체 시퀀스가
+    # 연속적으로(점프 없이) 머물러야 한다.
+    assert np.all(np.abs(np.diff(left[:, 0])) < 0.5)
+    assert np.all(np.abs(np.diff(right[:, 0])) < 0.5)
+    print("[OK] initial_rx_branch: left starts near +pi, right starts near -pi, both stay continuous")
+
+
+def test_continuous_euler_gimbal_lock_branch_switch() -> None:
+    """사용자 지시 6: ry가 1.5 근처(짐벌락 pi/2=1.5708 바로 아래)를 지나는
+    입력에서도 연속 Euler 추출이 큰(>=0.5rad) 점프 없이 참값을 복원하는지
+    확인 -- naive(분기 보정 없음) 추출은 이 지점에서 pi만큼 튄다는 것도
+    같이 확인해서 "이 테스트가 짐벌락을 실제로 건드린다"는 걸 보장한다."""
+    ts = np.linspace(0.0, 1.0, 200)
+    true_rx = 0.2 * np.ones_like(ts)
+    true_ry = 1.3 + 0.4 * np.sin(ts * np.pi)  # 1.3 -> 1.70(짐벌락 1.5708 돌파) -> 1.3
+    true_rz = 0.3 * np.ones_like(ts)
+    assert true_ry.max() > np.pi / 2, true_ry.max()
+
+    mats = [roco.euler_xyz_to_mat(np.array([a, b, c])) for a, b, c in zip(true_rx, true_ry, true_rz)]
+    quats = np.stack([roco.quat_wxyz_from_mat(m) for m in mats])
+
+    naive_principal = np.stack([roco.euler_xyz_from_mat(m) for m in mats])
+    naive_max_jump = float(np.max(np.abs(np.diff(naive_principal, axis=0))))
+    assert naive_max_jump > 0.5, naive_max_jump  # 짐벌락을 실제로 건드렸다는 증거(튐이 있어야 함)
+
+    fixed = roco.continuous_euler_xyz_from_quats(quats)
+    fixed_max_jump = float(np.max(np.abs(np.diff(fixed, axis=0))))
+    assert fixed_max_jump < 0.1, fixed_max_jump
+    assert np.allclose(fixed[:, 0], true_rx, atol=1e-6)
+    assert np.allclose(fixed[:, 1], true_ry, atol=1e-6)
+    assert np.allclose(fixed[:, 2], true_rz, atol=1e-6)
+    print(
+        f"[OK] gimbal-lock branch switch: naive max jump={naive_max_jump:.4f}rad -> "
+        f"robust max jump={fixed_max_jump:.4f}rad, true ry recovered exactly (max ry={true_ry.max():.4f})"
+    )
+
+
 def test_workspace_transform_roundtrip() -> None:
     source = {"x": (0.0, 1.0), "y": (-0.5, 0.5), "z": (0.0, 2.0)}
     transform = roco.WorkspaceTransform(source=source)
@@ -268,6 +342,9 @@ if __name__ == "__main__":
     test_euler_mat_roundtrip()
     test_quat_mat_roundtrip()
     test_continuous_euler_no_jump()
+    test_openarm_ee_downward_offset_reference_pose()
+    test_initial_rx_branch_selection()
+    test_continuous_euler_gimbal_lock_branch_switch()
     test_workspace_transform_roundtrip()
     test_gripper_mapping_roundtrip()
     test_default_gripper_mapping_matches_model()

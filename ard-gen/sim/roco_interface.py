@@ -177,23 +177,107 @@ def unwrap_euler_sequence(euler_seq: np.ndarray) -> np.ndarray:
     프레임간 2*pi 점프를 없앤다 -- 사용자 지시 "연속 프레임 간 π 이상
     점프 0건"을 만족하는 핵심 단계. 축 사이의 짐벌락 분기 전환(한
     프레임에서 세 각이 동시에 (rx+pi, pi-ry, rz+pi)로 튀는 경우)까지는
-    못 잡는다 -- 위 euler_xyz_from_mat() docstring의 가정("짐벌락 근처에
-    안 감")이 깨지면 이 함수도 한계가 있다(정직하게 기록)."""
+    못 잡는다 -- 그 경우는 `continuous_euler_xyz_from_quats()`가 대신
+    처리한다(아래 "짐벌락 대응" 절 참고). 이 함수 자체는 이미 분기가
+    없는(또는 분기 전환이 없다고 알려진) 단순 시퀀스에 2*pi 래핑만
+    제거하고 싶을 때 쓰는 하위 유틸로 남겨둔다."""
     euler_seq = np.asarray(euler_seq, dtype=np.float64)
     if euler_seq.ndim != 2 or euler_seq.shape[1] != 3:
         raise ValueError(f"euler_seq must be (T,3), got {euler_seq.shape}")
     return np.unwrap(euler_seq, axis=0)
 
 
-def continuous_euler_xyz_from_quats(quats_wxyz: np.ndarray) -> np.ndarray:
-    """(T,4) wxyz 쿼터니언 시퀀스 -> (T,3) 연속(unwrap된) Euler XYZ 시퀀스.
-    액션 시퀀스를 만들 때 이 함수를 쓴다(단일 프레임만으로는 연속성을
-    보장할 기준점이 없으므로, 항상 전체 시퀀스를 한 번에 넘겨야 한다)."""
+# ---------------------------------------------------------------------------
+# OpenArm EE 로컬 좌표계 -> RoCo 쪽 관례 고정 오프셋 (사용자 지시 3-1)
+#
+# roco_interface.py 모듈 docstring("손목 카메라" 절)이 이미 실측으로 확인한
+# 사실: 양팔 ee_base_link 모두 핀거(approach) 방향은 로컬 **-Z**다. RoCo
+# 쪽이 기대하는 관례(공식 데이터의 "그리퍼가 아래를 향한 기준 자세"가
+# Euler XYZ (rx,ry,rz)=(pi,0,0))는 로컬 **+Z**를 approach 방향으로 쓴다
+# (표준 Euler(pi,0,0) = Rx(pi) = diag(1,-1,-1) 행렬의 3번째 열이 (0,0,-1)이라,
+# "이 프레임의 +Z가 world -Z(아래)"라는 뜻이기 때문).
+#
+# EFFECTIVE := RAW @ OFFSET 로 정의하면, OFFSET=Rx(pi)=diag(1,-1,-1)일 때
+# EFFECTIVE의 로컬 +Z 월드 방향 = RAW @ OFFSET[:,2] = RAW @ (0,0,-1)
+# = RAW의 로컬 -Z(=핀거 방향)와 **항상(RAW가 뭐든 상관없이, 선형대수적으로)**
+# 같다. 즉 이 OFFSET 하나로 "로컬 -Z=approach"(OpenArm)를
+# "로컬 +Z=approach"(RoCo) 관례로 바꿔주는 게 모든 자세에서 성립한다 --
+# 팔/자세별로 다시 캘리브레이션할 필요가 없다.
+#
+# "그리퍼가 아래를 향하고 yaw=0인 기준 자세"의 대표값으로 RAW=Identity를
+# 쓴다(Identity는 "로컬 -Z=world -Z, 로컬 X/Y가 추가 회전 없이 그대로"를
+# 자명하게 만족하는 한 가지 대표 자세 -- "yaw=0"은 OpenArm 쪽에 외부
+# 기준이 없으므로 이 자체가 정의다). 이때
+# euler_xyz_from_mat(Identity @ OFFSET) = euler_xyz_from_mat(Rx(pi)) = (pi,0,0)
+# 정확히 나온다(아래 tests/test_roco_interface.py가 그대로 확인).
+OPENARM_EE_DOWNWARD_OFFSET_MAT: np.ndarray = np.diag([1.0, -1.0, -1.0])
+
+
+def continuous_euler_xyz_from_quats(
+    quats_wxyz: np.ndarray,
+    ee_frame_offset_mat: np.ndarray | None = None,
+    initial_rx_branch: str | None = None,
+) -> np.ndarray:
+    """(T,4) wxyz 쿼터니언 시퀀스 -> (T,3) 연속(unwrap + 짐벌락 분기 보정된)
+    Euler XYZ 시퀀스. 액션 시퀀스를 만들 때 이 함수를 쓴다(단일 프레임만
+    으로는 연속성을 보장할 기준점이 없으므로, 항상 전체 시퀀스를 한 번에
+    넘겨야 한다).
+
+    `ee_frame_offset_mat`: None(기본값, 하위 호환 -- 기존 동작 그대로)이면
+    아무 보정도 안 하고, OPENARM_EE_DOWNWARD_OFFSET_MAT을 넘기면 위 docstring
+    대로 각 프레임의 회전행렬에 오른쪽에서 곱해서 Euler를 뽑기 전에
+    적용한다.
+
+    `initial_rx_branch`: "positive_pi"/"negative_pi"/None(기본값). 사용자
+    지시("에피소드 첫 프레임에서 왼팔 rx를 +pi 쪽 가지로, 오른팔 rx를 -pi
+    쪽 가지로 고르고 이후 연속성 유지") 그대로 -- 첫 프레임의 주분기 rx가
+    원하는 쪽 부호와 다르면 2*pi를 더하거나 빼서 그쪽 가지로 옮긴 뒤, 그
+    값을 기준으로 나머지 프레임이 전부 연속되게 따라간다.
+
+    ## 짐벌락 대응 (사용자 지시 6)
+
+    `euler_xyz_from_mat()`은 ry를 [-pi/2,pi/2] 주분기로만 뽑는다. 실제
+    회전이 매끄럽게 ry=pi/2를 넘어가면(공식 데이터 ry 최대 1.533이 그
+    경계에서 2.2도 이내) 주분기만 보면 그 순간 (rx,ry,rz)가
+    (rx+-pi, pi-ry, rz+-pi)로 통째로 튄다(euler_xyz_to_mat()으로 검증:
+    (a,b,c)와 (a+pi,pi-b,c+pi)는 항상 같은 행렬). 이 함수는 프레임마다
+    주분기 해와 그 대안 분기 해 둘 다 구한 뒤, 각각을 이전(이미 확정된)
+    프레임에 2*pi 단위로 맞춰 보정하고, 이전 프레임과의 절대오차 합이
+    더 작은 쪽을 선택한다 -- 짐벌락이 없는 구간에서는 대안 분기가 항상
+    훨씬 멀기 때문에 사실상 기존 np.unwrap과 동일하게 동작한다(단순
+    다회전 테스트로 확인됨, tests/test_roco_interface.py 참고)."""
     quats_wxyz = np.asarray(quats_wxyz, dtype=np.float64)
     if quats_wxyz.ndim != 2 or quats_wxyz.shape[1] != 4:
         raise ValueError(f"quats_wxyz must be (T,4), got {quats_wxyz.shape}")
-    raw = np.stack([euler_xyz_from_mat(quat_wxyz_to_mat(q)) for q in quats_wxyz])
-    return unwrap_euler_sequence(raw)
+    if initial_rx_branch not in (None, "positive_pi", "negative_pi"):
+        raise ValueError(f"initial_rx_branch must be None/positive_pi/negative_pi, got {initial_rx_branch!r}")
+
+    mats = [quat_wxyz_to_mat(q) for q in quats_wxyz]
+    if ee_frame_offset_mat is not None:
+        mats = [m @ ee_frame_offset_mat for m in mats]
+    principal = np.stack([euler_xyz_from_mat(m) for m in mats])
+
+    out = np.empty_like(principal)
+    first = principal[0].copy()
+    if initial_rx_branch == "positive_pi" and first[0] < 0:
+        first[0] += 2 * np.pi
+    elif initial_rx_branch == "negative_pi" and first[0] > 0:
+        first[0] -= 2 * np.pi
+    out[0] = first
+
+    two_pi = 2 * np.pi
+    for t in range(1, len(principal)):
+        a, b, c = principal[t]
+        prev = out[t - 1]
+        candidates = (np.array([a, b, c]), np.array([a + np.pi, np.pi - b, c + np.pi]))
+        best, best_dist = None, np.inf
+        for cand in candidates:
+            adjusted = cand + two_pi * np.round((prev - cand) / two_pi)
+            dist = float(np.sum(np.abs(adjusted - prev)))
+            if dist < best_dist:
+                best_dist, best = dist, adjusted
+        out[t] = best
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +439,9 @@ def build_action_sequence(
     right_pos: np.ndarray,
     right_quat: np.ndarray,
     right_gripper_roco: np.ndarray,
+    ee_frame_offset_mat: np.ndarray | None = None,
+    left_initial_rx_branch: str | None = None,
+    right_initial_rx_branch: str | None = None,
 ) -> np.ndarray:
     """시퀀스 전체(각 (T,3)/(T,4)/(T,))를 받아 (T,14) 액션을 만든다 -- 회전
     연속성(unwrap)은 시퀀스 전체 맥락이 있어야 하므로 프레임 하나씩은
@@ -362,9 +449,15 @@ def build_action_sequence(
     "이 스텝의 action = 다음 스텝에서 도달해야 할 EE 목표"(절대 목표
     제어 데이터셋의 표준 관례, 예: RT-1/Bridge류) 식으로 pos/quat
     시퀀스를 한 스텝 밀어서 넘긴다 -- 이 함수는 그 관례를 강제하지
-    않고 받은 그대로 변환만 한다."""
-    left_euler = continuous_euler_xyz_from_quats(left_quat)
-    right_euler = continuous_euler_xyz_from_quats(right_quat)
+    않고 받은 그대로 변환만 한다.
+
+    `ee_frame_offset_mat`/`{left,right}_initial_rx_branch`: 그대로
+    continuous_euler_xyz_from_quats()에 전달한다(기본값 None이면 기존
+    동작과 동일 -- 하위 호환). pin_assembly처럼 OpenArm EE 프레임을 RoCo
+    관례로 맞춰야 하는 호출자는 OPENARM_EE_DOWNWARD_OFFSET_MAT +
+    "positive_pi"(왼팔)/"negative_pi"(오른팔)를 넘긴다."""
+    left_euler = continuous_euler_xyz_from_quats(left_quat, ee_frame_offset_mat, left_initial_rx_branch)
+    right_euler = continuous_euler_xyz_from_quats(right_quat, ee_frame_offset_mat, right_initial_rx_branch)
     left = np.concatenate(
         [np.asarray(left_pos, dtype=np.float64), left_euler, np.asarray(left_gripper_roco, dtype=np.float64)[:, None]],
         axis=1,
