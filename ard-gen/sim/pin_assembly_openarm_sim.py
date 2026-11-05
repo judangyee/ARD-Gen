@@ -492,6 +492,17 @@ class PinAssemblyOpenArmSim:
             self.data.qpos[self._right_qposadr[name]] = value
             self.data.qvel[self._right_dofadr[name]] = 0.0
             self.data.ctrl[self._right_actuator_ids[name]] = value
+        # 그리퍼도 같은 이유로 고정한다 -- 실측으로 발견: 팔만 고정하고
+        # 그리퍼는 reset()에서 한 번 ctrl만 설정한 채 두면(기존 다른
+        # 태스크들의 패턴), 공식 데이터의 "오른팔 그리퍼 고정(약 0.2256)"
+        # 검사에서 관측 범위가 [0.06,0.27]까지 벌어져 FAIL했다(validate_against_roco.py
+        # 실측). 손가락 2개(joint1/2, mimic equality로 연결되지만 그
+        # 제약은 mj_step 중에만 적용돼서 직접 맞춰줘야 함 -- peg_in_hole
+        # 류가 이미 쓰는 패턴과 같은 이유) 전부 쿼터니언 레벨이 아니라
+        # 관절 각도 레벨에서 고정한다.
+        self.data.qpos[self._right_finger_qposadr] = RIGHT_GRIPPER_REST_CTRL
+        self.data.qpos[self._right_finger2_qposadr] = RIGHT_GRIPPER_REST_CTRL
+        self.data.ctrl[self._right_gripper_actuator_id] = RIGHT_GRIPPER_REST_CTRL
 
     def step_frame(self) -> None:
         """출력 1프레임(10fps) 분량 -- N_SUBSTEPS*dt=0.01s. carry 중이면
